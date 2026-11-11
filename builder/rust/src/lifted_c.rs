@@ -1,0 +1,60 @@
+//! Where the lifted functions begin in the lift's C (code_*.c): each definition
+//! is one line, `void f_<address>(Ctx *__restrict A64_NOESC c) {`. Ported
+//! from nx2/lifted_c.py.
+
+pub const DEFINITION: &str = "void f_";
+pub const DEFINITION_END: &str = "(Ctx *__restrict A64_NOESC c) {";
+
+/// The address of a definition line, if this is one.
+pub fn definition(line: &str) -> Option<&str> {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let rest = line.strip_prefix(DEFINITION)?;
+    let (address, tail) = rest.split_once(DEFINITION_END)?;
+    if tail != "" {
+        return None;
+    }
+    if address.is_empty() || !address.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(address)
+}
+
+/// The definitions, and a note line just above one, as split_hot keeps them.
+pub fn definitions(text: &str) -> Vec<(&str, Option<&str>)> {
+    let mut out = Vec::new();
+    let mut note = None;
+    for line in text.split_inclusive('\n') {
+        let clean = line.trim_end_matches(['\n', '\r']);
+        if clean.starts_with("/* ") && clean.ends_with(" */") {
+            note = Some(clean);
+            continue;
+        }
+        match definition(clean) {
+            Some(address) => {
+                out.push((address, note.take()));
+            }
+            None => note = None,
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_definition_lines() {
+        let text = "/* a note */\nvoid f_80001234(Ctx *__restrict A64_NOESC c) {\n  x();\n}\nvoid f_80005678(Ctx *__restrict A64_NOESC c) {\n}\n";
+        let found = definitions(text);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].0, "80001234");
+        assert_eq!(found[0].1, Some("/* a note */"));
+        assert_eq!(found[1].0, "80005678");
+        assert_eq!(found[1].1, None);
+        assert_eq!(
+            definition("void f_xyz(Ctx *__restrict A64_NOESC c) {"),
+            None
+        );
+    }
+}

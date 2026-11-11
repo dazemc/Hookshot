@@ -10,13 +10,18 @@ mod disk;
 mod gamescope;
 mod host;
 mod kit;
+mod lifted_c;
+mod logo_rgba;
 mod nso;
 mod nup;
+mod poll;
 mod profiles;
 mod rtgen;
 mod stage;
+mod ui_fonts;
 mod version;
 mod version_policy;
+mod win_manifest;
 mod zbic;
 
 use std::ffi::{CStr, CString};
@@ -123,6 +128,17 @@ pub fn dispatch(text: &str) -> String {
             host::chosen_jobs(given, environment.as_deref())
                 .map(|jobs| json!({"jobs": jobs, "cpus": host::cpus()}))
         }
+        "build.prepare_dump" => stage::prepare_dump_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "romfs").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+            &string(&request, "work").unwrap_or_default(),
+        ),
+        "build.prepare" => stage::prepare_json(
+            &string(&request, "nup").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+            &string(&request, "work").unwrap_or_default(),
+        ),
         "build.check" => stage::check_json(
             string(&request, "nup").as_deref(),
             string(&request, "exefs").as_deref(),
@@ -130,6 +146,18 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.check_exefs" => nso::check_json(&string(&request, "exefs").unwrap_or_default()),
         "build.kit" => kit::json(),
+        "build.ui_fonts" => ui_fonts::write_json(&string(&request, "out").unwrap_or_default()),
+        "build.win_manifest" => {
+            win_manifest::write_json(&string(&request, "out").unwrap_or_default())
+        }
+        "build.logo" => logo_rgba::write_json(
+            &string(&request, "out").unwrap_or_default(),
+            string(&request, "png").as_deref(),
+        ),
+        "build.polls" => {
+            let text = string(&request, "text").unwrap_or_default();
+            Ok(poll::json(&text))
+        }
         "build.spinning" => disk::spinning_json(&string(&request, "path").unwrap_or_default()),
         "build.rtgen" => rtgen::write_json(
             string(&request, "out").as_deref().unwrap_or(""),
