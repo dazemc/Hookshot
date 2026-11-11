@@ -21,6 +21,7 @@ mod rtgen;
 mod shader;
 mod split_hot;
 mod stage;
+mod toolchain;
 mod ui_fonts;
 mod version;
 mod version_policy;
@@ -143,6 +144,7 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "work").unwrap_or_default(),
         ),
         "build.compile_one" => compile::compile_one_json(&request, &kit::root()),
+        "build.toolchain" => Ok(toolchain::json()),
         "build.shaders" => shader::census_json(
             &string(&request, "romfs").unwrap_or_default(),
             string(&request, "out").as_deref(),
