@@ -251,6 +251,7 @@ pub fn prepare_dump_json(exefs: &str, romfs: &str, out: &str, work: &str) -> Res
     } else {
         PathBuf::from(work)
     };
+    fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
     let work_exefs = work.join("exefs");
     let kept = out.join(".hookshot_exefs");
     let out_romfs = out.join("romfs");
@@ -298,6 +299,7 @@ pub fn prepare_json(nup_path: &str, out: &str, work: &str) -> Result<Value, Stri
     } else {
         PathBuf::from(work)
     };
+    fs::create_dir_all(&work).map_err(|e| format!("{}: {e}", work.display()))?;
     let exefs = work.join("exefs");
     let game = out.join(".game");
     let good = out.join(".hookshot_romfs");
