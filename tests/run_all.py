@@ -334,7 +334,7 @@ def compile_all():
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("names", nargs="*")
-    p.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
+    p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 2))
     p.add_argument("--timeout", type=int, default=600, help="seconds per check (default 600)")
     p.add_argument("--strict", action="store_true", help="a missing tool fails the check instead of skipping it")
     p.add_argument("--no-skip", action="store_true", help="also run the checks on the skip list")

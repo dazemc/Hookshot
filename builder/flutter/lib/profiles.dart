@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'config.dart' as cfg;
+import 'engine.dart';
 
 class ProfileException implements Exception {
   final String message;
@@ -69,8 +70,11 @@ class Profiles {
 /// Runs nx2/profiles.py (the engine the Tk launcher used too) and reads its one JSON object.
 class ProfilesService {
   final Future<ProcessResult> Function(List<String> args) run;
+  final RustEngine? rust;
 
-  ProfilesService({Future<ProcessResult> Function(List<String> args)? run}) : run = run ?? _runPython;
+  ProfilesService({Future<ProcessResult> Function(List<String> args)? run, RustEngine? engine})
+      : run = run ?? _runPython,
+        rust = run == null ? (engine ?? RustEngine.open()) : null;
 
   static Future<ProcessResult> _runPython(List<String> args) {
     final script = p.join(cfg.nxRoot(), 'profiles.py');
@@ -101,17 +105,25 @@ class ProfilesService {
     return json;
   }
 
-  Future<Profiles> load(String folder) async => Profiles.fromJson(await _call(['list', folder]));
+  Future<Profiles> load(String folder) async => Profiles.fromJson(
+      rust != null ? rust!.call({'command': 'profiles.list', 'folder': folder}) : await _call(['list', folder]));
 
-  Future<Profiles> add(String folder, String name) async => Profiles.fromJson(await _call(['add', folder, name]));
+  Future<Profiles> add(String folder, String name) async => Profiles.fromJson(rust != null
+      ? rust!.call({'command': 'profiles.add', 'folder': folder, 'name': name})
+      : await _call(['add', folder, name]));
 
-  Future<Profiles> rename(String folder, String id, String name) async =>
-      Profiles.fromJson(await _call(['rename', folder, id, name]));
+  Future<Profiles> rename(String folder, String id, String name) async => Profiles.fromJson(rust != null
+      ? rust!.call({'command': 'profiles.rename', 'folder': folder, 'id': id, 'name': name})
+      : await _call(['rename', folder, id, name]));
 
-  Future<Profiles> remove(String folder, String id) async => Profiles.fromJson(await _call(['remove', folder, id]));
+  Future<Profiles> remove(String folder, String id) async => Profiles.fromJson(rust != null
+      ? rust!.call({'command': 'profiles.remove', 'folder': folder, 'id': id})
+      : await _call(['remove', folder, id]));
 
   Future<String> export(String folder, String id, String parent) async {
-    final json = await _call(['export', folder, id, parent]);
+    final json = rust != null
+        ? rust!.call({'command': 'profiles.export', 'folder': folder, 'id': id, 'parent': parent})
+        : await _call(['export', folder, id, parent]);
     return json['path'] as String;
   }
 

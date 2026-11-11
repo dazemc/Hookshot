@@ -54,6 +54,23 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
 
+# Rust engine (profiles, pins, launcher options): build beside the Flutter app.
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE)
+  set(RUST_ENGINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../rust")
+  set(RUST_ENGINE_SO "${RUST_ENGINE_DIR}/target/release/libhookshot_engine.so")
+  file(GLOB_RECURSE RUST_ENGINE_SOURCES CONFIGURE_DEPENDS
+    "${RUST_ENGINE_DIR}/Cargo.toml" "${RUST_ENGINE_DIR}/src/*.rs")
+  add_custom_command(
+    OUTPUT "${RUST_ENGINE_SO}"
+    COMMAND "${CARGO_EXECUTABLE}" build --release
+    WORKING_DIRECTORY "${RUST_ENGINE_DIR}"
+    DEPENDS ${RUST_ENGINE_SOURCES}
+    COMMENT "Building the Hookshot Rust engine"
+    VERBATIM)
+  add_custom_target(hookshot_engine ALL DEPENDS "${RUST_ENGINE_SO}")
+endif()
+
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
@@ -93,6 +110,11 @@ set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}/lib")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
+
+if(CARGO_EXECUTABLE)
+  install(FILES "${RUST_ENGINE_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+  add_dependencies("${BINARY_NAME}" hookshot_engine)
+endif()
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)

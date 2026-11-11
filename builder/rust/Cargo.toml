@@ -1,0 +1,24 @@
+[package]
+name = "hookshot_engine"
+version = "0.1.0"
+edition = "2024"
+description = "Hookshot Builder's Rust engine: profiles, pins, launcher options and diagnostics"
+publish = false
+
+[lib]
+name = "hookshot_engine"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["clock"] }
+zstd = "0.13"
+sha2 = "0.10"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+lto = "thin"
+strip = true

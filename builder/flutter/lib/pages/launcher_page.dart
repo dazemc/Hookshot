@@ -15,6 +15,7 @@ import '../profiles.dart';
 import '../theme.dart';
 import '../updater/manifest.dart' as upd;
 import '../updater/version_policy.dart' as policy;
+import 'diagnostics_page.dart';
 import 'gamescope_dialog.dart';
 import 'widgets.dart';
 
@@ -65,6 +66,11 @@ class LauncherPage extends StatelessWidget {
               ),
               actions: [
                 if (onBack != null) HsButton.quiet(label: 'Back', onPressed: onBack),
+                HsButton.quiet(
+                  label: 'Diagnostics',
+                  icon: const Icon(LucideIcons.bug, size: 14),
+                  onPressed: () => showDiagnostics(context, folder),
+                ),
                 HsButton.quiet(label: 'Open folder', onPressed: () => openFolder(folder)),
                 if (state is LauncherReady && state.kept)
                   HsButton.quiet(

@@ -7,6 +7,7 @@ import '../blocs/builder_bloc.dart';
 import '../navigation.dart';
 import '../play.dart';
 import '../theme.dart';
+import 'diagnostics_page.dart';
 import 'widgets.dart';
 
 class ReadyPage extends StatefulWidget {
@@ -120,6 +121,11 @@ class _ReadyPageState extends State<ReadyPage> {
               leading: const HsStatusLine('Ready to play', icon: LucideIcons.circleCheck, color: HsColors.go),
               actions: [
                 HsButton.quiet(label: 'Open folder', onPressed: () => openFolder(state.folder)),
+                HsButton.quiet(
+                  label: 'Diagnostics',
+                  icon: const Icon(LucideIcons.bug, size: 14),
+                  onPressed: () => showDiagnostics(context, state.folder),
+                ),
                 HsButton.go(
                   label: 'Play',
                   icon: const Icon(LucideIcons.play, size: 14),
