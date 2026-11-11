@@ -13,7 +13,9 @@ mod host;
 mod kit;
 mod lifted_c;
 mod logo_rgba;
+mod lz4;
 mod nso;
+mod nso_image;
 mod nup;
 mod poll;
 mod profiles;
@@ -160,6 +162,11 @@ pub fn dispatch(text: &str) -> String {
             string(&request, "work").as_deref().unwrap_or(""),
         ),
         "build.check_exefs" => nso::check_json(&string(&request, "exefs").unwrap_or_default()),
+        "nso.load" => nso_image::json(&string(&request, "exefs").unwrap_or_default()),
+        "nso.dump" => nso_image::dump_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+        ),
         "build.kit" => kit::json(),
         "build.ui_fonts" => ui_fonts::write_json(&string(&request, "out").unwrap_or_default()),
         "build.win_manifest" => {
