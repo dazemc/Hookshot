@@ -17,6 +17,7 @@ mod nup;
 mod poll;
 mod profiles;
 mod rtgen;
+mod split_hot;
 mod stage;
 mod ui_fonts;
 mod version;
@@ -158,6 +159,10 @@ pub fn dispatch(text: &str) -> String {
             let text = string(&request, "text").unwrap_or_default();
             Ok(poll::json(&text))
         }
+        "build.split_hot" => split_hot::split_json(
+            &string(&request, "gen").unwrap_or_default(),
+            request.get("pieces").and_then(Value::as_u64).unwrap_or(8) as usize,
+        ),
         "build.spinning" => disk::spinning_json(&string(&request, "path").unwrap_or_default()),
         "build.rtgen" => rtgen::write_json(
             string(&request, "out").as_deref().unwrap_or(""),
