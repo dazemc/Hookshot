@@ -17,6 +17,7 @@ mod nup;
 mod poll;
 mod profiles;
 mod rtgen;
+mod shader;
 mod split_hot;
 mod stage;
 mod ui_fonts;
@@ -139,6 +140,10 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "nup").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
             &string(&request, "work").unwrap_or_default(),
+        ),
+        "build.shaders" => shader::census_json(
+            &string(&request, "romfs").unwrap_or_default(),
+            string(&request, "out").as_deref(),
         ),
         "build.check" => stage::check_json(
             string(&request, "nup").as_deref(),
