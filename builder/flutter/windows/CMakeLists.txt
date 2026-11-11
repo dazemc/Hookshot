@@ -49,6 +49,24 @@ endfunction()
 set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter")
 add_subdirectory(${FLUTTER_MANAGED_DIR})
 
+# Rust engine (profiles, pins, launcher options, the NUP/build engine).
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE)
+  set(RUST_ENGINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../rust")
+  set(RUST_ENGINE_DLL "${RUST_ENGINE_DIR}/target/release/hookshot_engine.dll")
+  file(GLOB_RECURSE RUST_ENGINE_SOURCES CONFIGURE_DEPENDS
+    "${RUST_ENGINE_DIR}/Cargo.toml" "${RUST_ENGINE_DIR}/src/*.rs"
+    "${RUST_ENGINE_DIR}/zbic/Cargo.toml" "${RUST_ENGINE_DIR}/zbic/src/*.rs")
+  add_custom_command(
+    OUTPUT "${RUST_ENGINE_DLL}"
+    COMMAND "${CARGO_EXECUTABLE}" build --release --workspace
+    WORKING_DIRECTORY "${RUST_ENGINE_DIR}"
+    DEPENDS ${RUST_ENGINE_SOURCES}
+    COMMENT "Building the Hookshot Rust engine"
+    VERBATIM)
+  add_custom_target(hookshot_engine ALL DEPENDS "${RUST_ENGINE_DLL}")
+endif()
+
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
@@ -74,6 +92,12 @@ set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
+
+if(CARGO_EXECUTABLE)
+  install(FILES "${RUST_ENGINE_DLL}" "${RUST_ENGINE_DIR}/target/release/hookshot_zbic.dll"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+  add_dependencies("${BINARY_NAME}" hookshot_engine)
+endif()
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)

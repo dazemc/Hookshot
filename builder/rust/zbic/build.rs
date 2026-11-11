@@ -1,10 +1,11 @@
 use std::path::Path;
 
 fn main() {
-    // The ZBIC decompressor is the game's zstd variant: compile the vendored
-    // single-file zstd with support for it into the engine, so the tool works
-    // on every platform without a separately built zbic library.
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/zbic");
+    // Atmosphere's single-file zstd with ZBIC support. It lives in its own
+    // shared library because its frame format replaces standard zstd's magic:
+    // the engine uses the normal zstd crate for packages and this one only for
+    // the game's ZBIC NSO segments.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../third_party/zbic");
     cc::Build::new()
         .file(root.join("zstd.c"))
         .file(root.join("zbic_api.c"))

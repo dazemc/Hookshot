@@ -1,0 +1,13 @@
+[package]
+name = "hookshot_zbic"
+version = "0.1.0"
+edition = "2024"
+description = "The ZBIC decompressor (Switch firmware 22 zstd) as a small shared library for the Rust engine"
+publish = false
+
+[lib]
+name = "hookshot_zbic"
+crate-type = ["cdylib"]
+
+[build-dependencies]
+cc = "1"

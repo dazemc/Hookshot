@@ -60,10 +60,11 @@ if(CARGO_EXECUTABLE)
   set(RUST_ENGINE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../rust")
   set(RUST_ENGINE_SO "${RUST_ENGINE_DIR}/target/release/libhookshot_engine.so")
   file(GLOB_RECURSE RUST_ENGINE_SOURCES CONFIGURE_DEPENDS
-    "${RUST_ENGINE_DIR}/Cargo.toml" "${RUST_ENGINE_DIR}/src/*.rs")
+    "${RUST_ENGINE_DIR}/Cargo.toml" "${RUST_ENGINE_DIR}/src/*.rs"
+    "${RUST_ENGINE_DIR}/zbic/Cargo.toml" "${RUST_ENGINE_DIR}/zbic/src/*.rs")
   add_custom_command(
     OUTPUT "${RUST_ENGINE_SO}"
-    COMMAND "${CARGO_EXECUTABLE}" build --release
+    COMMAND "${CARGO_EXECUTABLE}" build --release --workspace
     WORKING_DIRECTORY "${RUST_ENGINE_DIR}"
     DEPENDS ${RUST_ENGINE_SOURCES}
     COMMENT "Building the Hookshot Rust engine"
@@ -112,7 +113,8 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
 if(CARGO_EXECUTABLE)
-  install(FILES "${RUST_ENGINE_SO}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+  install(FILES "${RUST_ENGINE_SO}" "${RUST_ENGINE_DIR}/target/release/libhookshot_zbic.so"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
   add_dependencies("${BINARY_NAME}" hookshot_engine)
 endif()
 

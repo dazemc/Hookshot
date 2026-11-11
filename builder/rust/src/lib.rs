@@ -92,6 +92,10 @@ pub fn dispatch(text: &str) -> String {
             string(&request, "title").as_deref(),
             string(&request, "only").as_deref(),
         ),
+        "nup.stand_in" => nup::stand_in_json(
+            &string(&request, "romfs").unwrap_or_default(),
+            string(&request, "heads").as_deref(),
+        ),
         "nup.extract" => nup::extract_json(
             &string(&request, "path").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),

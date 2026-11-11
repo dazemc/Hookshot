@@ -880,6 +880,156 @@ pub fn list_json(path: &str) -> Result<Value, String> {
     Ok(json!({"file": path, "size": nup.file_size, "titles": nup.titles_json()}))
 }
 
+/// The romfs .zs files that do not start as zstd, with "/" between folders.
+pub fn damaged_files(romfs: &Path) -> Result<Vec<String>, String> {
+    let mut found = Vec::new();
+    for entry in walkdir::WalkDir::new(romfs).sort_by_file_name() {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "zs") {
+            continue;
+        }
+        let mut head = [0u8; 4];
+        let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let got = file
+            .read(&mut head)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if !zstd_start(&head[..got]) {
+            let rel = path.strip_prefix(romfs).map_err(|e| e.to_string())?;
+            found.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    Ok(found)
+}
+
+/// The suffix that says a stand-in is the same kind of file: the last
+/// extension with an optional `_Nrm`-style part just before it.
+fn stand_in_suffix(name: &str) -> String {
+    let Some(dot) = name.rfind('.') else {
+        return String::new();
+    };
+    let before = &name[..dot];
+    if let Some(underscore) = before.rfind('_') {
+        let tag = &before[underscore + 1..];
+        if !tag.is_empty()
+            && tag.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && tag.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return name[underscore..].to_owned();
+        }
+    }
+    name[dot..].to_owned()
+}
+
+fn common_prefix(a: &str, b: &str) -> usize {
+    a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+}
+
+fn stand_in_for(path: &Path, damaged: &HashSet<PathBuf>) -> Result<Option<PathBuf>, String> {
+    let folder = path.parent().ok_or("damaged file has no folder")?;
+    let name = path
+        .file_name()
+        .ok_or("damaged file has no name")?
+        .to_string_lossy();
+    let suffix = stand_in_suffix(&name);
+    let size = fs::metadata(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .len();
+    let mut best: Option<(usize, u64, PathBuf)> = None;
+    for entry in fs::read_dir(folder).map_err(|e| format!("{}: {e}", folder.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let other = entry.file_name().to_string_lossy().into_owned();
+        if other == name || !other.ends_with(&suffix) {
+            continue;
+        }
+        let candidate = entry.path();
+        if damaged.contains(&candidate) {
+            continue;
+        }
+        let Ok(mut file) = fs::File::open(&candidate) else {
+            continue;
+        };
+        let mut head = [0u8; 4];
+        let got = file.read(&mut head).unwrap_or(0);
+        if !zstd_start(&head[..got]) {
+            continue;
+        }
+        let other_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let score = (
+            common_prefix(&name, &other),
+            u64::MAX - size.abs_diff(other_size),
+        );
+        if best
+            .as_ref()
+            .is_none_or(|(prefix, closeness, _)| score > (*prefix, *closeness))
+        {
+            best = Some((score.0, score.1, candidate));
+        }
+    }
+    Ok(best.map(|(_, _, path)| path))
+}
+
+/// Replace each damaged romfs .zs file with a whole one of the same kind.
+/// `known` lists the paths relative to romfs when the extraction already
+/// found them (its heads file), so the ~100,000 files are not opened again.
+pub fn stand_in_damaged(
+    romfs: &Path,
+    known: Option<Vec<String>>,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    let damaged = match known {
+        Some(known) => known,
+        None => damaged_files(romfs)?,
+    };
+    let paths: Vec<PathBuf> = damaged.iter().map(|rel| romfs.join(rel)).collect();
+    let excluded: HashSet<PathBuf> = paths.iter().cloned().collect();
+    let mut done = Vec::new();
+    for (rel, path) in damaged.into_iter().zip(paths) {
+        let other = stand_in_for(&path, &excluded)?;
+        if let Some(other) = &other {
+            let mut temporary = path.as_os_str().to_owned();
+            temporary.push(".part");
+            let temporary = PathBuf::from(temporary);
+            fs::copy(other, &temporary).map_err(|e| format!("{}: {e}", temporary.display()))?;
+            fs::rename(&temporary, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        let replacement = other.and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        done.push((rel, replacement));
+    }
+    Ok(done)
+}
+
+pub fn stand_in_json(romfs: &str, heads: Option<&str>) -> Result<Value, String> {
+    let known = match heads {
+        Some(heads) => {
+            let text = fs::read_to_string(heads).map_err(|e| format!("{}: {e}", heads))?;
+            let mut lines = text.split('\n');
+            if lines.next() != Some(HEADS_MAGIC) {
+                return Err(format!("{} is not a Hookshot heads list", heads));
+            }
+            Some(
+                lines
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            )
+        }
+        None => None,
+    };
+    let done = stand_in_damaged(Path::new(romfs), known)?;
+    let unresolved = done.iter().filter(|(_, other)| other.is_none()).count();
+    Ok(json!({
+        "damaged": done.len(),
+        "unresolved": unresolved,
+        "replaced": done.iter().map(|(path, other)| json!({"path": path, "replacement": other})).collect::<Vec<_>>(),
+    }))
+}
+
 pub fn verify_json(path: &str, want: Option<&str>, only: Option<&str>) -> Result<Value, String> {
     Nup::verify_json(path, want, only)
 }
@@ -1002,5 +1152,24 @@ mod tests {
         assert_eq!(verify["bad"], 0);
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn finds_and_replaces_damaged_zs_files() {
+        let root =
+            std::env::temp_dir().join(format!("hookshot-rust-stand-in-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let damaged = zstd::stream::encode_all(&b"good texture"[..], 0).unwrap();
+        fs::write(root.join("a_Nrm.zs"), vec![0u8; damaged.len()]).unwrap();
+        fs::write(root.join("b_Nrm.zs"), &damaged).unwrap();
+        fs::write(root.join("unrelated.bin"), b"not a texture").unwrap();
+        assert_eq!(damaged_files(&root).unwrap(), vec!["a_Nrm.zs"]);
+        let done = stand_in_damaged(&root, None).unwrap();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].0, "a_Nrm.zs");
+        assert_eq!(done[0].1.as_deref(), Some("b_Nrm.zs"));
+        assert_eq!(fs::read(root.join("a_Nrm.zs")).unwrap(), damaged);
+        let _ = fs::remove_dir_all(root);
     }
 }
