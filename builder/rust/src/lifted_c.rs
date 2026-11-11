@@ -50,26 +50,6 @@ pub fn spans(text: &str) -> Vec<Span<'_>> {
         .collect()
 }
 
-/// The definitions, and a note line just above one, as split_hot keeps them.
-pub fn definitions(text: &str) -> Vec<(&str, Option<&str>)> {
-    let mut out = Vec::new();
-    let mut note = None;
-    for line in text.split_inclusive('\n') {
-        let clean = line.trim_end_matches(['\n', '\r']);
-        if clean.starts_with("/* ") && clean.ends_with(" */") {
-            note = Some(clean);
-            continue;
-        }
-        match definition(clean) {
-            Some(address) => {
-                out.push((address, note.take()));
-            }
-            None => note = None,
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

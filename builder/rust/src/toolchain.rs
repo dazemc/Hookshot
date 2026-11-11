@@ -166,15 +166,6 @@ pub fn native_link(host: bool) -> Vec<String> {
     Vec::new()
 }
 
-/// A link.exe-style option as a compiler argument.
-pub fn link_opt(option: &str) -> String {
-    if mingw(false).is_some() {
-        format!("-Wl,-Xlink={option}")
-    } else {
-        format!("-Wl,{option}")
-    }
-}
-
 fn physical_memory() -> Option<u64> {
     if cfg!(windows) {
         return windows_memory();
@@ -239,13 +230,15 @@ pub fn default_jobs(gb_per_job: f64) -> usize {
 }
 
 pub fn json() -> Value {
+    let clang = find("clang", false);
     json!({
         "windows": windows(),
         "linux": !windows(),
         "mingw": mingw(false).map(|path| path.to_string_lossy().into_owned()),
         "target": native_target(false),
         "link": native_link(false),
-        "clang": find("clang", false).to_string_lossy(),
+        "clang": clang.to_string_lossy(),
+        "clang_ready": need(&clang).is_ok(),
         "clang_host": find("clang", true).to_string_lossy(),
         "default_jobs": default_jobs(3.5),
     })
