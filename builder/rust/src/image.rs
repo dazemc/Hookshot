@@ -369,6 +369,157 @@ impl Image {
         self.names = names;
     }
 
+    /// Function [start, end) spans from every module's .eh_frame_hdr.
+    pub fn fde_spans(&self) -> Vec<(u64, u64)> {
+        let mut spans = Vec::new();
+        for module in &self.modules {
+            let (start, end) = module.nso.eh_frame_hdr;
+            if end <= start {
+                continue;
+            }
+            let image = &module.nso.image;
+            let Some(head) = image.get(start..start + 4) else {
+                continue;
+            };
+            if head[0] != 1 || head[3] != 0x3B || head[2] != 0x03 {
+                continue;
+            }
+            let Some(count) = image
+                .get(start + 8..start + 12)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+            else {
+                continue;
+            };
+            for i in 0..count as usize {
+                let at = start + 12 + 8 * i;
+                let (Some(loc), Some(fde)) = (
+                    image
+                        .get(at..at + 4)
+                        .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap())),
+                    image
+                        .get(at + 4..at + 8)
+                        .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap())),
+                ) else {
+                    continue;
+                };
+                let loc = start as i64 + loc as i64;
+                let fde = start as i64 + fde as i64;
+                if fde < 0 || fde + 16 > image.len() as i64 {
+                    continue;
+                }
+                let at = fde as usize;
+                let Some(length) = image
+                    .get(at..at + 4)
+                    .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                else {
+                    continue;
+                };
+                let Some(cie) = image
+                    .get(at + 4..at + 8)
+                    .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                else {
+                    continue;
+                };
+                let Some(begin) = image
+                    .get(at + 8..at + 12)
+                    .map(|bytes| i32::from_le_bytes(bytes.try_into().unwrap()))
+                else {
+                    continue;
+                };
+                let Some(range) = image
+                    .get(at + 12..at + 16)
+                    .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                else {
+                    continue;
+                };
+                if length < 12 || cie == 0 || fde + 8 + begin as i64 != loc {
+                    continue;
+                }
+                spans.push((
+                    module.base + loc as u64,
+                    module.base + loc as u64 + range as u64,
+                ));
+            }
+        }
+        spans.sort();
+        spans
+    }
+
+    /// Entries at code addresses the code itself builds with ADR or
+    /// ADRP+ADD, except targets strictly inside an unwind-covered function.
+    pub fn add_adr_entries(&mut self, max_ahead: usize) -> (usize, usize, usize) {
+        let spans = self.fde_spans();
+        let mut targets = HashSet::new();
+        for module in &self.modules {
+            let Some(text) = module.nso.segments.first() else {
+                continue;
+            };
+            let start = text.offset as usize;
+            let end = (text.offset + text.size) as usize;
+            let Some(bytes) = module.nso.image.get(start..end) else {
+                continue;
+            };
+            let words: Vec<u32> = bytes
+                .chunks_exact(4)
+                .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+                .collect();
+            for (i, word) in words.iter().copied().enumerate() {
+                let pc = module.base + (start + 4 * i) as u64;
+                if word & 0x9F00_0000 == 0x1000_0000 {
+                    let imm = (((word >> 5) & 0x7FFFF) << 2) | ((word >> 29) & 3);
+                    let imm = if imm & (1 << 20) != 0 {
+                        imm as i64 - (1 << 21)
+                    } else {
+                        imm as i64
+                    };
+                    targets.insert(pc.wrapping_add(imm as u64));
+                } else if word & 0x9F00_0000 == 0x9000_0000 {
+                    let imm = (((word >> 5) & 0x7FFFF) << 2) | ((word >> 29) & 3);
+                    let imm = if imm & (1 << 20) != 0 {
+                        imm as i64 - (1 << 21)
+                    } else {
+                        imm as i64
+                    };
+                    let page = (pc & !0xFFF).wrapping_add((imm << 12) as u64);
+                    for ahead in 1..=max_ahead {
+                        let Some(other) = words.get(i + ahead).copied() else {
+                            break;
+                        };
+                        let add =
+                            other & 0xFFC0_0000 == 0x9100_0000 && (other >> 5) & 31 == word & 31;
+                        if add {
+                            targets.insert(page.wrapping_add(((other >> 10) & 0xFFF) as u64));
+                        }
+                    }
+                }
+            }
+        }
+        let text_ranges: Vec<(u64, u64)> = self.code.iter().map(|(lo, hi, _)| (*lo, *hi)).collect();
+        let starts: HashSet<u64> = spans.iter().map(|(start, _)| *start).collect();
+        let mut refs: Vec<u64> = targets
+            .into_iter()
+            .filter(|target| {
+                target & 3 == 0
+                    && text_ranges
+                        .iter()
+                        .any(|(lo, hi)| *lo <= *target && *target < *hi)
+            })
+            .collect();
+        refs.sort_unstable();
+        refs.dedup();
+        let before = self.entries.len();
+        for target in refs.iter().copied() {
+            let inside = spans
+                .iter()
+                .any(|(start, end)| *start <= target && target < *end)
+                && !starts.contains(&target);
+            if !inside && self.in_code(target) {
+                self.entries.insert(target);
+            }
+        }
+        (refs.len(), self.entries.len() - before, spans.len())
+    }
+
     pub fn json(&self) -> Value {
         json!({
             "base": self.base,
@@ -426,6 +577,12 @@ impl Image {
     pub fn names(&self) -> &BTreeMap<u64, String> {
         &self.names
     }
+}
+
+pub fn adr_json(exefs: &str, aslr: u64, hle: &[String], skip: &[String]) -> Result<Value, String> {
+    let mut image = Image::build(Path::new(exefs), aslr, false, hle, skip)?;
+    let (refs, new, spans) = image.add_adr_entries(4);
+    Ok(json!({"refs": refs, "new": new, "spans": spans, "entries": image.entries.len()}))
 }
 
 pub fn build_json(

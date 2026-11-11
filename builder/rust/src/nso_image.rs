@@ -47,6 +47,7 @@ pub struct Nso {
     pub segments: Vec<Segment>,
     pub bss: (usize, usize),
     pub bss_size: usize,
+    pub eh_frame_hdr: (usize, usize),
     pub mod0: usize,
     pub module_object: usize,
     pub dynamic: HashMap<String, Vec<u64>>,
@@ -219,6 +220,7 @@ impl Nso {
             segments,
             bss: (0, 0),
             bss_size,
+            eh_frame_hdr: (0, 0),
             mod0: 0,
             module_object: 0,
             dynamic: HashMap::new(),
@@ -262,7 +264,7 @@ impl Nso {
         let eh_e = i32_at(&self.image, m + 20).ok_or("short MOD0")? as i64;
         let modobj = i32_at(&self.image, m + 24).ok_or("short MOD0")? as i64;
         self.bss = ((m as i64 + bss_s) as usize, (m as i64 + bss_e) as usize);
-        let _eh_frame = ((m as i64 + eh_s) as usize, (m as i64 + eh_e) as usize);
+        self.eh_frame_hdr = ((m as i64 + eh_s) as usize, (m as i64 + eh_e) as usize);
         self.module_object = (m as i64 + modobj) as usize;
         if self.image.len() < self.bss.1 {
             self.image.resize(self.bss.1, 0);
@@ -519,6 +521,7 @@ mod tests {
             segments: Vec::new(),
             bss: (0, 0),
             bss_size: 0,
+            eh_frame_hdr: (0, 0),
             mod0: 0,
             module_object: 0,
             dynamic: HashMap::from([("RELR".into(), vec![0x20]), ("RELRSZ".into(), vec![16])]),

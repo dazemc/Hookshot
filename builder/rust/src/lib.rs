@@ -164,6 +164,36 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.check_exefs" => nso::check_json(&string(&request, "exefs").unwrap_or_default()),
         "nso.load" => nso_image::json(&string(&request, "exefs").unwrap_or_default()),
+        "image.adr" => {
+            let hle: Vec<String> = request
+                .get("hle")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let skip: Vec<String> = request
+                .get("skip")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            image::adr_json(
+                &string(&request, "exefs").unwrap_or_default(),
+                request.get("aslr").and_then(Value::as_u64).unwrap_or(0),
+                &hle,
+                &skip,
+            )
+        }
         "image.build" => {
             let hle: Vec<String> = request
                 .get("hle")
