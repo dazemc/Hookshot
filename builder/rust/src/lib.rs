@@ -5,6 +5,7 @@
 //! released by `hookshot_engine_free`. The same commands are available from
 //! the CLI for tests and for development without Flutter.
 
+mod compile;
 mod diagnostics;
 mod disk;
 mod gamescope;
@@ -141,6 +142,7 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "out").unwrap_or_default(),
             &string(&request, "work").unwrap_or_default(),
         ),
+        "build.compile_one" => compile::compile_one_json(&request, &kit::root()),
         "build.shaders" => shader::census_json(
             &string(&request, "romfs").unwrap_or_default(),
             string(&request, "out").as_deref(),
