@@ -460,19 +460,18 @@ def file_progress(verb, clock=time.monotonic):
 
 
 HEADS = ".hookshot_romfs_heads"   # (the extraction's damaged .zs list, under the stamp of the unpack that made it)
-DAMAGED_FILES = "hookshot_damaged_files.txt"  # (the game-folder note from #2254)
-DAMAGED_FILES_LEGACY = "damaged_files.txt"     # (kept for Flutter builds made before the upstream filename was known)
+DAMAGED_NOTE = "hookshot_damaged_files.txt"   # (in the game folder: the damaged game files the last unpack replaced)
+DAMAGED_FILES = DAMAGED_NOTE                  # (the name the Flutter builder and the older tests use)
+DAMAGED_FILES_LEGACY = "damaged_files.txt"    # (the name earlier fork builds wrote)
 
 
 def read_stamp(path):
-    """Read a cache stamp as UTF-8, or as the Windows code page used by older builders.
-
-    Decode exactly or not at all: a replaced character could make a different .nup
-    name match and incorrectly reuse its extraction.
-    """
+    """An unpack's stamp, which holds the .nup's name: UTF-8, or the Windows code page a builder before #2246 wrote it in.
+    Decoded exactly or not at all: a replaced letter would let another .nup's name match, and its unpack be skipped. A
+    stamp that cannot be read is "", which no unpack's stamp equals"""
     with open(path, "rb") as f:
         raw = f.read()
-    for encoding in ("utf-8", locale.getencoding()):
+    for encoding in ("utf-8", locale.getencoding()):   # (getencoding: the code page also in Python's UTF-8 mode)
         try:
             return raw.decode(encoding)
         except UnicodeDecodeError:
@@ -481,9 +480,8 @@ def read_stamp(path):
 
 
 def write_stamp(path, stamp):
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    with open(path, "w", encoding="utf-8", newline="") as f:   # (not the code page: a name outside it stopped the build, #2246)
         f.write(stamp)
-
 
 def keep_heads(out, game, stamp):
     """nup.py's list of the romfs .zs files that do not start as zstd (its HEADS_NAME, beside the extracted romfs), kept in the
@@ -500,11 +498,13 @@ def keep_heads(out, game, stamp):
         f.write(stamp.strip() + "\n" + listed)
 
 
+
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
     leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
-    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under. Returns the (damaged, stand-in) pairs this check found, and writes
-    them to a note in the game folder for the Builder warning and issue triage; a clean check removes previous notes."""
+    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under. Returns the
+    (damaged, stand-in) pairs this check found; writes the same list to hookshot_damaged_files.txt and the legacy
+    damaged_files.txt; a clean check removes both."""
     good = os.path.join(out, ".hookshot_romfs")
     checked = os.path.join(out, ".hookshot_romfs_checked")
     if not os.path.isfile(good) or not os.path.isdir(romfs):
@@ -515,8 +515,7 @@ def stand_in_damaged_files(out, romfs):
     if os.path.isfile(checked) and read_stamp(checked) == checked_stamp:
         return []
     if os.path.isfile(checked):
-        # Old markers also recorded scans with damaged files that had no donor.
-        # Recheck those once instead of trusting them forever.
+        # Earlier checks also marked files with no replacement as checked.
         os.remove(checked)
     import nup
     heads = os.path.join(out, HEADS)
@@ -534,37 +533,37 @@ def stand_in_damaged_files(out, romfs):
         done = nup.stand_in_damaged(romfs, file_progress("checked"))
     else:   # (found while the .nup was extracted: no file opened again)
         done = nup.stand_in_damaged(romfs, damaged=[os.path.normpath(os.path.join(romfs, rel)) for rel in known])
-    if done:
-        print("Your game dump is incomplete: %d game file%s in it %s damaged. Similar files are used where available, "
-              "with different textures in those places. Dump the game again for the original files:" %
-              (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are"), flush=True)
-        for path, other in done:
-            print("  %s: %s" % (os.path.relpath(path, romfs),
-                                "in its place " + os.path.basename(other) if other else "nothing similar found, left as it is"),
-                  flush=True)
-        unresolved = sum(other is None for _, other in done)
-        if unresolved:
-            fail("The game dump still has %d damaged file%s with no replacement. The build stopped before compiling. "
-                 "Dump the game again and select the complete dump in Hookshot Builder. The affected files are listed above." %
-                 (unresolved, "" if unresolved == 1 else "s"))
+    note = os.path.join(out, DAMAGED_NOTE)
+    if not done:
+        for name in (DAMAGED_NOTE, DAMAGED_FILES_LEGACY):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(out, name))
+        write_stamp(checked, checked_stamp)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(heads)
+        return []
+    lines = ["Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
+             "one 23.3 GB). Similar files are used where available, "
+             "with different textures in those places. Dump the game again for the original files:" %
+             (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are")]
+    for path, other in done:
+        lines.append("  %s: %s" % (os.path.relpath(path, romfs),
+                                   "in its place " + os.path.basename(other) if other else "no replacement found; build cannot continue"))
+    for line in lines:
+        print(line, flush=True)
+    body = "\n".join(lines) + "\n"
+    for name in (DAMAGED_NOTE, DAMAGED_FILES_LEGACY):
+        with open(os.path.join(out, name), "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+    unresolved = sum(other is None for _, other in done)
+    if unresolved:
+        fail("The game dump still has %d damaged file%s with no replacement. The build stopped before compiling. "
+             "Dump the game again and select the complete dump in Hookshot Builder. The affected files are listed above." %
+             (unresolved, "" if unresolved == 1 else "s"))
     write_stamp(checked, checked_stamp)
     with contextlib.suppress(FileNotFoundError):
         os.remove(heads)
-    if not done:
-        for name in (DAMAGED_FILES, DAMAGED_FILES_LEGACY):
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(os.path.join(out, name))
-        return []
-    note = ["# The game files damaged in this dump and their stand-ins.\n"]
-    for path, other in done:
-        note.append("%s -> %s\n" % (os.path.relpath(path, romfs).replace(os.sep, "/"),
-                                     os.path.basename(other) if other else "(no stand-in found)"))
-    body = "".join(note)
-    for name in (DAMAGED_FILES, DAMAGED_FILES_LEGACY):
-        with open(os.path.join(out, name), "w", encoding="utf-8", newline="\n") as f:
-            f.write(body)
     return done
-
 
 def check_cache_paths(out, paths):
     """Resolve generated paths and reject symbolic links/reparse points before replacement."""
@@ -1322,6 +1321,8 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
         not_prepared("the game printed nothing for %s and was stopped" % span(silence))
     elif code == 3:
         not_prepared("no usable Vulkan here")
+    elif code == 4:   # (gpu/vk/vk_main.cpp prepare_watchdog: nothing moved for minutes, the driver stuck after a fault in it)
+        not_prepared("the GPU driver stopped responding")
     elif code:
         not_prepared("the game stopped with exit status %d" % code)
     return code

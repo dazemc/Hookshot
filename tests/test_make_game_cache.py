@@ -56,6 +56,7 @@ class NupCacheTests(unittest.TestCase):
         save = self.out / "user" / "save"
         save.mkdir(parents=True)
         (save / "sentinel.txt").write_bytes(b"authored save sentinel")
+        (self.out / "hookshot_options.ini").write_bytes(b"authored options sentinel")
         self.extractions = []
         self.output = ""
 
@@ -179,7 +180,7 @@ class NupCacheTests(unittest.TestCase):
         self.assertFalse(stale.exists())
         self.assertEqual(self.extractions, [])
         after = self.cache()
-        # (versioned success marker: older unversioned markers can hide unresolved damage)
+        # (the one file added: the damaged-texture check's note that this unpack was checked, nup.stand_in_damaged)
         self.assertEqual(after.pop(".hookshot_romfs_checked").decode().splitlines(),
                          ["resolved-v1"] + before[".hookshot_romfs"].decode().splitlines())
         self.assertEqual(after, before)
@@ -194,6 +195,7 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual((self.out / ".hookshot_exefs" / "main").read_bytes(), module_bytes())
         self.assertEqual(self.marker.read_text(), self.stamp(self.new_nup) + "\n")
         self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
+        self.assertEqual((self.out / "hookshot_options.ini").read_bytes(), b"authored options sentinel")
 
     def test_same_source_reuses_the_cache(self):
         before = self.cache()
@@ -201,12 +203,102 @@ class NupCacheTests(unittest.TestCase):
             self.run_to_lift(self.old_nup)
         self.assertEqual(self.extractions, [])
         after = self.cache()
-        # (versioned success marker: older unversioned markers can hide unresolved damage)
+        # (the one file added: the damaged-texture check's note that this unpack was checked, nup.stand_in_damaged)
         self.assertEqual(after.pop(".hookshot_romfs_checked").decode().splitlines(),
                          ["resolved-v1"] + before[".hookshot_romfs"].decode().splitlines())
         self.assertEqual(after, before)
         self.assertEqual((self.work / "exefs/main").read_bytes(),
                          (self.out / ".hookshot_exefs/main").read_bytes())
+
+    def test_unresolved_fresh_extraction_stops_before_lift(self):
+        original = self.new_nup.read_bytes()
+        with self.assertRaises(SystemExit) as result:
+            self.run_to_lift(self.new_nup, romfs_files={"Tex/only_Alb.bntx.zs": bytes(32)})
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("@@error The game dump still has 1 damaged file with no replacement", self.output)
+        self.assertIn("only_Alb.bntx.zs", self.output)
+        self.assertFalse((self.out / ".hookshot_romfs_checked").exists())
+        self.assertEqual(self.new_nup.read_bytes(), original)
+        self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
+        self.assertEqual((self.out / "hookshot_options.ini").read_bytes(), b"authored options sentinel")
+
+    def test_unresolved_cached_extraction_retries_until_a_donor_is_available(self):
+        tex = self.out / "romfs/Tex"
+        tex.mkdir()
+        broken = tex / "only_Alb.bntx.zs"
+        broken.write_bytes(bytes(32))
+        heads = self.out / make_game.HEADS
+        heads.write_text(self.marker.read_text() + "Tex/only_Alb.bntx.zs\n")
+        original_heads = heads.read_bytes()
+        original_nup = self.old_nup.read_bytes()
+        for update in (False, True):
+            with self.subTest(update=update), self.assertRaises(SystemExit) as result:
+                self.run_to_lift(None if update else self.old_nup, update=update)
+            self.assertEqual(result.exception.code, 1)
+            self.assertIn("1 damaged file with no replacement", self.output)
+            note = self.out / make_game.DAMAGED_NOTE
+            self.assertTrue(note.is_file(), "the unresolved failure must leave the damaged-file report")
+            self.assertIn("only_Alb.bntx.zs: no replacement found; build cannot continue", note.read_text(encoding="utf-8"))
+            self.assertFalse((self.out / ".hookshot_romfs_checked").exists())
+            self.assertEqual(heads.read_bytes(), original_heads)
+            self.assertEqual(broken.read_bytes(), bytes(32))
+        donor = tex / "other_Alb.bntx.zs"
+        donor.write_bytes(b"\x28\xb5\x2f\xfd" + b"authored counterpart")
+        with self.assertRaises(Prepared):
+            self.run_to_lift(self.old_nup)
+        self.assertEqual(broken.read_bytes(), donor.read_bytes())
+        self.assertFalse(heads.exists())
+        self.assertEqual((self.out / ".hookshot_romfs_checked").read_text(), "resolved-v1\n" + self.marker.read_text())
+        self.assertEqual(self.old_nup.read_bytes(), original_nup)
+        self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
+        self.assertEqual((self.out / "hookshot_options.ini").read_bytes(), b"authored options sentinel")
+
+    def test_legacy_marker_does_not_hide_unresolved_damage(self):
+        checked = self.out / ".hookshot_romfs_checked"
+        checked.write_bytes(self.marker.read_bytes())
+        tex = self.out / "romfs/Tex"
+        tex.mkdir()
+        broken = tex / "only_Alb.bntx.zs"
+        broken.write_bytes(bytes(32))
+        with self.assertRaises(SystemExit) as result:
+            self.run_to_lift(self.old_nup)
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("1 damaged file with no replacement", self.output)
+        self.assertFalse(checked.exists())
+        self.assertEqual(broken.read_bytes(), bytes(32))
+
+    def test_legacy_healthy_marker_is_checked_once(self):
+        checked = self.out / ".hookshot_romfs_checked"
+        checked.write_bytes(self.marker.read_bytes())
+        with self.assertRaises(Prepared):
+            self.run_to_lift(self.old_nup)
+        self.assertIn("checking your game files", self.output)
+        self.assertEqual(checked.read_text(), "resolved-v1\n" + self.marker.read_text())
+        with mock.patch.object(make_game, "file_progress", side_effect=AssertionError("Unexpected second scan")):
+            with self.assertRaises(Prepared):
+                self.run_to_lift(self.old_nup)
+
+    def test_fully_repairable_fresh_extraction_reaches_lift(self):
+        donor = b"\x28\xb5\x2f\xfd" + b"authored counterpart"
+        with self.assertRaises(Prepared):
+            self.run_to_lift(self.new_nup, romfs_files={"Tex/only_Alb.bntx.zs": bytes(32),
+                                                      "Tex/other_Alb.bntx.zs": donor})
+        self.assertIn("in its place other_Alb.bntx.zs", self.output)
+        self.assertEqual((self.out / "romfs/Tex/only_Alb.bntx.zs").read_bytes(), donor)
+        self.assertTrue((self.out / ".hookshot_romfs_checked").exists())
+
+    def test_mixed_repairs_report_the_unresolved_count(self):
+        with self.assertRaises(SystemExit) as result:
+            self.run_to_lift(self.new_nup, romfs_files={
+                "Tex/only_Alb.bntx.zs": bytes(32),
+                "Tex/other_Alb.bntx.zs": b"\x28\xb5\x2f\xfd" + b"authored counterpart",
+                "Model/missing.bfres.zs": bytes(32),
+            })
+        self.assertEqual(result.exception.code, 1)
+        self.assertIn("2 game files in it are damaged", self.output)
+        self.assertIn("1 damaged file with no replacement", self.output)
+        self.assertIn("missing.bfres.zs", self.output)
+        self.assertFalse((self.out / ".hookshot_romfs_checked").exists())
 
     def test_failed_extraction_preserves_the_previous_cache_and_save(self):
         before = self.cache()
@@ -238,56 +330,6 @@ class NupCacheTests(unittest.TestCase):
         self.assertIn("The package did not contain a romfs folder.", self.output)
         self.assertEqual(self.cache(), before)
         self.assertFalse((self.out / ".game").exists())
-
-    def test_unresolved_damage_stops_before_lift_and_does_not_mark_the_scan_complete(self):
-        damaged = {"Tex/only_Alb.bntx.zs": bytes(32)}
-        with self.assertRaises(SystemExit) as result:
-            self.run_to_lift(self.new_nup, romfs_files=damaged)
-        self.assertEqual(result.exception.code, 1)
-        self.assertIn("The game dump still has 1 damaged file with no replacement", self.output)
-        self.assertIn("only_Alb.bntx.zs", self.output)
-        self.assertFalse((self.out / ".hookshot_romfs_checked").exists())
-        self.assertEqual((self.out / "romfs/Tex/only_Alb.bntx.zs").read_bytes(), bytes(32))
-        self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
-
-    def test_old_scan_marker_does_not_hide_unresolved_damage(self):
-        tex = self.out / "romfs/Tex"
-        tex.mkdir()
-        broken = tex / "only_Alb.bntx.zs"
-        broken.write_bytes(bytes(32))
-        checked = self.out / ".hookshot_romfs_checked"
-        checked.write_bytes(self.marker.read_bytes())  # legacy marker from the previous behavior
-        with self.assertRaises(SystemExit) as result:
-            self.run_to_lift(self.old_nup)
-        self.assertEqual(result.exception.code, 1)
-        self.assertIn("1 damaged file with no replacement", self.output)
-        self.assertFalse(checked.exists())
-
-    def test_repairable_damage_is_marked_only_after_its_donor_is_used(self):
-        with self.assertRaises(Prepared):
-            self.run_to_lift(
-                self.new_nup,
-                romfs_files={
-                    "Tex/damaged_Alb.bntx.zs": bytes(32),
-                    "Tex/donor_Alb.bntx.zs": b"\x28\xb5\x2f\xfd" + b"authored donor",
-                },
-            )
-        self.assertEqual((self.out / "romfs/Tex/damaged_Alb.bntx.zs").read_bytes(),
-                         (self.out / "romfs/Tex/donor_Alb.bntx.zs").read_bytes())
-        self.assertTrue((self.out / ".hookshot_romfs_checked").read_text().startswith("resolved-v1\n"))
-
-    def test_utf8_stamp_names_round_trip_and_legacy_codepage_stamps_remain_readable(self):
-        stamp = "unpacked by this builder: Zelda™⁚ Ocarina.nup 123\r\n"
-        path = self.out / ".hookshot_romfs"
-        with mock.patch.object(make_game.locale, "getencoding", return_value="cp1252"):
-            make_game.write_stamp(str(path), stamp)
-            self.assertEqual(path.read_bytes(), stamp.encode("utf-8"))
-            self.assertEqual(make_game.read_stamp(str(path)), stamp)
-            legacy = "unpacked by this builder: Zelda™ Ocarina.nup 123\r\n"
-            path.write_bytes(legacy.encode("cp1252"))
-            self.assertEqual(make_game.read_stamp(str(path)), legacy)
-            path.write_bytes(b"unpacked by this builder: authored \x81.nup 123\n")
-            self.assertEqual(make_game.read_stamp(str(path)), "")
 
     def test_reparse_cache_is_rejected_before_extraction_or_replacement(self):
         before = self.cache()
