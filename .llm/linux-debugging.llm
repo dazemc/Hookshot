@@ -1,0 +1,108 @@
+# Linux debugging and observability
+
+This file is for development observation. It does not authorize building or running the full game.
+A game run needs explicit user authorization and a supported local game copy.
+
+## Current build limitation
+
+The normal Linux build is release-oriented:
+
+- `-g0` removes debug symbols.
+- `-DNDEBUG` disables assertions.
+- Host and Vulkan backend objects use hardcoded `-O2`.
+- `RX_RELEASE=1` selects release shader behavior.
+
+A Linux development/debug profile should be opt-in and clearly separated from release builds.
+
+## Proposed development-build controls
+
+Introduce a documented development-build contract, for example:
+
+- `HOOKSHOT_DEV=1`
+  - Selects the development build profile.
+- `HOOKSHOT_DEBUG_SYMBOLS=1`
+  - Emits usable debug symbols instead of `-g0`.
+- `HOOKSHOT_DEV_OPT=<level>`
+  - Allows a lower optimization level for selected host/runtime components.
+- `HOOKSHOT_KEEP_SYMBOLS=1`
+  - Preserves maps and unstripped development artifacts in ignored work directories.
+
+Do not change release defaults. Development flags must not leak into player builds.
+
+## Runtime observation switches
+
+Host and profiling:
+
+- `HOS_TRACE=1`
+- `HOS_PROFILE=<seconds>`
+- `HOS_SAMPLE=<thread>`
+- `HOS_SAMPLE_FILE=<stack file>`
+- `HOS_SAMPLE_ALL=<file>`
+- `HOS_THREAD_TIMES=<seconds>`
+- `HOS_FPS_LOG=1`
+- `HOS_FPS_MAX=<61-1000>`
+- `HOS_PRESENT_TRACE=<csv>`
+- `HOS_HEADLESS=1`
+- `HOS_WINDOW_SIZE=<w>x<h>`
+- `HOS_INPUT_SCRIPT=<presses>`
+- `HOS_INPUT_LIVE=<file>`
+
+Vulkan and GPU:
+
+- `RX_VK_VALIDATION=1`
+- `RX_VK_PROF_ALL=1`
+- `RX_VK_PASS_TIMING=1`
+- `RX_VK_PASS_TIMING=2`
+- `RX_VK_FRAME_LOG=<csv>`
+- `RX_VK_SLOW_LOG=<ms>`
+- `RX_VK_FRAMELOG=<file>`
+- `RX_VK_SHOTS=<dir>`
+- `RX_VK_SHOT_EVERY=<n>`
+- `RX_VK_DUMP=<present>[+<count>]`
+- `RX_VK_DUMP_DIR=<dir>`
+- `RX_VK_PROBE=1`
+- `RX_VK_HANG_DUMP=<file>`
+- `RX_VK_NOOPT=1`
+
+Shader and startup behavior:
+
+- `RX_VK_PRECOMPILE=0`
+- `RX_VK_PRECOMPILE=1`
+- `RX_VK_NO_PROGRAM_CACHE=1`
+- `HOOKSHOT_NO_UPDATE_CHECK=1`
+
+Memory and display paths:
+
+- `RX_VK_MIRROR=0`
+- `RX_VK_VRAM_MB=<MB>`
+- `RX_VK_COMPACT=1`
+- `RX_VK_WB_DIFF=0`
+- `HOS_VCORES=0`
+- `HOS_CORES=<1..8>`
+
+Confirm exact semantics in `docs/development.md` and source comments before using a switch in a report.
+
+## Game-run observation workflow
+
+For an authorized game run:
+
+1. Record the exact builder/game version.
+2. Record CPU, GPU, driver, kernel, distro, display server, and SDL path.
+3. Check `/dev/udmabuf` access and udmabuf size limit.
+4. Start from a known game folder and settings.
+5. Use scripted input where possible for reproducibility.
+6. Capture:
+   - `hookshot_log.txt`
+   - FPS/present traces
+   - GPU pass timing for suspected GPU bottlenecks
+   - CPU profiles for suspected host bottlenecks
+   - Screenshots or frame dumps only when they add signal
+7. Store all captures outside git.
+8. Add a row to `docs/tested-configurations.md` for measured runs.
+
+Game-free work comes first:
+
+- Targeted regression tests.
+- Full `tests/run_all.py`.
+- `scripts/linux/check_player_build.sh` for packaged-builder changes.
+- `nx2/build.py --standalone --dry-run` for compile-input validation.

@@ -1,0 +1,67 @@
+# Linux runtime map and review
+
+## Runtime architecture
+
+- Linux output is an ELF executable plus `hookshot_vk.so`.
+- The only Linux renderer is Vulkan.
+- Window, sound, and controller input go through SDL2.
+- Windows-only APIs are reimplemented under `host/posix`.
+- Media Foundation AV1 decoding is replaced with FFmpeg plus dav1d where available.
+- WebGPU renderer stubs remain only so missing-renderer behavior is explicit; they draw nothing on Linux.
+
+## Important Linux runtime files
+
+| File | Role | Linux note |
+|---|---|---|
+| `host/posix/display_sdl.c` | SDL window creation, input, fullscreen, Wayland/X11 behavior | Contains SDL driver ordering and libdecor handling. |
+| `host/posix/win32_posix.c` | POSIX implementation of needed Win32 behavior | Used by host and Vulkan backend POSIX support. |
+| `host/posix/linux_stubs.c` | Linux replacements for unavailable Windows/media/WebGPU paths | Missing Vulkan startup leaves an explicit black-window diagnostic path. |
+| `host/posix/prof.c` | Linux CPU profiling and sampling | Backs `HOS_PROFILE`, thread timing, and stack sampling. |
+| `host/hos_main.c` | Startup, environment handling, logging, shader preparation entry | Controls log rotation and startup diagnostics. |
+| `host/hos_sdl.c` | Shared SDL identity and behavior | Sets application identity used by SDL/Wayland integration. |
+| `nx2/make_game.py:game_env` | Environment used when tools start the game | Removes builder/AppImage-specific variables so the game uses its own SDL and system Vulkan. |
+| `gpu/vk/vk_main.cpp` | Vulkan device, layers, extensions, startup | Enables validation layers and external-memory paths. |
+| `gpu/vk/vk_memory.cpp` | Guest-memory import and pool lifecycle | Contains udmabuf fast path and host-pointer fallback. |
+| `gpu/vk/vk_replay.cpp` | GPU command replay and frame timing | Contains replay performance behavior and frame logging. |
+| `gpu/vk/vk_texture.cpp` | Texture cache, VRAM behavior, eviction | Central to texture corruption and VRAM pressure reports. |
+| `gpu/vk/vk_gprof.cpp` | GPU pass/program timing diagnostics | Backs `RX_VK_PASS_TIMING`. |
+
+## Linux performance findings
+
+1. Guest-memory import path:
+   - Preferred: `/dev/udmabuf` dma-buf imports with no copying.
+   - Fallback: host-pointer imports, much slower in important AMD/RADV cases.
+   - Watch `/dev/udmabuf` availability, permissions, and `size_limit_mb`.
+2. AMD submission behavior:
+   - Imported host memory can impose repeated per-submission costs.
+   - Retired pools, merges, writebacks, and barriers are prime suspects for long-play slowdowns.
+3. Texture/VRAM behavior:
+   - Texture budget, eviction, render-target sweeps, and retired-pool accounting matter more than raw VRAM size alone.
+   - Long-play texture corruption reports need allocation, retirement, and remake telemetry.
+4. Display path:
+   - Prefer Wayland with X11 fallback through SDL hints.
+   - Gamescope behavior differs from plain Wayland/X11.
+   - Fullscreen, V-Sync, frame pacing, frame generation, and upscaling interact strongly.
+5. Shader/pipeline warmup:
+   - First-run shader preparation and pipeline compilation can dominate early performance.
+   - Pipeline-state lists and prepared shaders reduce, but do not eliminate, first-play hitches.
+
+## Linux bug-prone areas
+
+1. Wayland/libdecor startup:
+   - SDL2 on Wayland needs the libdecor hint before SDL initialization.
+   - The game-free regression test is sensitive to compiler warning behavior.
+2. Missing renderer failure mode:
+   - Linux has no fallback renderer.
+   - Backend load/link failures must produce a clear diagnostic, not a silent black window.
+3. AV1 movie behavior:
+   - Without dav1d, AV1 movies may be skipped.
+   - FFmpeg configuration differences across distros can change movie behavior.
+4. SDL library selection:
+   - Bundled SDL, system SDL, driver hints, and environment cleanup can change input/window behavior.
+   - Runtime environment must be validated separately from build environment.
+5. Update and launcher paths:
+   - Installed builder, AppImage-built folder, and source-checkout folder behavior differ.
+   - Fork-local update behavior needs explicit tests before release-path changes.
+6. Logs and artifacts:
+   - `hookshot_log.txt` rotation exists, but logs, screenshots, frame dumps, saves, and profiles must never enter git.

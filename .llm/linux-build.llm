@@ -1,0 +1,74 @@
+# Linux build map and review
+
+## Build pipeline
+
+1. `scripts/linux/deps.sh`
+   - Fetches/builds the pinned Linux toolchain, Python, FFmpeg/dav1d, SDL2, Vulkan headers, AppImage tools, and licenses.
+   - Output is ignored under `build-linux/deps`.
+2. `scripts/linux/appimage.sh`
+   - Builds the game-independent Vulkan backend.
+   - Adds native helpers.
+   - Packages Hookshot Builder as an AppImage under ignored `build-linux/`.
+3. `nx2/make_game.py`
+   - Full-game flow: check game, lift game code, compile, stage game folder, prepare shaders.
+   - Full-game work is gated: do not run it without explicit user authorization.
+4. `nx2/build.py`
+   - Compiles lifted game code, host runtime, and Vulkan backend.
+   - `RX_VK_ONLY=1` builds only the Vulkan backend without lifted game code.
+5. `builder/linux/hookshot_builder.py`
+   - Linux Builder UI.
+   - Can launch a previously built game folder, but cannot play without a completed game build.
+
+## Important Linux build files
+
+| File | Role | Linux note |
+|---|---|---|
+| `nx2/build.py` | Compile orchestration, object cache, memory gate, linking | `LINUX` selects ELF output, POSIX sources, SDL libraries, and sysroot behavior. |
+| `nx2/make_game.py` | Full-game orchestration, lift reuse, object pruning, shader preparation | Keeps compiled objects for faster updates; failed builds discard work-folder objects. |
+| `nx2/kit.py` | Repository and work-folder path resolution | `OOT_WORK` overrides `work/`; game dump locations come from `OOT_*` or `work/dump.txt`. |
+| `third_party/a64-kit/tools/toolchain.py` | Compiler discovery | Uses `EMSDK`; Linux builds use clang/lld and optional `HOOKSHOT_SYSROOT`. |
+| `scripts/linux/deps.sh` | Linux dependency bootstrap | Assumes some Debian/Ubuntu filesystem paths; see portability risks below. |
+| `scripts/linux/appimage.sh` | AppImage packaging | Assumes Debian-style sysroot and GCC layout; see portability risks below. |
+| `scripts/linux/check_player_build.sh` | Game-free AppImage validation | Verifies packaged builder behavior without game data. |
+| `builder/linux/linux_update.py` | Linux builder/game update logic | Some release URLs are pinned to upstream; fork behavior needs review. |
+| `builder/linux/hookshot-launch` | Start an already built game folder | Fails safely when no completed game is present. |
+| `builder/linux/hookshot-folder` | Game-folder launcher behavior | Prefers an installed builder, then falls back to starting the game binary. |
+
+## Compiler and release behavior
+
+- Most host and Vulkan objects are built with `-O2 -g0 -DNDEBUG`.
+- `--opt` changes lifted chunk optimization, but not the hardcoded host/Vulkan optimization level.
+- `RX_RELEASE=1` selects release behavior, including shader precompilation behavior.
+- `RX_MARCH` controls the x86-64 microarchitecture target.
+- `HOOKSHOT_SYSROOT` points Linux builds at an older compatible C library.
+- `HOOKSHOT_VK_PREBUILT` reuses an existing Vulkan backend instead of compiling it.
+- `HOOKSHOT_FFMPEG` selects static AppImage FFmpeg libraries; otherwise pkg-config/system FFmpeg may be used.
+- `RX_VK_ONLY=1` is the supported game-independent compile path.
+
+## Linux build risks and bugs to plan around
+
+1. Non-Debian dependency paths:
+   - `scripts/linux/deps.sh` expects Debian-style license paths for libXft/libXrender.
+   - `scripts/linux/appimage.sh` expects Debian multiarch and GCC directory layout.
+   - Needed: portable distro detection or configurable sysroot/license paths.
+2. Stale compiler cleanup is Windows-only:
+   - `stop_stray_compilers()` returns immediately on Linux.
+   - Needed: Linux detection/reporting for stale processes holding the same work folder, without unsafe automatic killing.
+3. Failed builds discard potentially good cache entries:
+   - `nx2/make_game.py` removes work-folder object caches after a failed compile/link.
+   - Needed: quarantine suspect outputs rather than wiping the cache blindly.
+4. Lift reuse is content-aware but mtime-sensitive:
+   - `lift_key()` tracks relevant inputs by content.
+   - `gen_print()` also records file sizes and mtimes.
+   - Touching or re-checking out identical lifted files can force a relift.
+   - Needed: content-only lift validation for unchanged files.
+5. Broad lift-key inputs:
+   - `lift_key()` walks large source trees and multiple file extensions.
+   - An unrelated tracked file change can invalidate the lift even if the lift never reads it.
+   - Needed: narrower dependency tracking for lift inputs.
+6. Cache invalidation fingerprint is narrow:
+   - Linux stale-object detection centers on compiler version and `stdio.h`.
+   - Needed: explicit toolchain fingerprint if a shared cache is introduced.
+7. Fork update URLs:
+   - Linux update constants can point at upstream releases.
+   - Needed: verify fork-local update behavior before changing release/update code.

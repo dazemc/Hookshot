@@ -1,0 +1,62 @@
+# Hookshot Linux LLM context index
+
+This directory contains fork-local working notes for Linux-only development.
+It does not replace `AGENTS.md`, `docs/workflow.md`, `docs/worklist.md`,
+`CONTRIBUTING.md`, or `docs/development.md`.
+
+## Read order
+
+1. `TODO.md`
+2. `AGENTS.md`
+3. `docs/workflow.md`
+4. `docs/worklist.md`
+5. `CONTRIBUTING.md`
+6. `docs/development.md`
+7. The relevant file below:
+   - `.llm/linux-build.llm`
+   - `.llm/linux-runtime.llm`
+   - `.llm/linux-debugging.llm`
+   - `.llm/linux-build-cache.llm`
+
+## Scope
+
+- Linux only.
+- Do not make Windows-specific changes unless a shared file must stay portable.
+- Do not edit `third_party/`.
+- Do not read, copy, or reference the user's game dump unless a task explicitly authorizes full-game work.
+- Build outputs, lifted code, logs, screenshots, dumps, caches, AppImages, and Python virtual environments stay out of git.
+- Relevant ignored locations include `work/`, `build-linux/`, and per-task `OOT_WORK` directories.
+
+## Baseline commands
+
+Use repository-relative paths from the repository root.
+
+```sh
+python3 -m venv work/venv
+work/venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+work/venv/bin/python -I -B tests/run_all.py
+```
+
+Game-independent Vulkan backend compile:
+
+```sh
+EMSDK="$PWD/build-linux/deps/emsdk" \
+RX_CPM="$PWD/build-linux/deps/cpm" \
+OOT_WORK="$PWD/build-linux/vk-work" \
+RX_MARCH=x86-64-v3 \
+RX_VK_ONLY=1 \
+RX_RELEASE=1 \
+build-linux/deps/python/bin/python3 -I nx2/build.py --standalone --jobs "$(nproc)"
+```
+
+Expected artifact:
+
+- `build-linux/vk-work/sa/build/hookshot_vk.so`
+
+Game-independent Linux builder UI:
+
+```sh
+build-linux/deps/python/bin/python3 -I builder/linux/hookshot_builder.py
+```
+
+Do not treat a full-game build or game launch as authorized unless the user explicitly asks for it.

@@ -1,0 +1,72 @@
+# Linux build and rebuild cache
+
+## Existing cache design
+
+- `nx2/build.py:object_key`
+  - Object identity combines source bytes, normalized flags, and header bytes.
+- `nx2/build.py:plan_jobs`
+  - Skips objects whose stamp matches the current key.
+  - Reuses objects already present in `OBJ_CACHE`.
+  - Only uncovered jobs are compiled and counted.
+- `nx2/build.py:compile_one`
+  - Revalidates stamps and cache entries.
+  - Writes new objects and stamps.
+  - Adds successful objects to the cache.
+- `nx2/make_game.py:lift_key`
+  - Skips translating the game again when lift inputs are unchanged.
+- `nx2/make_game.py:prune_object_cache`
+  - Retains objects used by the current build.
+  - Removes unused cached objects when pruning is enabled.
+- `nx2/make_game.py:_drop_stale_linux`
+  - Drops work-folder objects when system headers change.
+- `HOOKSHOT_KEEP_BUILD_FILES=1`
+  - Preserves build files for faster incremental rebuilds.
+- `HOOKSHOT_TIMES`
+  - Records per-file build times for countdown estimates.
+- `MemoryGate`
+  - Starts compilers based on available memory, not only CPU count.
+  - Linux floor is one compiler; Windows behavior differs.
+- Longest-first scheduling
+  - Compiles large/high-cost files early to avoid a slow tail.
+
+## Strengths
+
+- Content-sensitive object keys avoid recompiling identical sources.
+- Cross-target objects can be shared through the object cache.
+- Build timing data improves builder progress estimates.
+- Memory-aware scheduling reduces Linux OOM kills.
+- Failed builds deliberately avoid reusing potentially corrupt outputs.
+
+## Cache and speed gaps
+
+1. Object cache is work-folder local:
+   - Different `OOT_WORK` directories cannot share already compiled identical objects.
+   - Needed: optional shared content-addressed cache.
+2. Shared cache needs stronger identity:
+   - Object keys do not explicitly namespace every toolchain property.
+   - Linux currently relies on a compiler-version plus `stdio.h` stamp.
+   - Needed: compiler, sysroot, architecture, SDL/FFmpeg, NGX/FSR, and profile fingerprinting.
+3. Failed builds wipe the cache:
+   - A failure removes work-folder objects and cache entries.
+   - Needed: quarantine only unverified or suspect outputs.
+4. Lift reuse is mtime-sensitive:
+   - Identical lifted files with changed mtimes can force a relift.
+   - Needed: content-only lift validation.
+5. Lift inputs are broad:
+   - Changes to files the lift never reads can invalidate the lift.
+   - Needed: narrower lift dependency tracking.
+6. No shared cache accounting:
+   - Needed: size cap, LRU pruning, hit/miss telemetry, and corruption detection.
+7. External compiler-cache integration is unevaluated:
+   - ccache/sccache may help, but custom object keys already solve much of the problem.
+   - Needed: measure before adding another cache layer.
+8. Rebuild telemetry is incomplete:
+   - Needed: record why each object rebuilt: source, flags, headers, toolchain, lift, cache miss, or stale entry.
+
+## Cache design constraints
+
+- Never reuse an object across a different compiler, sysroot, architecture, or incompatible header set.
+- Never share game-derived lifted code outside the local machine.
+- Never store game data in a shared cache location that could be published or backed up.
+- Prefer hard links for cache reuse on the same filesystem; copy across filesystems.
+- Preserve correctness over speed after failed or interrupted builds.
