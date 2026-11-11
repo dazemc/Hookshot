@@ -144,6 +144,7 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "work").unwrap_or_default(),
         ),
         "build.compile_one" => compile::compile_one_json(&request, &kit::root()),
+        "build.compile_many" => compile::many_json(&request, &kit::root()),
         "build.toolchain" => Ok(toolchain::json()),
         "build.shaders" => shader::census_json(
             &string(&request, "romfs").unwrap_or_default(),

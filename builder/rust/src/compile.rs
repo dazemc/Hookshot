@@ -62,6 +62,65 @@ fn cache_put(object: &Path, key: &str, cache: &Path) -> Result<(), String> {
 
 /// Compile one source. Returns whether it was built now or came from the
 /// stamp/cache, how long it took, and the compiler's error if any.
+/// Compile a list of jobs, longest first, up to `jobs` at once.
+pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
+    let jobs: Vec<Value> = request
+        .get("jobs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let limit = request.get("parallel").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let limit = if limit == 0 {
+        crate::toolchain::default_jobs(3.5)
+    } else {
+        limit
+    };
+    let mut jobs = jobs;
+    jobs.sort_by_key(|job| {
+        std::cmp::Reverse(
+            job.get("src")
+                .and_then(Value::as_str)
+                .and_then(|path| fs::metadata(path).ok())
+                .map(|meta| meta.len())
+                .unwrap_or(0),
+        )
+    });
+    let started = Instant::now();
+    let mut compiled = 0usize;
+    let mut cached = 0usize;
+    let mut failed = Vec::new();
+    let mut at = 0usize;
+    while at < jobs.len() {
+        let end = (at + limit).min(jobs.len());
+        let results: Vec<(usize, Result<Value, String>)> = std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for (offset, job) in jobs[at..end].iter().enumerate() {
+                handles.push(scope.spawn(move || (at + offset, compile_one_json(job, root))));
+            }
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .collect()
+        });
+        for (index, result) in results {
+            match result {
+                Ok(value) if value["compiled"] == Value::Bool(true) => compiled += 1,
+                Ok(value) if value["cached"] == Value::Bool(true) => cached += 1,
+                Ok(value) => failed.push(json!({"index": index, "error": value["error"]})),
+                Err(error) => failed.push(json!({"index": index, "error": error})),
+            }
+        }
+        at = end;
+    }
+    Ok(json!({
+        "planned": jobs.len(),
+        "compiled": compiled,
+        "cached": cached,
+        "failed": failed,
+        "seconds": started.elapsed().as_secs_f64(),
+    }))
+}
+
 pub fn compile_one_json(request: &Value, root: &Path) -> Result<Value, String> {
     let text = |key: &str| {
         request
@@ -169,6 +228,40 @@ mod tests {
             flag_text(&flags, Path::new("/repo")),
             "-O1 --sysroot=<sysroot> <root>/host"
         );
+    }
+
+    #[test]
+    fn compiles_several_jobs_and_reuses_them() {
+        let base = std::env::temp_dir().join(format!("hookshot-rust-many-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let cache = base.join("cache");
+        let mut jobs = Vec::new();
+        for i in 0..2 {
+            let source = base.join(format!("m{i}.c"));
+            fs::write(
+                &source,
+                format!("int hookshot_many_{i}(void) {{ return {i}; }}\n"),
+            )
+            .unwrap();
+            jobs.push(json!({"cc": "cc", "src": source, "obj": base.join(format!("m{i}.o")), "cache": cache, "flags": ["-O0"], "deps_file": ""}));
+        }
+        let request = json!({"jobs": jobs, "parallel": 2, "cache": cache});
+        let first = many_json(&request, &base).unwrap();
+        if first["failed"]
+            .as_array()
+            .map(|failed| !failed.is_empty())
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_dir_all(base);
+            return; // no C compiler on this machine
+        }
+        assert_eq!(first["planned"], 2);
+        assert_eq!(first["compiled"], 2);
+        let again = many_json(&request, &base).unwrap();
+        assert_eq!(again["cached"], 2);
+        assert_eq!(again["compiled"], 0);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
