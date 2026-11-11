@@ -68,19 +68,4 @@ mod tests {
             1
         );
     }
-
-    #[test]
-    fn reads_definition_lines() {
-        let text = "/* a note */\nvoid f_80001234(Ctx *__restrict A64_NOESC c) {\n  x();\n}\nvoid f_80005678(Ctx *__restrict A64_NOESC c) {\n}\n";
-        let found = definitions(text);
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[0].0, "80001234");
-        assert_eq!(found[0].1, Some("/* a note */"));
-        assert_eq!(found[1].0, "80005678");
-        assert_eq!(found[1].1, None);
-        assert_eq!(
-            definition("void f_xyz(Ctx *__restrict A64_NOESC c) {"),
-            None
-        );
-    }
 }

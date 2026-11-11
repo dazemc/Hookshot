@@ -390,7 +390,28 @@ pub fn prepare_json(nup_path: &str, out: &str, work: &str) -> Result<Value, Stri
     }))
 }
 
-/// `--check`: the answer make_game.py gives the builder before a build./// `--check`: the answer make_game.py gives the builder before a build.
+/// The pipeline list recorded on the development PC, as the game folder's
+/// list, so its first start builds them before the title. A list the folder
+/// has from the same build is kept (it grows as the player plays).
+pub fn seed_pipelines_json(root: &str, out: &str) -> Result<Value, String> {
+    let seed = Path::new(root).join("hookshot_pipelines_seed.bin");
+    let target = Path::new(out).join("hookshot_pipelines.bin");
+    if !seed.is_file() {
+        return Ok(json!({"copied": false, "reason": "no seed"}));
+    }
+    let data = fs::read(&seed).map_err(|e| format!("{}: {e}", seed.display()))?;
+    if data.len() >= 8
+        && fs::read(&target)
+            .map(|old| old.len() >= 8 && old[..8] == data[..8])
+            .unwrap_or(false)
+    {
+        return Ok(json!({"copied": false, "bytes": data.len()}));
+    }
+    fs::write(&target, &data).map_err(|e| format!("{}: {e}", target.display()))?;
+    Ok(json!({"copied": true, "bytes": data.len()}))
+}
+
+/// `--check`: the answer make_game.py gives the builder before a build.
 pub fn check_json(nup: Option<&str>, exefs: Option<&str>, work: &str) -> Result<Value, String> {
     let work = if work.is_empty() {
         crate::kit::work()
@@ -461,6 +482,41 @@ mod tests {
         assert_eq!(answer["build_id"], "e0f3ccfa");
         assert!(answer["message"].as_str().unwrap().contains("supports"));
         let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn seeds_the_pipeline_list_once() {
+        let base = std::env::temp_dir().join(format!("hookshot-rust-seed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("root")).unwrap();
+        fs::create_dir_all(base.join("out")).unwrap();
+        fs::write(
+            base.join("root/hookshot_pipelines_seed.bin"),
+            b"STAMP123data",
+        )
+        .unwrap();
+        let first = seed_pipelines_json(
+            base.join("root").to_str().unwrap(),
+            base.join("out").to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["copied"], true);
+        assert_eq!(
+            fs::read(base.join("out/hookshot_pipelines.bin")).unwrap(),
+            b"STAMP123data"
+        );
+        fs::write(base.join("out/hookshot_pipelines.bin"), b"STAMP123grown").unwrap();
+        let again = seed_pipelines_json(
+            base.join("root").to_str().unwrap(),
+            base.join("out").to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(again["copied"], false);
+        assert_eq!(
+            fs::read(base.join("out/hookshot_pipelines.bin")).unwrap(),
+            b"STAMP123grown"
+        );
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

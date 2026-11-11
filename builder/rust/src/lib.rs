@@ -146,6 +146,10 @@ pub fn dispatch(text: &str) -> String {
         "build.compile_one" => compile::compile_one_json(&request, &kit::root()),
         "build.compile_many" => compile::many_json(&request, &kit::root()),
         "build.toolchain" => Ok(toolchain::json()),
+        "build.seed_pipelines" => stage::seed_pipelines_json(
+            &string(&request, "root").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+        ),
         "build.shaders" => shader::census_json(
             &string(&request, "romfs").unwrap_or_default(),
             string(&request, "out").as_deref(),
