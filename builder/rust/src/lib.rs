@@ -6,10 +6,15 @@
 //! the CLI for tests and for development without Flutter.
 
 mod diagnostics;
+mod disk;
 mod gamescope;
+mod kit;
 mod nso;
 mod nup;
 mod profiles;
+mod rtgen;
+mod stage;
+mod version;
 mod version_policy;
 mod zbic;
 
@@ -105,6 +110,19 @@ pub fn dispatch(text: &str) -> String {
         "gamescope.command" => {
             gamescope::command_json(string(&request, "exe").as_deref().unwrap_or(""), &request)
         }
+        "version.describe" => version::describe_json(),
+        "build.check" => stage::check_json(
+            string(&request, "nup").as_deref(),
+            string(&request, "exefs").as_deref(),
+            string(&request, "work").as_deref().unwrap_or(""),
+        ),
+        "build.check_exefs" => nso::check_json(&string(&request, "exefs").unwrap_or_default()),
+        "build.kit" => kit::json(),
+        "build.spinning" => disk::spinning_json(&string(&request, "path").unwrap_or_default()),
+        "build.rtgen" => rtgen::write_json(
+            string(&request, "out").as_deref().unwrap_or(""),
+            string(&request, "kit").as_deref().unwrap_or(""),
+        ),
         "diagnostics" => diagnostics::json(
             &string(&request, "folder").unwrap_or_default(),
             string(&request, "tools").as_deref(),

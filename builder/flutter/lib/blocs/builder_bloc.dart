@@ -10,6 +10,7 @@ import 'package:equatable/equatable.dart';
 import '../backend/build_events.dart';
 import '../backend/process.dart';
 import '../config.dart' as cfg;
+import '../engine.dart';
 import '../gamescope.dart';
 import '../updater/installer.dart' show latestTag, fetchBytes;
 import '../updater/manifest.dart' as upd;
@@ -491,6 +492,21 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     if (s is! BuilderForm) return;
     emit(s.copyWith(checkText: 'Checking the game version...'));
     final args = s.kind == 'nup' ? ['--nup', s.nup] : ['--exefs', s.exefs];
+    final engine = RustEngine.open();
+    if (engine != null) {
+      try {
+        final answer = engine.call({
+          'command': 'build.check',
+          'nup': s.kind == 'nup' ? s.nup : '',
+          'exefs': s.kind == 'nup' ? '' : s.exefs,
+          'work': '${cfg.toolsRoot()}/work',
+        });
+        add(_CheckReceived(answer['message'] as String? ?? 'The version could not be read.'));
+        return;
+      } catch (_) {
+        // Older engine builds have no build.check: use the Python tool.
+      }
+    }
     try {
       final r = await Process.run(cfg.builderPython(), ['-I', '${cfg.nxRoot()}/make_game.py', '--check', ...args],
           workingDirectory: cfg.toolsRoot());

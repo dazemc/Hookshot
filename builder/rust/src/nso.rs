@@ -7,7 +7,11 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+/// The build the patches, hot list and profile were made from.
+pub const SUPPORTED_BUILD: &str = "e0f3ccfa";
 
 const ZBIC_FLAG: u32 = 1 << 7;
 
@@ -16,6 +20,58 @@ pub const NAMES: [&str; 13] = [
     "rtld", "main", "subsdk0", "subsdk1", "subsdk2", "subsdk3", "subsdk4", "subsdk5", "subsdk6",
     "subsdk7", "subsdk8", "subsdk9", "sdk",
 ];
+
+/// The module id of an NSO, plain or compressed: the header is the same.
+pub fn build_id(main: &Path) -> Result<String, String> {
+    let raw = fs::read(main).map_err(|e| format!("{}: {e}", main.display()))?;
+    if raw.len() < 0x60 || &raw[..4] != b"NSO0" {
+        return Err(format!("{} is not a game executable", main.display()));
+    }
+    Ok(raw[0x40..0x60]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+/// Every module of the exefs is one the tools can read, said here rather than
+/// as a translator error later.
+pub fn check_modules(exefs: &Path) -> Result<Vec<String>, String> {
+    let entries = fs::read_dir(exefs).map_err(|e| format!("{}: {e}", exefs.display()))?;
+    let mut modules = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "main.npdm" || name.ends_with(".part") {
+            continue;
+        }
+        let path = entry.path();
+        let head = fs::read(&path).unwrap_or_default();
+        if head.len() < 4 || &head[..4] != b"NSO0" {
+            return Err(format!(
+                "The file {name} in this dump is not a game module (it starts {}). Try another dump of the game, or send this message to the Hookshot developers.",
+                head.iter()
+                    .take(16)
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ));
+        }
+        modules.push(name);
+    }
+    modules.sort();
+    Ok(modules)
+}
+
+pub fn check_json(exefs: &str) -> Result<Value, String> {
+    let folder = Path::new(exefs);
+    let modules = check_modules(folder)?;
+    let build = build_id(&folder.join("main"))?;
+    Ok(json!({
+        "build": build,
+        "build_id": &build[..8.min(build.len())],
+        "supported": build.starts_with(SUPPORTED_BUILD),
+        "modules": modules,
+    }))
+}
 
 /// None: not an NSO. Some(false): already plain. Some(true): rewritten.
 pub fn unpack_nso(path: &Path) -> Result<Option<bool>, String> {
