@@ -46,6 +46,7 @@ pub struct Nso {
     pub build_id: String,
     pub segments: Vec<Segment>,
     pub bss: (usize, usize),
+    pub bss_size: usize,
     pub mod0: usize,
     pub module_object: usize,
     pub dynamic: HashMap<String, Vec<u64>>,
@@ -174,12 +175,13 @@ impl Nso {
             *value = u32_at(&raw, 0x60 + 4 * i).unwrap();
         }
         let bss_size = u32_at(&raw, 0x3c).unwrap() as usize;
-        let build_id = raw[0x40..0x60]
+        let id = &raw[0x40..0x60];
+        let end = id
             .iter()
-            .copied()
-            .take_while(|byte| *byte != 0)
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+            .rposition(|byte| *byte != 0)
+            .map(|at| at + 1)
+            .unwrap_or(0);
+        let build_id = id[..end].iter().map(|byte| format!("{byte:02x}")).collect();
         let mut segments = Vec::new();
         let mut image = Vec::new();
         for (i, (foff, moff, size)) in segments_raw.iter().copied().enumerate() {
@@ -216,6 +218,7 @@ impl Nso {
             build_id,
             segments,
             bss: (0, 0),
+            bss_size,
             mod0: 0,
             module_object: 0,
             dynamic: HashMap::new(),
@@ -515,6 +518,7 @@ mod tests {
             build_id: String::new(),
             segments: Vec::new(),
             bss: (0, 0),
+            bss_size: 0,
             mod0: 0,
             module_object: 0,
             dynamic: HashMap::from([("RELR".into(), vec![0x20]), ("RELRSZ".into(), vec![16])]),

@@ -10,6 +10,7 @@ mod diagnostics;
 mod disk;
 mod gamescope;
 mod host;
+mod image;
 mod kit;
 mod lifted_c;
 mod logo_rgba;
@@ -163,6 +164,41 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.check_exefs" => nso::check_json(&string(&request, "exefs").unwrap_or_default()),
         "nso.load" => nso_image::json(&string(&request, "exefs").unwrap_or_default()),
+        "image.build" => {
+            let hle: Vec<String> = request
+                .get("hle")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let skip: Vec<String> = request
+                .get("skip")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            image::build_json(
+                &string(&request, "exefs").unwrap_or_default(),
+                &string(&request, "out").unwrap_or_default(),
+                request.get("aslr").and_then(Value::as_u64).unwrap_or(0),
+                request
+                    .get("program_args")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                &hle,
+                &skip,
+            )
+        }
         "nso.dump" => nso_image::dump_json(
             &string(&request, "exefs").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
