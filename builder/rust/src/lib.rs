@@ -8,6 +8,7 @@
 mod diagnostics;
 mod disk;
 mod gamescope;
+mod host;
 mod kit;
 mod nso;
 mod nup;
@@ -111,6 +112,17 @@ pub fn dispatch(text: &str) -> String {
             gamescope::command_json(string(&request, "exe").as_deref().unwrap_or(""), &request)
         }
         "version.describe" => version::describe_json(),
+        "build.host" => Ok(host::json()),
+        "build.cpu" => host::check_json(),
+        "build.jobs" => {
+            let given = request
+                .get("jobs")
+                .and_then(Value::as_u64)
+                .map(|jobs| jobs as usize);
+            let environment = string(&request, "hookshot_jobs");
+            host::chosen_jobs(given, environment.as_deref())
+                .map(|jobs| json!({"jobs": jobs, "cpus": host::cpus()}))
+        }
         "build.check" => stage::check_json(
             string(&request, "nup").as_deref(),
             string(&request, "exefs").as_deref(),

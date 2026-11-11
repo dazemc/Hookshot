@@ -61,22 +61,6 @@ pub fn romfs() -> Option<PathBuf> {
     dump_root().map(|dump| dump.join("romfs"))
 }
 
-pub fn need_exefs() -> Result<PathBuf, String> {
-    let exefs = exefs().ok_or_else(|| {
-        format!(
-            "no exefs: set OOT_DUMP (the folder with exefs/ and romfs/) or OOT_EXEFS, or write the dump folder into {}",
-            work().join("dump.txt").display()
-        )
-    })?;
-    if !exefs.is_dir() {
-        return Err(format!(
-            "the exefs folder {} does not exist",
-            exefs.display()
-        ));
-    }
-    Ok(exefs)
-}
-
 /// The exefs's code modules in rtld's load order (rtld, main, subsdk0..9,
 /// sdk) that exist, without rtld.
 pub fn game_modules(exefs: &Path) -> Vec<String> {

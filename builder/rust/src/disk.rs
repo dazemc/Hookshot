@@ -1,7 +1,6 @@
 //! Is a folder on a spinning disk? A build reads and writes tens of
 //! gigabytes, and the answer is only ever a warning. Ported from nx2/disk.py.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
