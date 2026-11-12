@@ -1,11 +1,12 @@
-// The Rust engine's build.all path: when it replaces make_game.py, and the one
-// JSON request its --stream mode reads from stdin.
+// The Rust engine's build paths: build.all for an unpacked folder, the read
+// stage before make_game.py for a .nup, and the JSON requests --stream reads.
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
 import '../config.dart' as cfg;
+import '../engine.dart' show RustEngineMissing;
 
 /// The engine CLI beside the app, in the checkout, or named by
 /// HOOKSHOT_ENGINE_CLI. Null leaves the build to make_game.py.
@@ -17,6 +18,7 @@ String? rustEngineCli({String? override, String? root, String? exeDir}) {
   for (final path in [
     if (configured != null && configured.isNotEmpty) configured,
     p.join(exe, name),
+    p.join(exe, 'lib', name),
     p.join(tools, 'builder', 'rust', 'target', 'release', name),
     p.join(tools, 'builder', 'rust', 'target', 'debug', name),
   ]) {
@@ -24,6 +26,17 @@ String? rustEngineCli({String? override, String? root, String? exeDir}) {
   }
   return null;
 }
+
+/// The CLI a stage that has no Python path anymore must have. A NUP build
+/// stops with this typed error instead of looking for a fallback.
+String requireRustEngineCli({String? override, String? root, String? exeDir}) {
+  final cli = rustEngineCli(override: override, root: root, exeDir: exeDir);
+  if (cli == null) throw const RustEngineMissing();
+  return cli;
+}
+
+/// NUP builds are read by the engine; folder builds keep their own route.
+bool rustNupApplies({required String kind}) => kind == 'nup';
 
 /// make_game.py's --work default: build files kept apart from the game folder.
 String rustBuildWork() {
@@ -51,6 +64,43 @@ bool rustBuildApplies({
   required String? cli,
 }) =>
     kind != 'nup' && !prepare && !dlss && cli != null;
+
+/// The request `hookshot_engine --stream` takes to read a .nup into work/exefs
+/// and out/romfs for make_game.py's remaining stages.
+String rustPrepareRequest({
+  required String nup,
+  required String out,
+  required String work,
+}) =>
+    jsonEncode({
+      'command': 'build.prepare',
+      'nup': nup,
+      'out': out,
+      'work': work,
+    });
+
+/// make_game.py's arguments once the engine read the .nup: its read stage is
+/// skipped and the already extracted files are used.
+List<String> rustNupPythonArgs({
+  required String out,
+  required String work,
+  required String language,
+  String? jobs,
+  bool prepare = true,
+  bool dlss = false,
+}) =>
+    [
+      '--already-read',
+      '--out',
+      out,
+      '--work',
+      work,
+      '--language',
+      language,
+      if (jobs != null) ...['--jobs', jobs],
+      if (!prepare) '--no-prepare-shaders',
+      if (dlss) ...['--fetch-ngx-sdk', '--accept-nvidia-license'],
+    ];
 
 /// The request `hookshot_engine --stream` takes on stdin.
 String rustBuildRequest({

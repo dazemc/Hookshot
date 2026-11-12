@@ -8,5 +8,6 @@ for bundle in "$root"/builder/flutter/build/linux/x64/*/bundle; do
     [ -d "$bundle" ] || continue
     mkdir -p "$bundle/lib"
     cp "$here/target/release/libhookshot_engine.so" "$bundle/lib/"
+    cp "$here/target/release/hookshot_engine" "$bundle/lib/"
     cp "$here/target/release/libhookshot_zbic.so" "$bundle/lib/"
 done

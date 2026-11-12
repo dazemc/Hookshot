@@ -21,6 +21,19 @@ class RustEngineException implements Exception {
   String toString() => message;
 }
 
+/// The Rust engine is not installed where the builder looks. A .nup build's
+/// read stage is the engine's now, so it stops rather than falling back to a
+/// Python path that no longer exists.
+class RustEngineMissing implements Exception {
+  final String message;
+  const RustEngineMissing([
+    this.message = 'The Rust engine is missing: reading a .nup package needs it. '
+        'Install Hookshot Builder again, or choose an extracted romfs and exefs folder.',
+  ]);
+  @override
+  String toString() => message;
+}
+
 class RustEngine {
   final Pointer<Utf8> Function(Pointer<Utf8>) _call;
   final void Function(Pointer<Utf8>) _free;

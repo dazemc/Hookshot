@@ -67,8 +67,8 @@ impl Protocol<'_> {
     }
 }
 
-/// Run one streaming request. Returns the process exit code: 0 built, 1
-/// stopped, 2 a request this mode cannot take.
+/// Run one streaming request. Returns the process exit code: 0 built (or
+/// read), 1 stopped, 2 a request this mode cannot take.
 pub fn run(request: &str, out: &mut dyn Write) -> i32 {
     let request: Value = match serde_json::from_str(request.trim()) {
         Ok(value) => value,
@@ -78,30 +78,40 @@ pub fn run(request: &str, out: &mut dyn Write) -> i32 {
         }
     };
     let command = request.get("command").and_then(Value::as_str).unwrap_or("");
-    if command != "build.all" {
-        let what = if command.is_empty() {
-            "no command"
-        } else {
-            command
-        };
-        let _ = Protocol { out, last: None }
-            .error(&format!("--stream builds folders only, not {what}"));
-        return 2;
+    match command {
+        "build.all" => run_build(&request, out),
+        "build.prepare" => run_prepare(&request, out),
+        _ => {
+            let what = if command.is_empty() {
+                "no command"
+            } else {
+                command
+            };
+            let _ = Protocol { out, last: None }.error(&format!(
+                "--stream builds folders and reads .nup packages, not {what}"
+            ));
+            2
+        }
     }
-    let text = |key: &str| {
-        request
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned()
-    };
-    let exefs = text("exefs");
-    let romfs = text("romfs");
-    let folder = text("out");
-    let work = text("work");
-    let assets = text("assets");
-    let vk = text("vk");
-    let language = text("language");
+}
+
+fn text(request: &Value, key: &str) -> String {
+    request
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// `build.all`: lift, compile, link and package an unpacked exefs/romfs pair.
+fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
+    let exefs = text(request, "exefs");
+    let romfs = text(request, "romfs");
+    let folder = text(request, "out");
+    let work = text(request, "work");
+    let assets = text(request, "assets");
+    let vk = text(request, "vk");
+    let language = text(request, "language");
     let mut protocol = Protocol { out, last: None };
     let result = crate::orchestrate::all_json_with(
         &exefs,
@@ -122,6 +132,67 @@ pub fn run(request: &str, out: &mut dyn Write) -> i32 {
             let _ = protocol.error(&failure_message(&value));
             1
         }
+        Err(error) => {
+            let _ = protocol.error(&error);
+            1
+        }
+    }
+}
+
+/// `build.prepare`: the read stage only, so the Flutter builder can hand the
+/// extracted work/exefs and out/romfs to make_game.py's remaining stages.
+/// There is no `@@done`: the caller starts the next process.
+fn run_prepare(request: &Value, out: &mut dyn Write) -> i32 {
+    let nup = text(request, "nup");
+    let folder = text(request, "out");
+    let work = text(request, "work");
+    let mut protocol = Protocol { out, last: None };
+    let result = (|| -> Result<(), String> {
+        protocol.stage("read", "Reading your game files")?;
+        let path = std::path::Path::new(&nup);
+        if !path.is_file() {
+            return Err(crate::stage::missing_package(path));
+        }
+        let listed = crate::nup::list_json(&nup)?;
+        let titles = listed["titles"].as_array().map(Vec::len).unwrap_or(0);
+        if titles == 0 {
+            return Err("The package has no titles.".into());
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default();
+        protocol.say(&format!(
+            "reading {name} ({titles} title{})",
+            if titles == 1 { "" } else { "s" }
+        ))?;
+        // The game's code is small and must hash cleanly before the long
+        // extraction; the romfs is checked member by member as it is written.
+        let verified = crate::nup::verify_json(&nup, None, Some("exefs"))?;
+        let bad = verified["bad"].as_u64().unwrap_or(0);
+        if bad > 0 {
+            return Err(format!(
+                "The package's game code did not verify: {bad} file{} in it {} damaged. Dump the game again and select the complete dump in Hookshot Builder.",
+                if bad == 1 { "" } else { "s" },
+                if bad == 1 { "is" } else { "are" }
+            ));
+        }
+        let mut last = 0usize;
+        let answer =
+            crate::stage::prepare_json_with_progress(&nup, &folder, &work, &mut |done, total| {
+                if done == total || done.saturating_sub(last) >= 200 {
+                    last = done;
+                    let _ = protocol.progress(done as f64 / total.max(1) as f64);
+                }
+            })?;
+        if answer["reused"].as_bool() == Some(true) {
+            protocol.say("the game was read from this .nup before: reading it again is skipped")?;
+        }
+        protocol.progress(1.0)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => 0,
         Err(error) => {
             let _ = protocol.error(&error);
             1
@@ -189,7 +260,7 @@ mod tests {
         assert_eq!(run(r#"{"command":"version.describe"}"#, &mut out), 2);
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "@@error --stream builds folders only, not version.describe\n"
+            "@@error --stream builds folders and reads .nup packages, not version.describe\n"
         );
     }
 
@@ -200,6 +271,29 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "@@error build.all needs an exefs folder\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_package_names_the_file_before_reading() {
+        let mut out = Vec::new();
+        assert_eq!(
+            run(
+                r#"{"command":"build.prepare","nup":"/no/such/game.nup","out":"/tmp/out","work":"/tmp/work"}"#,
+                &mut out
+            ),
+            1
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.starts_with("@@stage read Reading your game files\n@@progress 0.000\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "@@error Could not access your .nup file /no/such/game.nup: it is not there."
+            ),
+            "{text}"
         );
     }
 
