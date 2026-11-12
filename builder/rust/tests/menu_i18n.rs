@@ -351,6 +351,58 @@ fn the_current_controls_and_hints_are_translated_everywhere() {
 }
 
 #[test]
+fn the_startup_screen_and_the_fps_counter_are_translated_everywhere() {
+    let (tables, langs) = catalog();
+    let startup = c_strings(&source("gpu/vk/vk_progress.h"));
+    let fps = c_strings(&source("gpu/vk/fps_stats.h"));
+    let menu = c_strings(&source("gpu/vk/vk_menu.cpp"));
+    let keys = [
+        // (the start-up screen: vk_progress.h's strings, drawn by vk_menu.cpp draw_startup)
+        ("Preparing shaders", &startup),
+        ("Building pipelines", &startup),
+        ("Loading pipelines", &startup),
+        ("Starting the game", &startup),
+        ("Closing", &startup),
+        ("Reading the game's shaders", &startup),
+        ("Reading the pipeline notes", &startup),
+        ("Loading the shader cache", &startup),
+        ("Keeping what is prepared for the next start", &startup),
+        ("This happens once after an update. Closing the window keeps what is done.", &startup),
+        ("Step 1 of 2", &menu),
+        ("Step 2 of 2", &menu),
+        ("a few seconds left", &startup),
+        ("about %d s left", &startup),
+        ("about %d min left", &startup),
+        ("%s / %s shaders", &startup),
+        ("%s / %s pipelines", &startup),
+        // (the FPS counter: fps_stats.h's numbers, vk_menu.cpp's labels)
+        ("game %.0f", &menu),
+        ("1% low %.0f", &fps),
+        ("Game", &menu),
+        ("Renderer", &menu),
+        ("GPU wait", &menu),
+        ("Pacing", &menu),
+        ("GPU time", &menu),
+        ("Shaders built (4 s)", &menu),
+        ("Draws left out (4 s)", &menu),
+    ];
+    for (key, source_texts) in keys {
+        assert!(
+            source_texts.iter().any(|t| t == key || t.replace("%%", "%") == key),
+            "{key:?} is no longer drawn where it was"
+        );
+        for lang in &langs[1..] {
+            let table = table_of(&tables, lang);
+            assert!(
+                table.entries.iter().any(|(en, _)| en == key),
+                "{}: {key:?} has no translation",
+                lang.code
+            );
+        }
+    }
+}
+
+#[test]
 fn the_menu_rows_and_the_language_file_are_wired() {
     let options = source("gpu/vk/vk_menu.h");
     let menu = source("gpu/vk/vk_menu.cpp");
