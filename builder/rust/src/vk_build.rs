@@ -1833,6 +1833,17 @@ mod tests {
     }
 
     #[test]
+    fn backend_init_failures_name_their_step() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let main = fs::read_to_string(root.join("gpu/vk/vk_main.cpp")).unwrap();
+        let backend = fs::read_to_string(root.join("host/rx_backend.c")).unwrap();
+        assert!(main.contains("vk: create_instance failed"));
+        assert!(main.contains("vk: create_device failed"));
+        assert!(backend.contains("has no mkwvk_init: WebGPU"));
+        assert!(backend.contains("mkwvk_init version mismatch"));
+    }
+
+    #[test]
     fn reflex_tags_each_submit_with_its_game_frame() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let reflex = fs::read_to_string(root.join("gpu/vk/vk_reflex.cpp")).unwrap();
