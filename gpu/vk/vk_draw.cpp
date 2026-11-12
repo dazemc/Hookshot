@@ -3766,7 +3766,10 @@ void checkpoints_report() {
     logf("vk: device lost: reading %s", dev.checkpoints ? "the checkpoints"
                                         : marker_words ? "the buffer markers"
                                                        : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
-    struct FaultLast { ~FaultLast() { if (env_on("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
+    // (and the fault info when there is nothing else to read: AMD's RADV and Intel have neither NVIDIA's checkpoints nor the
+    // buffer markers unless RX_VK_CHECKPOINTS=1, and the report is what a bug report needs. On NVIDIA the checkpoints run
+    // first, and vkGetDeviceFaultInfoEXT can hang after a fault: there it stays opt-in, RX_VK_FAULT_INFO=1)
+    struct FaultLast { ~FaultLast() { if ((!dev.checkpoints && !marker_words) || env_on("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
     const auto watched = [] {
         std::lock_guard lk(watch_mu);
         for (int i = 0; i < 40; i++)

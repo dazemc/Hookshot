@@ -615,8 +615,8 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
    the core, and the same for every core of a CPU of one kind (the last core, as before). Only with 4+ cores of the
    fastest kind (8+ logical processors always have them on a CPU of one kind): a laptop's 2 performance cores and 8
    efficiency ones (i5-1235U) would keep one of the two from the game; then none is kept. The calling thread's
-   processor group's cores: the masks the affinity calls take are its group's. Windows only: Linux keeps the last core,
-   as before. */
+   processor group's cores: the masks the affinity calls take are its group's. On Linux the same choice comes from
+   /sys/devices/cpu_core/cpus (Intel's hybrid CPUs; last_fastest_core below); without that file, the last core, as before. */
 /* (hookshot) The cores that share the largest L3, on a CPU whose cores do not all share one of the same size: AMD's X3D CPUs
    with two CCDs (7900X3D, 7950X3D, 9900X3D, 9950X3D) have the 3D V-Cache on one CCD only (96 MB against 32 MB). Windows
    moves a game there only when its Game Bar knows the program as a game; this one it does not know, so its threads ran on
@@ -627,10 +627,10 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
    core: a Ryzen AI 9 HX 370 has 4 Zen 5 cores on a 16 MB L3 and 8 Zen 5c on an 8 MB one, and the game is not squeezed onto the 4;
    an X3D's CCDs are alike but for the cache), or fewer than 8 cores on the largest (the 12-core 7900X3D and 9900X3D have 6 there:
    not measured, left as they were). Measured with SMT off only: with it the 8 cores are 16 logical processors.
-   HOS_CACHE_CORES=0: none. Windows only, as the reserved core's choice above: Linux keeps the last core, which on these CPUs is
-   on the CCD without the cache.
+   HOS_CACHE_CORES=0: none. Windows only: Linux has no L3 list to choose from, and keeps the last core, which on these
+   CPUs is on the CCD without the cache.
    (the choice: each L3's logical processor mask and size, n of them, and each core's mask, ncores of them.
-   tests/test_reserved_core.py) */
+   builder/rust/tests/reserved_core.rs) */
 static uint64_t pick_cache_cores(const uint64_t *masks, const uint64_t *sizes, int n, const uint64_t *cores, int ncores) {
     uint64_t best = 0, most = 0, least = ~0ull;
     int width = 0, alike = 1;   /* (how many logical processors an L3 is shared by, and whether all are shared by as many) */
@@ -648,7 +648,7 @@ static uint64_t pick_cache_cores(const uint64_t *masks, const uint64_t *sizes, i
     if (physical < 8) return 0;
     return best;
 }
-/* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. tests/test_reserved_core.py) */
+/* (the choice: the cores' logical processor masks and EfficiencyClass, n of them; 0 for none. builder/rust/tests/reserved_core.rs) */
 static uint64_t pick_reserved_core(const uint64_t *masks, const unsigned char *classes, int n) {
     uint64_t last = 0;
     int best = -1, fast = 0, logical = 0;
@@ -744,10 +744,76 @@ static uint64_t last_fastest_core(int *cores) {
     return pick_reserved_core(masks, classes, n);
 }
 #endif
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+/* (hookshot) A Linux cpulist ("0-7", "0-11,16-19") as a mask of logical processors 0-63; 0 when it does not parse.
+   (builder/rust/tests/reserved_core.rs) */
+static uint64_t parse_cpu_list(const char *s) {
+    uint64_t mask = 0;
+    while (*s && *s != '\n') {
+        char *end;
+        long a = strtol(s, &end, 10), b = a;
+        if (end == s || a < 0) return 0;
+        s = end;
+        if (*s == '-') {
+            b = strtol(++s, &end, 10);
+            if (end == s || b < a) return 0;
+            s = end;
+        }
+        for (long i = a; i <= b && i < 64; i++) mask |= 1ull << i;
+        if (*s == ',') s++;
+        else if (*s && *s != '\n') return 0;
+    }
+    return mask;
+}
+/* (hookshot) Linux: Windows' EfficiencyClass has no API, but on Intel's hybrid CPUs the kernel lists the performance
+   cores' logical processors in /sys/devices/cpu_core/cpus (the hybrid PMU; the efficiency cores are in cpu_atom).
+   Without it the last core was kept, and on those CPUs that is an efficiency core: a Core Ultra 7 265KF's logical
+   processor 19 (P-cores 0-7, E-cores 8-19). Those cores are class 1, the others 0, and pick_reserved_core chooses as
+   on Windows. *cores: 0 when the file is not there (a CPU of one kind, AMD, an older kernel): as before. */
+static uint64_t last_fastest_core(int *cores) {
+    *cores = 0;
+    char line[256] = {0};
+    FILE *f = fopen("/sys/devices/cpu_core/cpus", "r");
+    if (!f) return 0;
+    const int read = fgets(line, sizeof line, f) != NULL;
+    fclose(f);
+    const uint64_t fast = read ? parse_cpu_list(line) : 0;
+    if (!fast) return 0;
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[64];
+    DWORD len = sizeof info;
+    if (!GetLogicalProcessorInformation(info, &len)) return 0;
+    uint64_t masks[64];
+    unsigned char classes[64];
+    int n = 0;
+    for (DWORD i = 0; i < len / sizeof info[0] && n < 64; i++)
+        if (info[i].Relationship == RelationProcessorCore) {
+            masks[n] = (uint64_t)info[i].ProcessorMask;
+            classes[n] = (masks[n] & fast) != 0;
+            n++;
+        }
+    *cores = n;
+    return pick_reserved_core(masks, classes, n);
+}
+#endif
 uint64_t hos_reserved_cpus(void) {
     static uint64_t mask = ~0ull;
     if (mask != ~0ull) return mask;
     mask = 0;
+
+    /* An explicit mask for a test or a core the choice cannot name (HOS_RESERVE_CORE_MASK=0x80): hex, one mask. A
+       value that is not hex is logged and ignored, and the choice below runs as usual. */
+    const char *override = getenv("HOS_RESERVE_CORE_MASK");
+    if (override) {
+        char *end = NULL;
+        const uint64_t wanted = strtoull(override, &end, 16);
+        if (end == override || *end != '\0') {
+            hos_log("threads: HOS_RESERVE_CORE_MASK '%s' is not a hex mask, ignored", override);
+        } else {
+            hos_log("threads: the replay's core from HOS_RESERVE_CORE_MASK: %#llx", (unsigned long long)wanted);
+            return mask = wanted;
+        }
+    }
+
     if (getenv("HOS_RESERVE_CORE") && !atoi(getenv("HOS_RESERVE_CORE"))) return mask;
 #if defined(_WIN32)
     /* (hookshot) none where the game is kept to the cores of the largest L3 (hos_cache_cpus): they are 8 cores on the CPUs
@@ -759,7 +825,29 @@ uint64_t hos_reserved_cpus(void) {
     {
         int cores = 0;
         const uint64_t fast = last_fastest_core(&cores);
-        if (cores) return mask = fast;
+        if (cores) {
+            mask = fast;
+            if (mask)
+                hos_log("threads: the replay's core %#llx (%d cores, the last of the fastest kind)", (unsigned long long)mask, cores);
+            else
+                hos_log("threads: no core kept for the replay (%d cores; fewer than 8 logical processors or 4 of the fastest kind)", cores);
+            return mask;
+        }
+    }
+#elif !defined(__EMSCRIPTEN__)
+    {
+        int cores = 0;
+        const uint64_t fast = last_fastest_core(&cores);
+        if (cores) {
+            mask = fast;
+            if (mask)
+                hos_log("threads: the replay's core %#llx (%d cores, the last performance core in /sys/devices/cpu_core)",
+                        (unsigned long long)mask, cores);
+            else
+                hos_log("threads: no core kept for the replay (%d cores; fewer than 8 logical processors or 4 performance cores)",
+                        cores);
+            return mask;
+        }
     }
 #endif
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[256];
@@ -773,6 +861,7 @@ uint64_t hos_reserved_cpus(void) {
             if ((uint64_t)info[i].ProcessorMask > last) last = (uint64_t)info[i].ProcessorMask;
         }
     if (logical >= 8) mask = last;
+    if (mask) hos_log("threads: the replay's core %#llx (the last one; %d logical processors)", (unsigned long long)mask, logical);
     return mask;
 }
 
