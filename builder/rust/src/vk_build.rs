@@ -1761,6 +1761,18 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_dlss_feature_is_retried_after_a_setting_changes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dlss = fs::read_to_string(root.join("gpu/vk/vk_dlss.cpp")).unwrap();
+        assert!(dlss.contains("uint64_t refused = 0;"));
+        assert!(
+            dlss.contains("if (s.refused == key) return *fail = \"its feature was not made\", 0;")
+        );
+        assert!(dlss.contains("s.refused = key;"));
+        assert!(dlss.contains("s.refused = 0;"));
+    }
+
+    #[test]
     fn windows_ngx_libraries_keep_their_order() {
         let sdk = PathBuf::from("C:/ngx-sdk");
         let libs = link_libraries_for(Platform::Windows, Some(&sdk));
