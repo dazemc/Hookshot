@@ -286,12 +286,21 @@ impl Nup {
         self.file
             .seek(SeekFrom::Start(record.data_off))
             .map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(record.size as usize);
         if !packed {
-            let read = (&mut self.file)
-                .take(record.size)
-                .read_to_end(&mut out)
-                .map_err(|e| format!("{name}: {e}"))?;
+            // One read for the whole member (read_to_end probes in small
+            // pieces, which costs a syscall every few KiB on a 25 GB package).
+            let mut out = vec![0u8; record.size as usize];
+            let mut read = 0usize;
+            while read < out.len() {
+                let got = self
+                    .file
+                    .read(&mut out[read..])
+                    .map_err(|e| format!("{name}: {e}"))?;
+                if got == 0 {
+                    break;
+                }
+                read += got;
+            }
             if read as u64 != record.size {
                 return Err(format!(
                     "the .nup file ends early (short read at {} MB of {} MB): it is incomplete. Download or copy it again",
@@ -301,6 +310,7 @@ impl Nup {
             }
             return Ok(out);
         }
+        let mut out = Vec::with_capacity(record.size as usize);
         // Explicit extents must not read the next member; legacy packed
         // records let the frame end the read.
         let limit = if record.codec == 1 {
