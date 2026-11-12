@@ -51,6 +51,7 @@
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
 #include "fallback_depth_hold.h"   // (a mesh fallback's depth-only draws held while its colour draw builds)
+#include "pcache_read.h"          // (a pipeline cache's header checked before the rest of the file is read)
 #include "driver_faults.h"
 
 #include "shaders/clear_f_frag_spv.h"
@@ -722,30 +723,11 @@ std::atomic<int64_t> pcache_built_since_save{0};
 std::atomic<size_t> pcache_saved_size{0};
 /// A pipeline cache file's data, or nothing when it cannot be read or was made by another device or driver
 std::vector<uint8_t> pcache_file_read(const std::string& path) {
-    std::vector<uint8_t> data;
-    if (FILE* f = fopen(path.c_str(), "rb")) {
-        _fseeki64(f, 0, SEEK_END);
-        const int64_t sz = _ftelli64(f);
-        _fseeki64(f, 0, SEEK_SET);
-        if (sz > 32) {
-            data.resize((size_t)sz);
-            if (fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
-        }
-        fclose(f);
-    }
-    // (data of another device or driver is dropped before Vulkan sees it)
-    if (data.size() >= 32) {
-        uint32_t head_size, version, vendor, device;
-        std::memcpy(&head_size, data.data(), 4);
-        std::memcpy(&version, data.data() + 4, 4);
-        std::memcpy(&vendor, data.data() + 8, 4);
-        std::memcpy(&device, data.data() + 12, 4);
-        if (head_size < 32 || head_size > data.size() || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
-            vendor != dev.props.vendorID || device != dev.props.deviceID ||
-            std::memcmp(data.data() + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE))
-            data.clear();
-    }
-    return data;
+    pcache_read::Device at{dev.props.vendorID, dev.props.deviceID};
+    std::memcpy(at.uuid, dev.props.pipelineCacheUUID, VK_UUID_SIZE);
+    // (data of another device or driver is dropped before Vulkan sees it: by its 32-byte header, before the rest, hundreds of MB,
+    // is read. After a driver update every start would otherwise read the whole file only to drop it: pcache_read.h)
+    return pcache_read::read(path, at);
 }
 std::string pcache_dir;
 
