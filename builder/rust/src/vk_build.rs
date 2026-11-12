@@ -1773,6 +1773,15 @@ mod tests {
     }
 
     #[test]
+    fn background_workers_use_more_of_a_16_thread_cpu() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let jobs = fs::read_to_string(root.join("gpu/vk/vk_jobs.cpp")).unwrap();
+        assert!(jobs.contains("hw >= 16 ? 6u"));
+        assert!(jobs.contains("RX_VK_WORKERS"));
+        assert!(jobs.contains("std::clamp(atoi(e), 1, 16)"));
+    }
+
+    #[test]
     fn windows_ngx_libraries_keep_their_order() {
         let sdk = PathBuf::from("C:/ngx-sdk");
         let libs = link_libraries_for(Platform::Windows, Some(&sdk));
