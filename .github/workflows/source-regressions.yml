@@ -233,6 +233,10 @@ jobs:
         run: |
           c++ -std=c++20 -Wall -Wextra -Werror tests/retired_give_back_test.cpp -o "$RUNNER_TEMP/retired-give-back"
           "$RUNNER_TEMP/retired-give-back"
+      - name: Compile and run the mesh fallback limit
+        run: |
+          c++ -std=c++20 -Wall -Wextra -Werror tests/fallback_size_policy_test.cpp -o "$RUNNER_TEMP/fallback-policy"
+          "$RUNNER_TEMP/fallback-policy"
 
   video-uv:
     name: Video UV interleave

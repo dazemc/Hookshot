@@ -1833,6 +1833,15 @@ mod tests {
     }
 
     #[test]
+    fn the_win32_audio_ring_drops_the_oldest_buffer() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let posix = fs::read_to_string(root.join("host/posix/win32_posix.c")).unwrap();
+        assert!(posix.contains("if (w->count >= 60)"));
+        assert!(posix.contains("w->head = (w->head + 1) % 64;"));
+        assert!(posix.contains("WHDR_INQUEUE) | WHDR_DONE"));
+    }
+
+    #[test]
     fn esc_opens_the_menu_by_default_after_the_version_five_move() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let header = fs::read_to_string(root.join("gpu/vk/vk_menu.h")).unwrap();
