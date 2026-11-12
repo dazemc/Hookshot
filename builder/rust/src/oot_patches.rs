@@ -152,6 +152,38 @@ const MOVIE_OLD: &str = "    c->x[8]=recomp_load32(c,c->x[20] + 760);\n    { uin
 const MOVIE_NEW: &str = "    c->x[8]=recomp_load32(c,c->x[20] + 760);\n    { uint64_t _a=c->x[8], _b=hos_movie_frames(c->x[20]); uint64_t _r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }\n";
 const MOVIE_DECL: &str = "uint32_t hos_movie_frames(uint64_t player);\n";
 
+// --- ocarina note wait ------------------------------------------------------
+
+// (the wait action's start and tick, code_033.c; the anchors carry call-return PC literals, so each is once in its function)
+const OC_DECL: &str = "extern volatile int hos_oc_wait;\nextern volatile int hos_oc_last_kind;\nextern volatile unsigned hos_oc_beat;\n#define HOS_OC_BUTTONS(k) ((k) == 1 || (k) == 2 || (k) == 3 || (k) == 10)\n";
+const OC_ENTRY_HEAD: &str = "void f_828a9190(Ctx *__restrict A64_NOESC c) {";
+const OC_ENTRY_OLD: &str = "    c->x[1]=recomp_load32(c,c->x[19] + 32);\n    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[20] = _r; }\nc->x[30] = 0x828a91e4ULL; f_832b35d0(c);";
+const OC_ENTRY_NEW: &str = "    c->x[1]=recomp_load32(c,c->x[19] + 32);\n    hos_oc_last_kind = (int)c->x[1], hos_oc_wait = HOS_OC_BUTTONS(c->x[1]) ? 1 : 2, hos_oc_beat++;   /* (nx2/oot_patches.py: the note wait began; 1 and 3 are the field ocarina, 2 a song lesson, 10 the scarecrow's recording, 13 a dialogue's, which stays the game's) */\n    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[20] = _r; }\nc->x[30] = 0x828a91e4ULL; f_832b35d0(c);";
+const OC_TICK_HEAD: &str = "void f_828a9280(Ctx *__restrict A64_NOESC c) {";
+const OC_TICK_OLD: &str =
+    "    c->x[8]=recomp_load8(c,c->x[0] + 24);\nif (!((c->x[8] >> 1) & 1)) { goto L_828a92e4; }";
+const OC_TICK_NEW: &str = "    c->x[8]=recomp_load8(c,c->x[0] + 24);\nif (!((c->x[8] >> 1) & 1)) { hos_oc_wait = 0; goto L_828a92e4; }   /* (nx2/oot_patches.py: this action stopped running: no wait) */\n    hos_oc_wait = HOS_OC_BUTTONS(hos_oc_last_kind) ? 1 : 2, hos_oc_beat++;   /* (nx2/oot_patches.py: re-armed every running tick: the input resets between note windows end one wait without ending the action; the beat tells the host the wait is alive) */";
+// (the tick's own gates sit after the re-arm: while any of them refuses, the game is not asking for notes, say a
+// dialogue took the buttons; the host must hear that, or its pad swap eats the buttons the dialogue wants)
+const OC_TICK_GATES: [(&str, &str); 3] = [
+    (
+        "if (!c->z) { goto L_828a92e4; }",
+        "if (!c->z) { hos_oc_wait = 0; goto L_828a92e4; }   /* (nx2/oot_patches.py: the action's mode check refused: no wait) */",
+    ),
+    (
+        "c->x[30] = 0x828a92e0ULL; f_806aac40(c);\nif (c->x[0] != 0) { goto L_828a92f8; }",
+        "c->x[30] = 0x828a92e0ULL; f_806aac40(c);\nif (c->x[0] != 0) { goto L_828a92f8; }\nhos_oc_wait = 0;   /* (nx2/oot_patches.py: the input context is gone: no wait) */",
+    ),
+    (
+        "c->x[30] = 0x828a9318ULL; f_82856760(c);\nif (c->x[0] == 0) { { A64_POLL(c); goto L_828a92e4; } }",
+        "c->x[30] = 0x828a9318ULL; f_82856760(c);\nif (c->x[0] == 0) { { A64_POLL(c); hos_oc_wait = 0; goto L_828a92e4; } }   /* (nx2/oot_patches.py: the wait's owner refused: no wait, and the pads are the game's again) */",
+    ),
+];
+const OC_DONE_OLD: &str = "recomp_store32(c,c->x[19] + 24,c->x[9]);";
+const OC_DONE_NEW: &str = "recomp_store32(c,c->x[19] + 24,c->x[9]);\n    hos_oc_wait = 0;   /* (nx2/oot_patches.py: the wait action finished) */";
+const OC_RESET_OLD: &str = "c->x[30] = 0x828a93e4ULL; f_832b35d0(c);";
+const OC_RESET_NEW: &str = "c->x[30] = 0x828a93e4ULL; f_832b35d0(c);\n    hos_oc_wait = 0;   /* (nx2/oot_patches.py: the input reset: this window's wait is over) */";
+
 // --- above 60 fps -----------------------------------------------------------
 
 const SOUND_HEAD: &str = "void f_80435300(Ctx *__restrict A64_NOESC c) {\n";
@@ -299,6 +331,50 @@ fn patch_movie_frames(s: &str) -> Option<(String, bool)> {
     let body = replace_once(body, MOVIE_OLD, MOVIE_NEW)?;
     let out = format!("{}{}{}", &s[..start], body, &s[end..]);
     Some((add_decl(&out, MOVIE_DECL), true))
+}
+
+/// The wait action reports itself to the host. None when the lift has no such functions, unchanged when an anchor
+/// drifted or it is applied already (never a half-patch).
+fn patch_ocarina_wait(s: &str) -> Option<(String, bool)> {
+    let entry_pairs = [(OC_ENTRY_OLD, OC_ENTRY_NEW)];
+    let mut tick_pairs = vec![(OC_TICK_OLD, OC_TICK_NEW)];
+    tick_pairs.extend(OC_TICK_GATES);
+    tick_pairs.push((OC_DONE_OLD, OC_DONE_NEW));
+    tick_pairs.push((OC_RESET_OLD, OC_RESET_NEW));
+    let mut splices = Vec::new();
+    for (head, pairs) in [
+        (OC_ENTRY_HEAD, entry_pairs.as_slice()),
+        (OC_TICK_HEAD, tick_pairs.as_slice()),
+    ] {
+        let at = s.find(head)?;
+        let end = s[at + head.len()..]
+            .find("\nvoid f_")
+            .map(|offset| at + head.len() + offset)
+            .unwrap_or(s.len());
+        let body = &s[at..end];
+        let mut out = body.to_owned();
+        for (old, new) in pairs {
+            if out.contains(new) {
+                continue;
+            }
+            if out.matches(old).count() != 1 {
+                return Some((s.to_owned(), false));
+            }
+            out = out.replacen(old, new, 1);
+        }
+        if out != body {
+            splices.push((at, end, out));
+        }
+    }
+    if splices.is_empty() {
+        return Some((s.to_owned(), false));
+    }
+    let mut out = s.to_owned();
+    for (at, end, body) in splices.into_iter().rev() {
+        // (later functions first: earlier splices keep the earlier offsets valid)
+        out.replace_range(at..end, &body);
+    }
+    Some((add_decl(&out, OC_DECL), true))
 }
 
 fn whole_new(old: &str, key: &str) -> String {
@@ -739,6 +815,7 @@ fn fresh_done(protect_hearts: bool) -> BTreeMap<&'static str, u32> {
         ("text speed block", 0),
         ("fixed path's scale", 0),
         ("movie's frame count", 0),
+        ("ocarina note wait", 0),
     ]
     .into_iter()
     .collect();
@@ -840,6 +917,16 @@ fn patch_one(path: &Path, protect_hearts: bool) -> Result<FilePatch, String> {
             log.push(format!(
                 "oot_patches: the movie's frame count by the frames' time in {base}"
             ));
+        }
+        out = t;
+    }
+    if let Some((t, changed)) = patch_ocarina_wait(&out) {
+        if t.contains(OC_ENTRY_NEW) {
+            // (made now, or by an earlier run over this file)
+            *done.get_mut("ocarina note wait").unwrap() += 1;
+        }
+        if changed {
+            log.push(format!("oot_patches: the ocarina note wait in {base}"));
         }
         out = t;
     }
@@ -1281,5 +1368,71 @@ mod tests {
         }
         apply_output_size(&dir, true, &mut Vec::new()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ocarina_note_wait_reports_itself_and_only_patches_whole() {
+        let lifted = format!(
+            "#include \"a64.h\"\nvoid f_828a9190(Ctx *__restrict A64_NOESC c) {{\n{OC_ENTRY_OLD}\nA64_IJUMP(c, c->x[2]); return;\n}}\nvoid f_828a9280(Ctx *__restrict A64_NOESC c) {{\n{OC_TICK_OLD}\n{}\n{}\nL_828a92f8:; A64_POLL(c);\n{}\nL_828a937c:; A64_POLL(c);\n{OC_DONE_OLD}\n{OC_RESET_OLD}\nL_828a92e4:; A64_POLL(c);\nreturn;\n}}\nvoid f_828a94e0(Ctx *__restrict A64_NOESC c) {{\nreturn;\n}}\n",
+            OC_TICK_GATES[0].0, OC_TICK_GATES[1].0, OC_TICK_GATES[2].0
+        );
+        let (out, changed) = patch_ocarina_wait(&lifted).expect("the action's functions");
+        assert!(changed);
+        for (name, new) in [
+            ("entry", OC_ENTRY_NEW),
+            ("tick", OC_TICK_NEW),
+            ("done", OC_DONE_NEW),
+            ("reset", OC_RESET_NEW),
+            ("gate 0", OC_TICK_GATES[0].1),
+            ("gate 1", OC_TICK_GATES[1].1),
+            ("gate 2", OC_TICK_GATES[2].1),
+        ] {
+            assert_eq!(out.matches(new).count(), 1, "{name} not injected once");
+        }
+        assert_eq!(
+            out.matches("hos_oc_beat++").count(),
+            2,
+            "the entry and the tick do not stamp the beat once each"
+        );
+        assert_eq!(
+            out.matches("HOS_OC_BUTTONS(").count(),
+            3,
+            "the player's kinds are not one macro at both arming sites"
+        );
+        assert_eq!(
+            out.matches(OC_DECL).count(),
+            1,
+            "the host's words are not declared once"
+        );
+        assert!(
+            out.find(OC_DECL).unwrap() < out.find("void f_828a9190").unwrap(),
+            "the lifted file does not declare them at its head"
+        );
+        let gate = out.find("HOS_OC_BUTTONS(hos_oc_last_kind)").unwrap();
+        assert!(
+            gate > out.find("if (!((c->x[8] >> 1) & 1))").unwrap()
+                && gate < out.find("L_828a937c:;").unwrap(),
+            "the tick's re-arm is not between its running gate and its body"
+        );
+
+        let (again, changed) = patch_ocarina_wait(&out).unwrap();
+        assert!(!changed);
+        assert_eq!(again, out, "a second run changed the file");
+
+        let drift = lifted.replace(
+            "recomp_load8(c,c->x[0] + 24);",
+            "recomp_load8(c,c->x[0] + 25);",
+        );
+        let (same, changed) = patch_ocarina_wait(&drift).unwrap();
+        assert!(!changed);
+        assert_eq!(same, drift, "a drifted tick anchor changed the file");
+        assert!(!same.contains("the note wait began"));
+        assert!(!same.contains(OC_DECL), "the drifted file was half-patched");
+
+        let gone = lifted.replace("f_828a9190", "f_828a91a0");
+        assert!(
+            patch_ocarina_wait(&gone).is_none(),
+            "a file without the action's start changed"
+        );
     }
 }
