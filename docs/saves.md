@@ -61,12 +61,12 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
 
 The launcher's **Manage** menu imports a save into the chosen profile
 ([profiles](../readme.md#profiles-and-saves-from-emulators)); it never writes into an emulator (its **Export** copies the
-profile's save into a new folder of its own). Import runs the script below with `--hookshot` set to that
-profile's save folder and `--backup-dir` to `save-backups` in Hookshot's saves folder; a new profile's empty save folder
-is filled by an import. It first lists the saves in the emulators' usual folders (the table above), each with the
-emulator and the name it gives that user: `saves` lists them (as JSON). **Other folder** chooses any other folder; when
-that folder has saves of several of the emulator's users, the launcher asks whose: `saves --from <folder>` lists them.
-The one chosen is passed on as `--profile`.
+profile's save into a new folder of its own). Import asks for the folder to read and lists the saves in it, one per
+emulator user, with the name the emulator gives that user; when the folder has saves of several users, the launcher
+asks whose save it is. It copies into that profile's save folder (`save/<id>`, made for a new profile) and backs up the
+side it overwrites to `oot-save-backups` in the builder's data folder (`~/.local/share/hookshot/builder` on Linux,
+`%LOCALAPPDATA%\HookshotBuilder` on Windows). The builder does this in its Rust engine (`builder/rust/src/saves.rs`),
+with the same discovery, guards and backup as the script below; the command line still uses the script.
 
 The users' names come from the emulator's user list, `nand/system/save/8000000000000010/su/avators/profiles.dat` in its
 data folder (Eden and the programs that use its folder, Eglantine; the format is yuzu's, from `profile_manager.cpp`):

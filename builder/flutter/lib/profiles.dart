@@ -67,23 +67,24 @@ class Profiles {
       );
 }
 
+typedef EngineCall = Map<String, dynamic> Function(Map<String, Object?> request);
+
 /// The Rust engine's profiles (injected runners are for tests only).
 class ProfilesService {
   final Future<ProcessResult> Function(List<String> args)? run;
-  final RustEngine? rust;
+  final EngineCall? _engine;
 
-  ProfilesService({Future<ProcessResult> Function(List<String> args)? run, RustEngine? engine})
-      : run = run,
-        rust = run == null ? (engine ?? RustEngine.open()) : null;
+  ProfilesService({
+    Future<ProcessResult> Function(List<String> args)? run,
+    RustEngine? engine,
+    EngineCall? call,
+  })  : run = run,
+        _engine = call ?? (run == null ? (engine ?? RustEngine.open())?.call : null);
 
-  /// The save importer is still scripts/oot_saves.py's (not ported yet).
-  static Future<ProcessResult> _runPython(List<String> args) {
-    final script = p.join(cfg.nxRoot(), 'oot_saves.py');
-    if (!File(script).existsSync()) {
-      throw ProfileException('The save importer is missing: $script');
-    }
-    return Process.run(cfg.builderPython(), ['-I', '-B', script, ...args],
-        workingDirectory: cfg.toolsRoot(), stdoutEncoding: utf8, stderrEncoding: utf8);
+  Map<String, dynamic> _callEngine(Map<String, Object?> request) {
+    final engine = _engine;
+    if (engine == null) throw const ProfileException('The Rust engine is missing.');
+    return engine(request);
   }
 
   Future<Map<String, dynamic>> _call(List<String> args) async {
@@ -104,36 +105,32 @@ class ProfilesService {
   }
 
   Future<Profiles> load(String folder) async => Profiles.fromJson(
-      rust != null ? rust!.call({'command': 'profiles.list', 'folder': folder}) : await _call(['list', folder]));
+      _engine != null ? _callEngine({'command': 'profiles.list', 'folder': folder}) : await _call(['list', folder]));
 
-  Future<Profiles> add(String folder, String name) async => Profiles.fromJson(rust != null
-      ? rust!.call({'command': 'profiles.add', 'folder': folder, 'name': name})
+  Future<Profiles> add(String folder, String name) async => Profiles.fromJson(_engine != null
+      ? _callEngine({'command': 'profiles.add', 'folder': folder, 'name': name})
       : await _call(['add', folder, name]));
 
-  Future<Profiles> rename(String folder, String id, String name) async => Profiles.fromJson(rust != null
-      ? rust!.call({'command': 'profiles.rename', 'folder': folder, 'id': id, 'name': name})
+  Future<Profiles> rename(String folder, String id, String name) async => Profiles.fromJson(_engine != null
+      ? _callEngine({'command': 'profiles.rename', 'folder': folder, 'id': id, 'name': name})
       : await _call(['rename', folder, id, name]));
 
-  Future<Profiles> remove(String folder, String id) async => Profiles.fromJson(rust != null
-      ? rust!.call({'command': 'profiles.remove', 'folder': folder, 'id': id})
+  Future<Profiles> remove(String folder, String id) async => Profiles.fromJson(_engine != null
+      ? _callEngine({'command': 'profiles.remove', 'folder': folder, 'id': id})
       : await _call(['remove', folder, id]));
 
   Future<String> export(String folder, String id, String parent) async {
-    final json = rust != null
-        ? rust!.call({'command': 'profiles.export', 'folder': folder, 'id': id, 'parent': parent})
+    final json = _engine != null
+        ? _callEngine({'command': 'profiles.export', 'folder': folder, 'id': id, 'parent': parent})
         : await _call(['export', folder, id, parent]);
     return json['path'] as String;
   }
 
-  /// The saves in a folder, one per emulator user (scripts/oot_saves.py saves).
+  /// The saves in a folder, one per emulator user (the engine's saves.list,
+  /// the same JSON scripts/oot_saves.py's `saves --from` prints).
   Future<List<SaveEntry>> saves(String source) async {
-    final result = await (run ?? _runPython)(['saves', '--from', source]);
-    final text = (result.stdout as String).trim();
-    if (result.exitCode != 0) {
-      final error = (result.stderr as String).trim();
-      throw ProfileException(error.isEmpty ? 'No Ocarina of Time saves were found.' : error);
-    }
-    final rows = jsonDecode(text) as List;
+    final json = _callEngine({'command': 'saves.list', 'folder': source});
+    final rows = json['saves'] as List? ?? const [];
     return [
       for (final raw in rows)
         SaveEntry(
@@ -145,25 +142,18 @@ class ProfilesService {
     ];
   }
 
-  /// Import a save from an emulator or a folder through scripts/oot_saves.py,
-  /// with --hookshot the chosen profile's save folder (a new profile's is made).
+  /// Import a save from an emulator or a folder through the engine, into the
+  /// chosen profile's save folder (a new profile's is made).
   Future<String> importSave(String folder, Profiles profiles, String id, String source, {String? sourceProfile}) async {
     final save = p.join(profiles.user, 'save', id);
     final backups = p.join(cfg.builderHome(), 'oot-save-backups');
-    final result = await (run ?? _runPython)([
-      'import',
-      '--from',
-      source,
-      '--hookshot',
-      save,
-      '--backup-dir',
-      backups,
-      if (sourceProfile != null) '--profile=$sourceProfile',
-    ]);
-    final out = '${result.stdout}${result.stderr}'.trim();
-    if (result.exitCode != 0) {
-      throw ProfileException(out.isEmpty ? 'The save could not be imported.' : out);
-    }
-    return out;
+    final json = _callEngine({
+      'command': 'saves.import',
+      'from': source,
+      'hookshot': save,
+      'backup_dir': backups,
+      if (sourceProfile != null) 'profile': sourceProfile,
+    });
+    return (json['text'] as String? ?? '').trim();
   }
 }
