@@ -1169,6 +1169,7 @@ pub fn write_json(
     let mut file = 0usize;
     let mut files = Vec::new();
     let mut written = 0usize;
+    let mut written_entries = Vec::new();
     for entry in entries {
         let body = &lift.funcs[&entry];
         let items: Vec<(u64, u32)> = body
@@ -1186,6 +1187,7 @@ pub fn write_json(
         chunk.push_str(&text);
         size += text.len();
         written += 1;
+        written_entries.push(entry);
         if size >= chunk_bytes {
             let path = out.join(format!("code_{file:03}.c"));
             std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1200,6 +1202,28 @@ pub fn write_json(
         std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
         files.push(path.to_string_lossy().into_owned());
     }
+    let mut table = String::from("#include \"a64.h\"\n");
+    for entry in &written_entries {
+        table.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
+    }
+    table.push_str(&format!(
+        "const uint32_t a64_fn_count = {};\nconst uint32_t a64_fn_addr[] = {{\n",
+        written_entries.len()
+    ));
+    for entry in &written_entries {
+        table.push_str(&format!("0x{entry:08x},\n"));
+    }
+    table.push_str("};\nconst A64Fn a64_fn_ptr[] = {\n");
+    for entry in &written_entries {
+        table.push_str(&format!("f_{entry:08x},\n"));
+    }
+    table.push_str("};\n");
+    std::fs::write(out.join("a64_table.c"), table).map_err(|e| e.to_string())?;
+    std::fs::write(
+        out.join("a64_hooks.c"),
+        "/* Hooked guest addresses. */\n#include \"a64.h\"\n",
+    )
+    .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"files": files, "functions": written}))
 }
 pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
