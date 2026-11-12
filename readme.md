@@ -110,7 +110,6 @@ unset by default: until you bind one, the game's own button plays it, and a boun
 gamepad input while the game waits for a note. With HDR set to Native, the HDR section's tone mapper row chooses the
 game's vanilla tone mapping or PsychoV35. The in-game controls and the full option list are in the
 [technical reference](docs/fork.md) and in the builder's own help.
-[technical reference](docs/fork.md) and in the builder's own help.
 
 **Gameplay → System → Bug report** saves what an issue needs into `bug-reports/<date>_<time>` in the game folder in one press:
 `report.txt` (the version, the map you are in, your graphics card and driver, CPU, RAM and system, the menu options and
