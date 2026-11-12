@@ -1111,6 +1111,32 @@ impl<'a, C: Code> Lifter<'a, C> {
     }
 }
 
+pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
+    let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
+    let mut lift = Lifter::new(&image, image.entries.iter().copied());
+    lift.eh_starts = image.eh_starts().to_vec();
+    lift.names = image.names().clone();
+    lift.discover();
+    let entry = if lift.funcs.contains_key(&entry) {
+        entry
+    } else {
+        *lift.funcs.keys().next().ok_or("no functions")?
+    };
+    let body = &lift.funcs[&entry];
+    let items: Vec<(u64, u32)> = body
+        .keys()
+        .filter_map(|pc| image.word(*pc).map(|word| (*pc, word)))
+        .collect();
+    let (translated, _) = crate::emitter::translate(&items)?;
+    let by_pc: std::collections::HashMap<u64, String> =
+        items.iter().map(|(pc, _)| *pc).zip(translated).collect();
+    let texts: Vec<String> = body
+        .keys()
+        .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
+        .collect();
+    Ok(serde_json::json!({"entry": format!("{entry:x}"), "c": lift.emit_function(entry, &texts)}))
+}
+
 pub fn coverage_json(exefs: &str, pcs: &[u64]) -> Result<serde_json::Value, String> {
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
     let mut lift = Lifter::new(&image, image.entries.iter().copied());

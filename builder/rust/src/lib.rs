@@ -164,6 +164,10 @@ pub fn dispatch(text: &str) -> String {
         "build.plan" => compile::plan_json(&request, &kit::root()),
         "lift.translate" => emitter::translate_json(&request),
         "lift.tables" => lift::tables_json(&string(&request, "exefs").unwrap_or_default()),
+        "lift.emit" => lift::emit_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            u64::from_str_radix(&string(&request, "entry").unwrap_or_default(), 16).unwrap_or(0),
+        ),
         "lift.coverage" => {
             let pcs: Vec<u64> = request
                 .get("pcs")
