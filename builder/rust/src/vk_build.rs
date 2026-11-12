@@ -1744,6 +1744,23 @@ mod tests {
     }
 
     #[test]
+    fn vsync_auto_follows_the_runtimes_frame_limit() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let header = fs::read_to_string(root.join("gpu/vk/vk_dlss.h")).unwrap();
+        let dlss = fs::read_to_string(root.join("gpu/vk/vk_dlss.cpp")).unwrap();
+        let main = fs::read_to_string(root.join("gpu/vk/vk_main.cpp")).unwrap();
+        assert!(header.contains("bool dlss_fg_runs(int frames);"));
+        assert!(dlss.contains("std::atomic<unsigned> most_known{0};"));
+        assert!(dlss.contains("RX_VK_DLSS_FG_MOST"));
+        assert!(dlss.contains("g.most_known = g.most;"));
+        assert!(dlss.contains("return !most || frames <= (int)most;"));
+        assert!(main.contains("dlss_fg_runs(opts.framegen - 1)"));
+        assert!(main.contains("its frames the renderer's own"));
+        // (the no-NGX build keeps the same signature)
+        assert!(dlss.contains("bool dlss_fg_runs(int) { return false; }"));
+    }
+
+    #[test]
     fn windows_ngx_libraries_keep_their_order() {
         let sdk = PathBuf::from("C:/ngx-sdk");
         let libs = link_libraries_for(Platform::Windows, Some(&sdk));

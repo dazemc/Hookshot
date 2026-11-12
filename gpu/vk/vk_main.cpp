@@ -577,10 +577,13 @@ void swap_views_make(VkImageUsageFlags usage, VkFormat format) {
 int swapchain_framegen() { return opts.framegen >= 2 ? std::min(opts.framegen, 4) : 0; }
 
 /// (hookshot) Whether the swapchain is made for NVIDIA DLSS Frame Generation: a fixed multiplier, and DLSS-G making the sets
-/// (vk_dlss.cpp dlss_fg_runs: asked for, on a device it runs on). V-Sync Auto is FIFO for it, where it was measured; the
-/// renderer's own methods and other GPUs keep Auto's mailbox (or immediate). present_image makes the swapchain again when it
-/// changes
-bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(); }
+/// (vk_dlss.cpp dlss_fg_runs: asked for, on a device it runs on, its runtime making as many frames as the multiplier asks).
+/// V-Sync Auto is FIFO for it, where it was measured; the renderer's own methods and other GPUs keep Auto's mailbox (or
+/// immediate), and so does DLSS-G asked for more frames than its runtime makes, which the renderer's own then makes.
+/// present_image makes the swapchain again when it changes: NGX's answer comes at the first present with a multiplier, so a
+/// swapchain made for DLSS-G before it is made once more without. (The set's made frames are the row's multiplier less 1, up
+/// to 8x: swapchain_framegen stops at 4, for the images)
+bool swapchain_dlssg() { return swapchain_framegen() >= 2 && dlss_fg_runs(opts.framegen - 1); }
 
 void retire_swapchain() {
     if (!dev.swapchain) return;
@@ -699,6 +702,9 @@ bool create_swapchain(uint32_t width, uint32_t height) {
     // that was measured (swapchain_dlssg): the renderer's own frame generation and other GPUs keep Auto as it was
     const bool fg_fifo = vsync == 0 && swapchain_dlssg();
     if (fg_fifo) logf("vk: V-Sync Auto with DLSS Frame Generation at %dx: FIFO", swapchain_framegen());
+    else if (vsync == 0 && swapchain_framegen() >= 2 && dlss_fg_wanted() && dlss_why() == DLSS_OK)
+        logf("vk: V-Sync Auto with frame generation at %dx, its frames the renderer's own (DLSS-G does not make them): Auto's "
+             "mode, as without DLSS-G", opts.framegen);
     if (vsync != 1) {
         if (!fg_fifo)
             for (auto m : modes)

@@ -3695,7 +3695,8 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
     if (hdr_was < 0) hdr_was = opts.hdr;
     static int vsync_was = -1;   // (the V-Sync row as the swapchain was made for it: its present mode)
     // (and frame generation's multiplier, swapchain_framegen: a spare image a frame; and swapchain_dlssg: FIFO under V-Sync
-    // Auto with DLSS Frame Generation)
+    // Auto with DLSS Frame Generation making the frames. It turns to no once, when NGX's answer at the first present is a no
+    // or fewer frames than the multiplier asks)
     const int vsync_now = menu_vsync() * 16 + swapchain_framegen() * 2 + (swapchain_dlssg() ? 1 : 0);
     const bool vsync_changed = vsync_was >= 0 && vsync_was != vsync_now;
     if (vsync_was < 0) vsync_was = vsync_now;
