@@ -279,6 +279,7 @@ fn mark_lines(lines: &[&str]) -> Vec<String> {
     let mut inserts: HashMap<usize, Vec<String>> = HashMap::new();
     let mut unmark: HashMap<usize, HashSet<usize>> = HashMap::new();
     let mut groups: HashMap<u8, Vec<(usize, usize, i64, u64)>> = HashMap::new();
+    let mut order: Vec<u8> = Vec::new();
     let flush = |groups: &mut HashMap<u8, Vec<(usize, usize, i64, u64)>>,
                  inserts: &mut HashMap<usize, Vec<String>>,
                  unmark: &mut HashMap<usize, HashSet<usize>>,
@@ -306,8 +307,9 @@ fn mark_lines(lines: &[&str]) -> Vec<String> {
             continue;
         }
         if ends_run(line) {
-            for r in groups.keys().copied().collect::<Vec<_>>() {
+            for r in order.clone() {
                 flush(&mut groups, &mut inserts, &mut unmark, r, i);
+                order.retain(|x| *x != r);
             }
             continue;
         }
@@ -322,6 +324,9 @@ fn mark_lines(lines: &[&str]) -> Vec<String> {
             for m in stores {
                 if let Some((base, off, size)) = parse_store(line, &m) {
                     if base != 31 {
+                        if !groups.contains_key(&base) {
+                            order.push(base);
+                        }
                         groups
                             .entry(base)
                             .or_default()
@@ -337,7 +342,7 @@ fn mark_lines(lines: &[&str]) -> Vec<String> {
             }
         }
     }
-    for r in groups.keys().copied().collect::<Vec<_>>() {
+    for r in order.clone() {
         flush(&mut groups, &mut inserts, &mut unmark, r, lines.len());
     }
     let mut out = Vec::new();
