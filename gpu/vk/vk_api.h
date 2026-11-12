@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 17
+#define MKWVK_API_VERSION 18
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -240,7 +240,7 @@ typedef struct MkwVkRenderer {
     /* the Insert menu's settings rows (shown on this PC; not the headings or the debug tools): the index-th, to list them (0:
        past the last; an index is no name, rows come and go), and the one whose hookshot_options.ini key is key set to value
        as the menu's Left and Right set it, kept in the options file, out the row after it (1 set, 0 no such row, -1 nothing
-       to choose on this PC) */
+       to choose on this PC, -2 no step of a list row reaches value here, left as it was) */
     int (*setting)(int index, MkwVkSetting *out);
     int (*setting_set)(const char *key, int value, MkwVkSetting *out);
 } MkwVkRenderer;
