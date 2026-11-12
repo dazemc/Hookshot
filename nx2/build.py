@@ -40,6 +40,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
 import kit
+import chunks as chunk_units   # (nx2/chunks.py: the compile units each lifted chunk is cut into)
 import lifted_c
 import rtgen
 import logo_rgba
@@ -320,9 +321,11 @@ class ProcessMemory(ctypes.Structure):   # (Windows' PROCESS_MEMORY_COUNTERS, fo
                [(f, ctypes.c_size_t) for f in ("peak_ws", "ws", "qpp", "qp", "qnpp", "qnp", "pf", "peak_pf")]
 
 
-# (what one compiler is counted at where its own need is not worked out: a hot piece (0.8-1.7 GB measured, -O2 and the profile),
-# and the compile countdown's guess of how many the free memory holds. About the median chunk's peak)
-COMPILER_MB = 1500
+# (what one compiler is counted at where its own need is not worked out: a hot piece (-O2, the profile; 0.8-1.7 GB
+# measured). A compile unit's own peak is worked out from its text (mem_need); this is also the compile countdown's
+# guess of how many the free memory holds, about the median compile unit's peak.
+COMPILER_MB = 600
+HOT_MB = 1500
 
 
 def free_mb():
@@ -422,20 +425,20 @@ def rss_mb(proc):
 
 
 def mem_need(src):
-    """What compiling a file takes at its peak, in MB, a little over. Measured on a cold build (clang 23, x86-64): a chunk of lifted
-    code 0.4 GB + 50 MB per MB of C + 250 MB per MB of its largest function (1.5 GB for 24 MB of small functions, 2.2 GB for a 6 MB
-    function alone); a hot piece 0.8-1.3 GB whatever its size (-O2, the profile, inlining); the runtime's C files ~0.2 GB, the C++
-    files up to ~1 GB"""
+    """What compiling a file takes at its peak, in MB, a little over. Measured on a cold build (clang 23, x86-64): a 25 MB chunk
+    of ordinary functions 1.4 GB, its 6 MB compile units (nx2/chunks.py write_units) 0.45 GB each, a single giant function
+    ~250 MB for each of its megabytes on top (a 9 MB function alone 1.7 GB); a hot piece 0.8-1.5 GB whatever its size (-O2, the
+    profile, inlining); the runtime's C files ~0.2 GB, the C++ files up to ~1 GB"""
     name = os.path.basename(src)
     if name.startswith("code_hot"):
-        return COMPILER_MB
+        return HOT_MB
     if name.startswith("code_"):
         with open(src, "rb") as f:
             text = f.read()
         # (each function from the newline before its definition, as this was first measured)
         starts = [m.start() - 1 for m in lifted_c.HEAD_BYTES.finditer(text)] + [len(text)]
         largest = max([b - a for a, b in zip(starts, starts[1:])] or [0])
-        return int(400 + 50 * len(text) / (1 << 20) + 250 * largest / (1 << 20))
+        return int(120 + 55 * len(text) / (1 << 20) + 250 * largest / (1 << 20))
     return 1000 if src.endswith(".cpp") else 400
 
 
@@ -734,6 +737,20 @@ def compile_cost(src, costs):
     return costs.get(name, os.path.getsize(src)) * (HOT_COST if name.startswith("code_hot") else 1)
 
 
+def forget_stale_objects(obj_dir, jobs):
+    """Remove the objects of lifted sources this build does not compile: a game update leaves fewer chunks, and a chunk
+    whose cuts moved leaves compile units (nx2/chunks.py write_units) that no job names. They are not linked (the rsp
+    lists only the jobs), but they would sit in the object folder for good, and one from another version is a trap."""
+    keep = {os.path.basename(job[2]) for job in jobs}
+    for f in os.listdir(obj_dir):
+        if f.startswith("code_") and f.endswith(".o") and f not in keep:
+            for path in (os.path.join(obj_dir, f), os.path.join(obj_dir, f + ".sha1")):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
 def compile_one(job):
     cc, src, obj, fl, deps = job
     key = PLANNED.get((src, obj)) or object_key(src, fl, deps)
@@ -806,7 +823,13 @@ def main():
                    (["-DA64_POLL_CTX"] if a.dll else []), deps)   # (as fl below: the flags its objects were built with)
     migrate_stamps(gen, obj_dir, fl, deps)
     chunks = sorted(f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c"))
-    srcs = [os.path.join(gen, c) for c in chunks]
+    # (the compile units: each lifted chunk cut at function boundaries (nx2/chunks.py write_units), so the build's
+    # parallelism is not held to the memory a 25 MB chunk takes and one changed function recompiles one piece. The unit
+    # text is cut from the chunk as the lift and its patches left it, so gen is not written here.)
+    units, unit_costs = [], {}
+    if chunks and not a.dry_run and not kit.env_on("RX_VK_ONLY"):
+        units, unit_costs = chunk_units.write_units(gen, os.path.join(out, "units"))
+    srcs = units + [os.path.join(gen, c) for c in chunks if not chunk_units.is_unit_source(c)]
     host_srcs = []
     srcs += [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_suyu.c")] + \
             [os.path.join(rt64, "a64_rt.c")]
@@ -827,6 +850,7 @@ def main():
         srcs = [s for s in srcs if os.path.dirname(s) != gen]
     # the longest first, so the long ones do not end up alone at the end (compile_cost)
     costs = chunk_costs(gen)
+    costs.update(unit_costs)
     srcs.sort(key=lambda s: -compile_cost(s, costs))
     # (hookshot) code_hot.c, the lift's hot functions together (A64_HOT_FUNCS + A64_HOT_CHUNK=1): at RX_HOT_OPT
     # (default O2), so the hot callees inline into their hot callers
@@ -1016,6 +1040,8 @@ def main():
                 vk_jobs.append((cc, os.path.join(POSIX, f), os.path.join(obj_dir, "vk_posix_" + f[:-2] + ".o"), cflags, pdeps))
         jobs += vk_jobs
     vk_only = kit.env_on("RX_VK_ONLY")   # (the renderer alone, the game's objects as they are)
+    if not vk_only:
+        forget_stale_objects(obj_dir, jobs)
     if vk_only:
         jobs = list(vk_jobs)
     if a.dry_run:   # (the compile starts here: what it would read, said and checked, and nothing compiled)

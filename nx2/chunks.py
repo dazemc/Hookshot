@@ -17,6 +17,7 @@ process's additions. The output is the one-process output, byte for byte (tests/
 import bisect
 import collections
 import glob
+import json
 import multiprocessing
 import os
 import re
@@ -228,7 +229,6 @@ HOT_PIECE = re.compile(r"code_hot_\d+\.c")   # (nx2/split_hot.py's pieces of cod
 QUAD = 350000
 COSTS = "chunk_costs.txt"   # (in the gen folder: each file's estimated compile cost, for build.py's order)
 
-
 def fn_cost(size):
     """A function's estimated compile cost, in bytes of plain code"""
     return size + size * size // QUAD
@@ -252,6 +252,111 @@ def write_costs(gen_dir, costs):
     known.update(costs)
     with open(path, "w", newline="\n") as f:
         f.write("".join("%s %d\n" % kv for kv in sorted(known.items())))
+
+
+# The estimated compile cost one compile unit is cut to (build.py's --units): a 25 MB chunk at -O1 takes ~1.4 GB of the
+# compiler and 70-95 s, six such pieces take ~0.45 GB each and a sixth of that time, so a 16 GB PC runs more of them at
+# once (compile_need_mb) and one changed function recompiles one piece.
+UNIT_BYTES = 6 << 20
+MANIFEST = ".units.json"   # (in the units folder: each chunk's size, time and pieces, so an unchanged chunk is not read)
+
+
+def is_unit_source(name):
+    """Whether a lifted chunk is cut into compile units: the numbered chunks (code_000.c, and a giant chunk's
+    code_000_1.c). A hot chunk is split_hot's already, and the runtime's files are not lifted code."""
+    m = re.fullmatch(r"code_(\d{3})(?:_(\d+))?\.c", name)
+    return bool(m)
+
+
+def unit_name(name, index):
+    """The compile unit holding piece `index` of `name`: the chunk itself for the first, code_000_u1.c and on for the
+    rest (a name no chunk has: the units do not collide with the lift's own parts)"""
+    if index == 0:
+        return name
+    return "%s_u%d.c" % (name[:-2], index)
+
+
+def unit_texts(text, budget=UNIT_BYTES):
+    """One lifted chunk cut at function boundaries into compile units: the whole text when it is small enough, else
+    equal-cost runs of whole functions, each with the chunk's preamble (includes and declarations) at its head. The
+    functions are partitioned, not copied, so no definition is in two units. Returns (text, cost) for each unit."""
+    marks = [m.start() for m in HEAD.finditer(text)]
+    if len(marks) < 2:
+        return [(text, len(text))]
+    ends = marks[1:] + [len(text)]
+    cost = [fn_cost(b - a) for a, b in zip(marks, ends)]
+    total = sum(cost)
+    if total <= budget * 3 // 2:
+        return [(text, marks[0] + total)]
+    parts = max(2, min(-(-total // budget), len(marks)))
+    cuts, run, k = [0], 0, 1
+    for i, c in enumerate(cost):
+        if i and run >= total * k // parts:
+            cuts.append(i)
+            k = run * parts // total + 1
+        run += c
+    bounds = [marks[i] for i in cuts] + [len(text)]
+    preamble = text[:marks[0]]
+    out = []
+    for j in range(len(cuts)):
+        piece = text[:bounds[1]] if j == 0 else preamble + text[bounds[j]:bounds[j + 1]]
+        out.append((piece, marks[0] + sum(cost[cuts[j]:cuts[j + 1] if j + 1 < len(cuts) else len(cost)])))
+    return out
+
+
+def write_units(gen_dir, units_dir, budget=UNIT_BYTES):
+    """Write the compile units of every numbered chunk in gen_dir to units_dir, leaving the lifted C as the lift and
+    its patches wrote it. A chunk whose size and time are as the last run left them is not read again, and a unit whose
+    text is already there is not written again, so an update build touches only the pieces whose functions changed.
+    Stale pieces are removed. Returns (paths to compile, {name: estimated cost})."""
+    os.makedirs(units_dir, exist_ok=True)
+    manifest_path = os.path.join(units_dir, MANIFEST)
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            previous = json.load(f)["chunks"]
+    except (OSError, ValueError, KeyError, TypeError):
+        previous = {}
+    made, costs, current, keep = [], {}, {}, set()
+    names = sorted(f for f in os.listdir(gen_dir) if is_unit_source(f))
+    for name in names:
+        path = os.path.join(gen_dir, name)
+        st = os.stat(path)
+        before = previous.get(name)
+        if (before and before[:2] == [st.st_size, st.st_mtime_ns]
+                and all(os.path.exists(os.path.join(units_dir, u)) for u in before[2])):
+            # (the lift and its patches left this chunk as it was: no need to read 25 MB to say the pieces are the same)
+            for out_name, cost in zip(before[2], before[3]):
+                made.append(os.path.join(units_dir, out_name))
+                costs[out_name] = cost
+                keep.add(out_name)
+            current[name] = before
+            continue
+        with open(path, encoding="utf-8", newline="") as f:
+            text = f.read()
+        unit_names = []
+        for index, (piece, cost) in enumerate(unit_texts(text, budget)):
+            out_name = unit_name(name, index)
+            out = os.path.join(units_dir, out_name)
+            costs[out_name] = cost
+            unit_names.append(out_name)
+            keep.add(out_name)
+            try:
+                with open(out, encoding="utf-8", newline="") as f:
+                    current_text = f.read()
+            except OSError:
+                current_text = None
+            if current_text != piece:
+                whole_write.write_whole(out, piece)
+            made.append(out)
+        current[name] = [st.st_size, st.st_mtime_ns, unit_names, [costs[u] for u in unit_names]]
+    # (an earlier build's pieces: a chunk that changed its cuts, or a game update with fewer chunks. Their objects are
+    # forgotten by build.py's link list.)
+    for f in os.listdir(units_dir):
+        if f.endswith(".c") and f not in keep:
+            os.remove(os.path.join(units_dir, f))
+    if current != previous:
+        whole_write.write_whole(manifest_path, json.dumps({"chunks": current}, indent=0, sort_keys=True))
+    return made, costs
 
 
 def split_big(gen_dir, files, budget=None):
