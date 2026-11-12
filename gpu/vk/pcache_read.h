@@ -21,6 +21,18 @@ struct Device {
     uint8_t uuid[VK_UUID_SIZE] = {};
 };
 
+/// Whether a 32-byte cache header describes a file of `size` bytes made by this device and driver (vk_draw.cpp's
+/// PipelineCacheFile::read uses this too, so the file-backed path checks the same header before mapping).
+inline bool header_ok(const uint8_t* head, uint64_t size, const Device& at) {
+    uint32_t head_size = 0, version = 0, vendor = 0, device = 0;
+    std::memcpy(&head_size, head, 4);
+    std::memcpy(&version, head + 4, 4);
+    std::memcpy(&vendor, head + 8, 4);
+    std::memcpy(&device, head + 12, 4);
+    return head_size >= 32 && head_size <= size && version == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&   // (hookshot)
+           vendor == at.vendor && device == at.device && !std::memcmp(head + 16, at.uuid, VK_UUID_SIZE);
+}
+
 /// A pipeline cache file's data, or nothing when it cannot be read, is short or truncated, or was made by another device or driver.
 inline std::vector<uint8_t> read(const std::string& path, const Device& at) {
     std::vector<uint8_t> data;
@@ -29,18 +41,9 @@ inline std::vector<uint8_t> read(const std::string& path, const Device& at) {
     uint8_t head[32] = {};
     f.read(reinterpret_cast<char*>(head), sizeof head);
     if (f.gcount() != static_cast<std::streamsize>(sizeof head)) return data;
-    uint32_t head_size = 0, version = 0, vendor = 0, device = 0;
-    std::memcpy(&head_size, head, 4);
-    std::memcpy(&version, head + 4, 4);
-    std::memcpy(&vendor, head + 8, 4);
-    std::memcpy(&device, head + 12, 4);
-    if (head_size < 32 || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
-        vendor != at.vendor || device != at.device || std::memcmp(head + 16, at.uuid, VK_UUID_SIZE))
-        return data;
     f.seekg(0, std::ios::end);
     const std::streamoff size = f.tellg();
-    if (size <= static_cast<std::streamoff>(sizeof head) || static_cast<uint64_t>(head_size) > static_cast<uint64_t>(size))
-        return data;
+    if (size <= static_cast<std::streamoff>(sizeof head) || !header_ok(head, static_cast<uint64_t>(size), at)) return data;
     f.seekg(static_cast<std::streamoff>(sizeof head), std::ios::beg);
     data.resize(static_cast<size_t>(size));
     std::memcpy(data.data(), head, sizeof head);

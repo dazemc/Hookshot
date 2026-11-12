@@ -53,6 +53,7 @@
 #include "vk_internal.h"
 #include "vk_jobs.h"
 #include "vk_draw.h"
+#include "progcache_zstd.h"
 #include "vk_progcache.h"
 
 // (EvilOOT, RX_VK_PTR_DIAG) the pointer pass's counts for this thread's translations
@@ -2162,10 +2163,12 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
         std::lock_guard lk(disk_mu);
         if (auto it = disk_records.find(cs->key); it != disk_records.end())
             for (const DiskRecord& d : it->second) {
-                std::vector<uint8_t> data(d.size);
-                _fseeki64(disk_in, d.at, SEEK_SET);
-                if (fread(data.data(), 1, d.size, disk_in) != d.size) continue;
-                Reader rd{data.data(), data.data() + data.size()};
+                std::vector<uint8_t> data(d.size), plain;
+                if (_fseeki64(disk_in, d.at, SEEK_SET) || fread(data.data(), 1, d.size, disk_in) != d.size) continue;
+                const uint8_t* payload = nullptr;
+                size_t payload_size = 0;
+                if (!program_cache_payload(data.data(), data.size(), d.kind, plain, &payload, &payload_size)) continue;
+                Reader rd{payload, payload + payload_size};
                 Program q;
                 rd.get<uint32_t>();
                 rd.list(q.answers);
