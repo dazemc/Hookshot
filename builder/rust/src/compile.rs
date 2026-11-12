@@ -217,6 +217,9 @@ pub fn compile_one_json(request: &Value, root: &Path) -> Result<Value, String> {
         path => fs::read(&path).map_err(|e| format!("{path}: {e}"))?,
     };
     let key = object_key(&source, &flags, &deps, root)?;
+    if let Some(parent) = object.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
     let stamp = append(&object, ".sha1");
     if object.is_file()
         && fs::read_to_string(&stamp)
@@ -239,9 +242,6 @@ pub fn compile_one_json(request: &Value, root: &Path) -> Result<Value, String> {
         return Ok(
             json!({"compiled": false, "cached": true, "seconds": 0.0, "key": key, "error": Value::Null}),
         );
-    }
-    if let Some(parent) = object.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
     let temporary = append(&object, ".part");
     let started = Instant::now();

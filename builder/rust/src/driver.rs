@@ -224,29 +224,36 @@ pub fn plan_json_with(
     if compile && chunks > 0 {
         say_stage("compile", "Compiling")?;
         let cc = crate::toolchain::find("clang", false);
-        let game_deps = work.join("build").join("game_deps.bin");
-        if let Some(parent) = game_deps.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        }
-        let mut deps = Vec::new();
-        for folder in [&rt64, &gen_dir, &game_gen] {
-            let mut stack = vec![folder.clone()];
-            while let Some(dir) = stack.pop() {
-                let Ok(entries) = fs::read_dir(&dir) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                    } else if path.extension().and_then(|ext| ext.to_str()) == Some("h") {
-                        deps.extend(fs::read(&path).unwrap_or_default());
-                        deps.push(0);
+        // (diagnostic: reuse the old empty-deps keys while validating a
+        // hand-made cache; normal builds always hash the generated headers)
+        let game_deps = if std::env::var("HOOKSHOT_NO_GAME_DEPS").ok().as_deref() == Some("1") {
+            std::path::PathBuf::new()
+        } else {
+            let path = work.join("build").join("game_deps.bin");
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            let mut deps = Vec::new();
+            for folder in [&rt64, &gen_dir, &game_gen] {
+                let mut stack = vec![folder.clone()];
+                while let Some(dir) = stack.pop() {
+                    let Ok(entries) = fs::read_dir(&dir) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        let entry_path = entry.path();
+                        if entry_path.is_dir() {
+                            stack.push(entry_path);
+                        } else if entry_path.extension().and_then(|ext| ext.to_str()) == Some("h") {
+                            deps.extend(fs::read(&entry_path).unwrap_or_default());
+                            deps.push(0);
+                        }
                     }
                 }
             }
-        }
-        fs::write(&game_deps, deps).map_err(|e| format!("{}: {e}", game_deps.display()))?;
+            fs::write(&path, deps).map_err(|e| format!("{}: {e}", path.display()))?;
+            path
+        };
         let code_flags = vec![
             "-O1".to_owned(),
             "-g0".to_owned(),
