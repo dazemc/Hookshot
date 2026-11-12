@@ -1,8 +1,9 @@
 # NVIDIA DLSS is a local build's option: NVIDIA's SDK is never part of Hookshot or its downloads. This only checks that
 # hookshot_vk.dll still compiles and links with it, through llvm-mingw as players build it. It runs by hand, and on a push or
 # pull request only when a file DLSS's build depends on changed (the paths below), not on every push. The Rust engine
-# fetches the SDK at its pinned release (build.ngx_fetch, ported from scripts/ngx_sdk.py), SHA-256 checked, without DLSS's
-# runtime: NVIDIA's license is accepted for that run alone, and nothing of it is uploaded or cached.
+# builds the Windows DLL (build.vk) and fetches the SDK at its pinned release (build.ngx_fetch, ported from
+# scripts/ngx_sdk.py), SHA-256 checked, without DLSS's runtime: NVIDIA's license is accepted for that run alone, and
+# nothing of it is uploaded or cached.
 # AMD FSR 4 (HOOKSHOT_FSR=1: AMD's MIT headers, nothing downloaded) is built in the same run: both engines share
 # vk_temporal.cpp.
 name: Vulkan back end with NVIDIA DLSS
@@ -22,12 +23,10 @@ on:
       - 'gpu/vk/dlss_checks.h'
       - 'gpu/vk/shaders/dlss_*'
       - 'host/mingw_msvc_shims.c'
-      - 'nx2/oot_jitter.py'
-      - 'nx2/build.py'
-      - 'nx2/make_game.py'
       - 'builder/rust/Cargo.toml'
       - 'builder/rust/Cargo.lock'
-      - 'builder/rust/src/ngx_sdk.rs'
+      - 'builder/rust/src/**'
+      - 'scripts/windows/release_parts.sh'
       - '.github/workflows/vulkan-dlss.yml'
   pull_request:
     paths:
@@ -42,12 +41,10 @@ on:
       - 'gpu/vk/dlss_checks.h'
       - 'gpu/vk/shaders/dlss_*'
       - 'host/mingw_msvc_shims.c'
-      - 'nx2/oot_jitter.py'
-      - 'nx2/build.py'
-      - 'nx2/make_game.py'
       - 'builder/rust/Cargo.toml'
       - 'builder/rust/Cargo.lock'
-      - 'builder/rust/src/ngx_sdk.rs'
+      - 'builder/rust/src/**'
+      - 'scripts/windows/release_parts.sh'
       - '.github/workflows/vulkan-dlss.yml'
   workflow_dispatch:
 
@@ -93,19 +90,17 @@ jobs:
           ref: 1d8f600fd424278486eade7ed3e877c99f0846b1 # v3.3.0
           path: _deps/cpm/vulkanmemoryallocator/v3.3.0
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: llvm-mingw version
         id: llvm
-        run: echo "name=$(python -I scripts/release_parts.py llvm-mingw --name)" >> "$GITHUB_OUTPUT"
+        run: echo "name=$(scripts/windows/release_parts.sh llvm-mingw --name)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/llvm
           key: ${{ steps.llvm.outputs.name }}
       - name: llvm-mingw
-        run: echo "HOOKSHOT_MINGW=$(python -I scripts/release_parts.py llvm-mingw "$RUNNER_TEMP/llvm")" >> "$GITHUB_ENV"
+        run: echo "HOOKSHOT_MINGW=$(scripts/windows/release_parts.sh llvm-mingw "$RUNNER_TEMP/llvm")" >> "$GITHUB_ENV"
       - name: Rust engine
         run: cargo build --release --locked --bin hookshot_engine --manifest-path builder/rust/Cargo.toml
       # (NVIDIA's license accepted for this run alone, as scripts/ngx_sdk.py --accept-nvidia-license did: the engine's
@@ -121,17 +116,26 @@ jobs:
             exit 1
           fi
           test -f "$RUNNER_TEMP/ngx-sdk/lib/nvsdk_ngx_s.lib"
+      # (the engine builds the Windows DLL through llvm-mingw: the NGX and FSR 4 flags come from HOOKSHOT_NGX_SDK and
+      # HOOKSHOT_FSR, as on the Python path; .ngx and .fsr4 in its answer say both were compiled in)
       - name: hookshot_vk.dll with NVIDIA DLSS and AMD FSR 4
         env:
+          RX_TARGET: windows
           RX_VK_ONLY: '1'
           RX_RELEASE: '1'
           HOOKSHOT_FSR: '1'
+          HOOKSHOT_NGX_SDK: ${{ runner.temp }}/ngx-sdk
         run: |
-          OOT_WORK="$RUNNER_TEMP/vk-work" RX_CPM="$GITHUB_WORKSPACE/_deps/cpm" HOOKSHOT_NGX_SDK="$RUNNER_TEMP/ngx-sdk" \
-            python -I nx2/build.py --standalone --jobs "$NUMBER_OF_PROCESSORS" | tee "$RUNNER_TEMP/vk-build.log"
-          test "${PIPESTATUS[0]}" -eq 0
-          grep -q "with NVIDIA DLSS" "$RUNNER_TEMP/vk-build.log"
-          grep -q "with AMD FSR 4" "$RUNNER_TEMP/vk-build.log"
+          work=$(cygpath -m "$RUNNER_TEMP/vk-work")
+          printf '{"command":"build.vk","work":"%s"}\n' "$work" |
+            ./builder/rust/target/release/hookshot_engine.exe > "$RUNNER_TEMP/vk-build.json"
+          cat "$RUNNER_TEMP/vk-build.json"
+          if ! jq -e '.built == true and .ngx != null and .fsr4 != null' "$RUNNER_TEMP/vk-build.json" >/dev/null; then
+            jq -r '.message // .reason // .error // "the Vulkan back end was not built with DLSS and FSR 4"' \
+              "$RUNNER_TEMP/vk-build.json" >&2 || true
+            exit 1
+          fi
+          test -f "$RUNNER_TEMP/vk-work/sa/build/hookshot_vk.dll"
       # (what it loads is only Windows' own: the system DLLs and the UCRT's api-ms-win-crt-*. NVIDIA's runtime, nvngx_dlss.dll,
       # is loaded by NGX at run time from the game folder's ngx folder, and its core, _nvngx.dll, from the driver's)
       - name: Imports
