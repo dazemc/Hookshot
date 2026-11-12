@@ -1227,6 +1227,25 @@ pub fn write_json(
         })
     };
     emitted.sort_by_key(|(index, _)| *index);
+    let call = regex::Regex::new(r"a64_fpx_([a-z0-9]+)_([a-z0-9]+)\(c,([^)]*?)\)").unwrap();
+    let mut used = std::collections::HashSet::new();
+    for (_, text) in &emitted {
+        for caps in call.captures_iter(text) {
+            let fast = caps[1].to_owned();
+            let exact = caps[2].to_owned();
+            let args = caps[3].split(',').filter(|a| !a.trim().is_empty()).count();
+            let nf = if fast.starts_with("fma") {
+                3
+            } else if fast.starts_with("sqrt") {
+                1
+            } else {
+                2
+            };
+            used.insert((fast, exact, nf, args));
+        }
+    }
+    std::fs::write(out.join("a64_fpx.h"), crate::text::fpx_header(&used))
+        .map_err(|e| e.to_string())?;
     let written = entries.len();
     let written_entries = entries.clone();
     let mut chunk = format!("#include \"a64.h\"\n{declarations}");

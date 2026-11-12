@@ -12,6 +12,7 @@ mod diagnostics;
 mod disk;
 mod driver;
 mod emitter;
+mod fpx_headers;
 mod gamescope;
 mod host;
 mod image;
