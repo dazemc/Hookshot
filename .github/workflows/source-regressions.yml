@@ -24,6 +24,7 @@ on:
       - 'tests/native_suatom/**'
       - 'tests/native_suatom.cpp'
       - 'tests/f2i_immediate/**'
+      - 'tests/sirit_null_id_test.cpp'
       - '.github/workflows/**'
   pull_request:
     branches: [main]
@@ -43,6 +44,7 @@ on:
       - 'tests/native_suatom/**'
       - 'tests/native_suatom.cpp'
       - 'tests/f2i_immediate/**'
+      - 'tests/sirit_null_id_test.cpp'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -198,6 +200,11 @@ jobs:
           for module in "${{ runner.temp }}"/f2i/modules/*.spv; do
             spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
           done
+      - name: Check sirit's undefined operand
+        run: |
+          c++ -std=c++20 -I gpu/vk -I gpu/vk/sirit/include -I _deps/spirv-headers/include \
+            tests/sirit_null_id_test.cpp -o "$RUNNER_TEMP/sirit-null-id"
+          "$RUNNER_TEMP/sirit-null-id"
       - name: Compiler cache statistics
         if: ${{ !cancelled() }}
         run: ccache --show-stats

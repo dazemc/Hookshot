@@ -1773,6 +1773,45 @@ mod tests {
     }
 
     #[test]
+    fn noperspective_varyings_are_scaled_and_undone() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let info =
+            fs::read_to_string(root.join("gpu/vk/eden/shader_recompiler/runtime_info.h")).unwrap();
+        let context = fs::read_to_string(
+            root.join("gpu/vk/eden/shader_recompiler/backend/spirv/spirv_emit_context.cpp"),
+        )
+        .unwrap();
+        let special = fs::read_to_string(
+            root.join("gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_special.cpp"),
+        )
+        .unwrap();
+        let getset = fs::read_to_string(
+            root.join("gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp"),
+        )
+        .unwrap();
+        let stream = fs::read_to_string(root.join("gpu/vk/sirit/src/stream.h")).unwrap();
+        let shader = fs::read_to_string(root.join("gpu/vk/vk_shader.cpp")).unwrap();
+        assert!(info.contains("std::bitset<32> noperspective_outputs{};"));
+        assert!(info.contains("bool scaled_noperspective_inputs{};"));
+        assert!(special.contains("ScaleNoPerspectiveOutputs"));
+        assert!(special.contains("RestoreNoPerspectiveOutputs"));
+        assert!(special.contains("ctx.OpVectorTimesScalar(type, value, w)"));
+        assert!(
+            special.contains("ctx.stage == Stage::VertexB || ctx.stage == Stage::TessellationEval")
+        );
+        assert!(getset.contains("ctx.noperspective_as_smooth_inputs[index]"));
+        assert!(getset.contains("ctx.OpFMul(ctx.F32[1], value, frag_w)"));
+        assert!(context.contains("noperspective_as_smooth_inputs[index] = true;"));
+        assert!(context.contains("runtime_info.scaled_noperspective_inputs"));
+        assert!(stream.contains(
+            "throw std::runtime_error(\"sirit: an operand with no SPIR-V definition (null Id)\");"
+        ));
+        assert!(shader.contains("loads_indexed_attributes"));
+        assert!(shader.contains("vrt.xfb_count == 0"));
+        assert!(shader.contains("RX_VK_LOWER_SKIP"));
+    }
+
+    #[test]
     fn retired_imports_use_the_grace_rule() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mem = fs::read_to_string(root.join("gpu/vk/vk_memory.cpp")).unwrap();
