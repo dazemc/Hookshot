@@ -67,6 +67,53 @@ pub fn stack_stores(text: &str) -> String {
 }
 
 /// Guest registers an instruction's C may write (bit n for x[n]).
+/// Replace exact per-lane vector float compares with one a64_vfcmp guard.
+pub fn vectorize_fcmp(text: &str) -> String {
+    if !text.contains("_quiet=") || std::env::var_os("A64_NO_VFPX").is_some() {
+        return text.to_owned();
+    }
+    let op_index = |op: &str| match op {
+        "_eq||_gt" => 0,
+        "_gt" => 1,
+        "_eq" => 2,
+        _ => 0,
+    };
+    let vfcmp = Regex::new(r"(?s)\{ uint32_t _n\[4\],_m\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); memcpy\(_m,c->vreg\[(\d+)\],16\); for\(int _i=0;_i<([24]);_i\+\+\) \{ .*?if\((_eq\|\|_gt|_gt|_eq)\) _v=~\(uint64_t\)0; \} _r\[_i\]=\(uint32_t\)_v; \} memcpy\(c->vreg\[(\d+)\],_r,16\); \}").unwrap();
+    let text = vfcmp
+        .replace_all(text, |c: &regex::Captures| {
+            format!(
+                "if (!a64_vfcmp(c,c->vreg[{}],c->vreg[{}],c->vreg[{}],{},{})) {}",
+                &c[5],
+                &c[1],
+                &c[2],
+                &c[3],
+                op_index(&c[4]),
+                &c[0]
+            )
+        })
+        .into_owned();
+    let vfcmpz = Regex::new(r"(?s)\{ uint32_t _n\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); for\(int _i=0;_i<([24]);_i\+\+\) \{ uint64_t (('_a=0,_b=_n\[_i\]|'_a=_n\[_i\],_b=0)),_v=0;.*?if\((_eq\|\|_gt|_gt|_eq)\) _v=~\(uint64_t\)0; \} _r\[_i\]=\(uint32_t\)_v; \} memcpy\(c->vreg\[(\d+)\],_r,16\); \}").unwrap();
+    vfcmpz
+        .replace_all(&text, |c: &regex::Captures| {
+            let src = format!("c->vreg[{}]", &c[1]);
+            let (a, b) = if c[3].starts_with("_a=0") {
+                ("a64_vzero".to_owned(), src)
+            } else {
+                (src, "a64_vzero".to_owned())
+            };
+            format!(
+                "if (!a64_vfcmp(c,c->vreg[{}],{}, {}, {},{})) {}",
+                &c[5],
+                a,
+                b,
+                &c[2],
+                op_index(&c[4]),
+                &c[0]
+            )
+        })
+        .into_owned()
+}
+
 /// Replace an inline FPX guard by one helper call when the fast and exact
 /// argument lists agree and both write the same variable.
 pub fn outline_fpx(text: &str) -> String {
@@ -329,6 +376,15 @@ mod tests {
     fn sync_markers_are_removed() {
         assert_eq!(strip_sync("a\x01C3\x01b\x01L3\x01c"), "abc");
         assert_eq!(strip_sync("plain"), "plain");
+    }
+
+    #[test]
+    fn vector_compares_are_guarded() {
+        let block = "{ uint32_t _n[4],_m[4],_r[4]={0}; memcpy(_n,c->vreg[0],16); memcpy(_m,c->vreg[1],16); for(int _i=0;_i<4;_i++) { uint64_t _a=_n[_i],_b=_m[_i],_v=0; const uint64_t _sign=0x80000000ULL,_exp=0x7f800000ULL,_frac=0x7fffffULL,_quiet=0x400000ULL; if(_an||_bn) { if(x) c->fpsr|=1; } else { int _eq=_a==_b||!((_a|_b)&~_sign); int _gt=!_eq&&(((_a^_b)&_sign)?!(_a&_sign):((_a&_sign)?_a<_b:_a>_b)); (void)_gt; (void)_eq; if(_gt) _v=~(uint64_t)0; } _r[_i]=(uint32_t)_v; } memcpy(c->vreg[2],_r,16); }";
+        assert!(
+            vectorize_fcmp(block)
+                .starts_with("if (!a64_vfcmp(c,c->vreg[2],c->vreg[0],c->vreg[1],4,1))")
+        );
     }
 
     #[test]

@@ -196,6 +196,9 @@ pub fn dispatch(text: &str) -> String {
                 json!({"reads": read, "writes": written, "dropped": text::drop_flag_stores(&text, dead)}),
             )
         }
+        "lift.vfcmp" => {
+            Ok(json!({"text": text::vectorize_fcmp(&string(&request, "text").unwrap_or_default())}))
+        }
         "lift.fpx" => {
             Ok(json!({"text": text::outline_fpx(&string(&request, "text").unwrap_or_default())}))
         }
