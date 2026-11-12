@@ -1,38 +1,31 @@
 #!/bin/sh
-# The Hookshot AppImage: the builder window (builder/linux/hookshot_builder.py) with everything it builds the game with -
-# Python and the tools, clang and lld, a glibc 2.35 sysroot, FFmpeg, SDL2 and the Vulkan back end, built already.
-#   Hookshot.AppImage                  the builder window (Play is in the window, once a game is built)
-#   Hookshot.AppImage --play           start the game the builder saved, without opening the window
+# The Hookshot AppImage: the Flutter builder window with the Rust engine, the
+# a64emit translator and the sources a game is built from. No Python runtime
+# is carried: the engine builds the game itself.
+#
+#   Hookshot.AppImage                  the builder window
+#   Hookshot.AppImage --play           start the game the builder saved
 #   Hookshot.AppImage --play <folder>  start the game in that folder
+#   Hookshot.AppImage --launch <dir>   the game folder's launcher (Play, and Update when newer)
 #   Hookshot.AppImage <folder>         the same
-#   Hookshot.AppImage --cli <args>     nx2/make_game.py itself, e.g. --cli --nup game.nup --out ~/Games/Hookshot
-#   Hookshot.AppImage --launch <dir>  the game folder's launcher: Play, and Update when a newer release is out
-#   Hookshot.AppImage --update <dir>  download the new release (only the parts that changed) and build that folder again
+#
+# The options are the Flutter window's own (builder/flutter/lib/main.dart):
+# AppRun only points it at the tools the image carries.
 HERE="$(dirname "$(readlink -f "$0")")"
-LIB="$HERE/usr/lib/hookshot"
-export HOOKSHOT_TOOLS="$HERE/usr/share/hookshot"
-export EMSDK="$LIB/emsdk"
-export HOOKSHOT_SYSROOT="$LIB/sysroot"
-export HOOKSHOT_FFMPEG="$LIB/ffmpeg"
-export HOOKSHOT_VK_PREBUILT="$LIB/hookshot_vk.so"
-export HOOKSHOT_SDL2="$LIB/libSDL2-2.0.so.0"
+TOOLS="$HERE/usr/share/hookshot"
+APP="$HERE/usr/lib/hookshot/flutter/hookshot_builder"
+export HOOKSHOT_TOOLS="$TOOLS"
+# (found beside the app already; named here too so a moved bundle still loads them)
+export HOOKSHOT_ENGINE_CLI="$HERE/usr/lib/hookshot/flutter/lib/hookshot_engine"
+export HOOKSHOT_A64EMIT_LIB="$HERE/usr/lib/hookshot/flutter/lib/liba64emit.so"
 # (written into the game folder's hookshot_version.txt, so its launcher finds this builder)
 if [ -n "${APPIMAGE:-}" ]; then
     export HOOKSHOT_BUILDER_EXE="$APPIMAGE"
 else
     export HOOKSHOT_BUILDER_EXE="$HERE/AppRun"
 fi
-PY="$HERE/usr/python/bin/python3"
-if [ "${1:-}" = "--cli" ]; then
-    shift
-    exec "$PY" -I "$HOOKSHOT_TOOLS/nx2/make_game.py" "$@"
+if [ ! -x "$APP" ]; then
+    echo "Hookshot Builder: $APP is missing from this image" >&2
+    exit 1
 fi
-# Play is the same AppImage: the start script drops this image's libraries, then runs the built game.
-if [ "${1:-}" = "--play" ]; then
-    shift
-    exec "$HOOKSHOT_TOOLS/builder/linux/hookshot-launch" "$@"
-fi
-if [ -n "${1:-}" ] && [ -d "$1" ]; then
-    exec "$HOOKSHOT_TOOLS/builder/linux/hookshot-launch" "$1"
-fi
-exec "$PY" -I "$HOOKSHOT_TOOLS/builder/linux/hookshot_builder.py" "$@"
+exec "$APP" "$@"

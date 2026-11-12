@@ -1,170 +1,123 @@
 #!/bin/bash
-# The Linux AppImage: Hookshot Builder with everything it needs to build the game on the player's PC. No game data and
-# nothing made from it is in it: the game is built from the player's own copy, as on Windows.
+# The Linux AppImage: Hookshot Builder (Flutter) with the Rust engine, the
+# a64emit translator and the sources a game is built from. No Python runtime
+# and no game data are in it: the game is built from the player's own copy.
 #
-#   scripts/linux/deps.sh        (first: the compiler, Python, FFmpeg, SDL2, headers into build-linux/deps)
 #   scripts/linux/appimage.sh    -> build-linux/Hookshot-<version>-x86_64.AppImage and its .zsync
-# The same image builds the game and, with --play, starts the one it saved.
 #
-# Built on the oldest system it is for (CI: Ubuntu 22.04): the sysroot it carries is that system's C library, so the
-# game it builds runs on glibc 2.35 and newer. work/ (hot_funcs.txt, hot_order.txt, hookshot_pieces.prof,
-# image/chunks.txt: addresses and counts from playing, no game code) is carried along when it is there.
+# Needs: flutter (3.47 or newer), cargo/rustc, clang/clang++; the Flutter
+# Linux toolchain (cmake, ninja, pkg-config, libgtk-3-dev); curl for
+# appimagetool. The image itself carries none of those: a player's PC
+# builds the game with its own clang, as it would from a checkout.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
 B=$ROOT/build-linux
-DEPS=${DEPS:-$B/deps}
 APPDIR=$B/AppDir
+TOOLS=$B/tools
 # (--long: a nightly built on a tagged commit is v2.1.0-rc.1-0-g1a2b3c4, so the updaters know it is the nightly:
-# builder/linux/linux_update.py track_of)
+# builder/flutter/lib/updater/manifest.dart track_of)
 VERSION=${HOOKSHOT_VERSION:-$(git describe --tags --long --always --match "v[0-9]*" 2>/dev/null || echo dev)}
-export EMSDK=$DEPS/emsdk RX_CPM=$DEPS/cpm
-PY=$DEPS/python/bin/python3
+REPOSITORY=${HOOKSHOT_REPOSITORY:-${GITHUB_REPOSITORY:-dazemc/Hookshot-rs}}
 
-# ---- the Vulkan back end, built here once (it needs no game) ----
-VKW=$B/vk-work
-rm -rf "$VKW/sa/build/hookshot_vk.so"
-OOT_WORK=$VKW RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 "$PY" -I nx2/build.py --standalone --jobs "${JOBS:-$(nproc)}"
-VK=$VKW/sa/build/hookshot_vk.so
-[ -f "$VK" ] || { echo "hookshot_vk.so was not built"; exit 1; }
+# ---- the Rust engine: the Flutter app's FFI library, its CLI, ZBIC ----
+echo "== cargo build --release (hookshot_engine)"
+cargo build --release --workspace --manifest-path builder/rust/Cargo.toml
+for f in hookshot_engine libhookshot_engine.so libhookshot_zbic.so; do
+    [ -f "builder/rust/target/release/$f" ] || { echo "builder/rust/target/release/$f was not built"; exit 1; }
+done
 
-# ---- the tools' native helpers, built now: the AppImage is read-only. a64emit with its C++ runtime inside (the one this system
-# builds with is newer than older systems have), and the stamp build_emit.py checks, so it is not built again ----
+# ---- the Flutter builder app and its bundle ----
+command -v flutter >/dev/null || { echo "flutter is not on PATH"; exit 1; }
+echo "== flutter build linux --release"
+(cd builder/flutter && flutter pub get && flutter build linux --release)
+BUNDLE=$(ls -d builder/flutter/build/linux/x64/release/bundle 2>/dev/null || true)
+[ -n "$BUNDLE" ] && [ -x "$BUNDLE/hookshot_builder" ] || { echo "flutter build made no Linux bundle"; exit 1; }
+
+# ---- the a64emit translator, built here rather than by the Python build_emit.py ----
 E=third_party/a64-kit/lift
-"$EMSDK/upstream/bin/clang++" -std=c++20 -O2 -shared -fPIC -static-libstdc++ -static-libgcc -Wno-everything \
+CXX=${CXX:-clang++}
+echo "== $CXX liba64emit.so"
+"$CXX" -std=c++20 -O2 -shared -fPIC -static-libstdc++ -static-libgcc -Wno-everything \
     -o "$E/liba64emit.so" "$E/a64emit.cpp"
-"$PY" -I -c "import hashlib, sys; f = ['$E/a64emit.cpp', '$E/suyu/arm64_to_c.h']; open('$E/liba64emit.so.sha1', 'w').write(hashlib.sha1(b''.join(open(x, 'rb').read() for x in f)).hexdigest())"
-"$PY" -I third_party/a64-kit/lift/build_emit.py
-"$PY" -I -c "import sys; sys.path.insert(0, 'nx2'); import zbic; zbic.lib()"
+# (the stamp build_emit.py reads; written without it so a checkout's Python build skips the rebuild)
+cat "$E/a64emit.cpp" "$E/suyu/arm64_to_c.h" | sha1sum | cut -d' ' -f1 > "$E/liba64emit.so.sha1"
 
+# ---- the AppDir ----
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/share/hookshot" "$APPDIR/usr/lib/hookshot"
-T=$APPDIR/usr/share/hookshot
+mkdir -p "$APPDIR/usr/lib/hookshot" "$APPDIR/usr/share/hookshot"
 L=$APPDIR/usr/lib/hookshot
+T=$APPDIR/usr/share/hookshot
 
-# ---- the tools (the sources the player's build compiles, and the scripts) ----
-cp -a nx2 host scripts LICENSE readme.md assets "$T/"
-printf '%s
-' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
-printf '%s\n' "${HOOKSHOT_REPOSITORY:-${GITHUB_REPOSITORY:-NotRexed/Hookshot}}" > "$T/repository.txt"
-mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
-cp -a builder/linux "$T/builder/"
-cp -a gpu/render/*.h "$T/gpu/render/"
-# (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
-# tests/test_appimage_headers.py checks that this covers what host/ includes)
-for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_/]+[.]h' host | sort -u); do if [ -f "$h" ]; then mkdir -p "$T/$(dirname "$h")" && cp -a "$h" "$T/$h"; fi; done
-cp -a third_party/opus "$T/third_party/"
-cp -a third_party/kenney_input "$T/third_party/"
-# (NVIDIA DLSS, when ticked in the builder: scripts/ngx_sdk.py and the Vulkan back end's sources, compiled with HOOKSHOT_NGX_SDK)
-mkdir -p "$T/scripts"
-cp scripts/ngx_sdk.py "$T/scripts/"
-cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
-cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
-mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
-cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
-cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
-rm -f "$T/third_party/a64-kit/tools/lld-link.exe"
+# (the Flutter bundle, executable and its lib/ and data/ beside each other)
+cp -a "$BUNDLE" "$L/flutter"
+cp -a builder/rust/target/release/hookshot_engine builder/rust/target/release/libhookshot_engine.so \
+      builder/rust/target/release/libhookshot_zbic.so "$L/flutter/lib/"
+cp "$E/liba64emit.so" "$L/flutter/lib/"
+
+# (the source trees the engine compiles a game from, and the translator at the path it is found in a checkout. Only files
+# git tracks: a developer's build outputs, or anything made from a dump, never ride along)
+git ls-files -z -- host gpu third_party assets | tar --null -T - -cf - | tar -xf - -C "$T"
+cp "$E/liba64emit.so" "$T/third_party/a64-kit/lift/liba64emit.so"
+cp "$E/liba64emit.so.sha1" "$T/third_party/a64-kit/lift/liba64emit.so.sha1"
+cp -a LICENSE readme.md "$T/"
+printf '%s\n' "$VERSION" > "$T/VERSION"
+printf '%s\n' "$REPOSITORY" > "$T/repository.txt"
+mkdir -p "$T/builder/linux"
+cp builder/linux/AppRun builder/linux/hookshot-builder.desktop "$T/builder/linux/"
 if [ -d work ]; then
     mkdir -p "$T/work/image"
     for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
     [ -f work/image/chunks.txt ] && cp work/image/chunks.txt "$T/work/image/"
 fi
-# (the pipeline state list's sources, assets/pipeline_states/, came with assets/ above, and are required: nx2/make_game.py merges
-# them beside the game, and without them a new install's first field load is drawn white for seconds while its pipelines
-# compile; v2.0.8 to v2.0.14 shipped none. scripts/linux/check_player_build.sh reads them back from the image)
-[ -n "$(find "$T/assets/pipeline_states" -name "*.bin.xz" 2>/dev/null)" ] || { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
+# (the pipeline state list's sources: nx2/make_game.py merges them beside the game, and the engine's stage does too.
+# Without them a new install's first field load is drawn white for seconds while its pipelines compile)
+[ -n "$(find "$T/assets/pipeline_states" -name '*.bin.xz' 2>/dev/null)" ] || \
+    { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
+# (no Python in the image at all: the engine is the builder's only build path)
+find "$T" \( -name '*.py' -o -name '*.pyc' \) -delete
 find "$T" -name __pycache__ -prune -exec rm -rf {} +
-
-# ---- what it builds with ----
-cp -a "$DEPS/python" "$APPDIR/usr/python"
-cp "$DEPS/tk/libtcl9tk9.0.so" "$DEPS/tk/libXft.so.2" "$DEPS/tk/libXrender.so.1" "$APPDIR/usr/python/lib/"
-mkdir -p "$L/emsdk"
-cp -a "$DEPS/emsdk/upstream" "$L/emsdk/"
-cp -a "$DEPS/ffmpeg" "$L/ffmpeg"
-cp "$VK" "$L/hookshot_vk.so"
-cp "$DEPS/sdl2/libSDL2-2.0.so.0" "$L/libSDL2-2.0.so.0"
-for d in "$DEPS"/cpm/*/*; do
-    mkdir -p "$T/cpm/${d#"$DEPS/cpm/"}"
-    cp -a "$d/include" "$T/cpm/${d#"$DEPS/cpm/"}/"
-done
-cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Hookshot)
-# ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
-mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus"
-cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
-cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
-cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
-# ---- end of the licences ----
-
-# the sysroot: this system's C library (headers, start files, the libraries to link against) and GCC's runtime pieces
-S=$L/sysroot
-mkdir -p "$S/usr/lib/x86_64-linux-gnu" "$S/usr/lib/gcc/x86_64-linux-gnu" "$S/lib64"
-ln -s usr/lib "$S/lib"
-cp -a /usr/include "$S/usr/"
-rm -rf "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++" "$S/usr/include/llvm"* "$S/usr/include/clang"*
-M=/usr/lib/x86_64-linux-gnu
-for f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o libc.so libc.so.6 libc_nonshared.a libm.so libm.so.6 libm.a libmvec.so libmvec.so.1 \
-         libmvec.a libpthread.so.0 libpthread.a libdl.so.2 libdl.a librt.so.1 librt.a libutil.a libgcc_s.so.1 ld-linux-x86-64.so.2; do
-    # System aliases can have absolute targets (e.g. libmvec.so). Carry their bytes;
-    # update parts refuse absolute-target symlinks, and must not use the host's library.
-    [ -e "$M/$f" ] && cp -aL "$M/$f" "$S/usr/lib/x86_64-linux-gnu/" || true
-done
-cp -aL /lib64/ld-linux-x86-64.so.2 "$S/lib64/"
-GCC=$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)
-GV=$(basename "$GCC")
-G=$S/usr/lib/gcc/x86_64-linux-gnu/$GV
-mkdir -p "$G" "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++"
-cp -aL "/usr/include/c++/$GV" "$S/usr/include/c++/"
-cp -aL "/usr/include/x86_64-linux-gnu/c++/$GV" "$S/usr/include/x86_64-linux-gnu/c++/"
-for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so libstdc++.a libstdc++fs.a libstdc++exp.a; do
-    [ -e "$GCC/$f" ] && cp -aL "$GCC/$f" "$G/" || true
-done
-# (libgcc_s.so is a linker script naming /lib/x86_64-linux-gnu/libgcc_s.so.1: found in the sysroot through lib -> usr/lib)
-
-# ---- check: the bundled compiler builds and links a program against the sysroot, and it runs ----
-cat > "$B/t.c" <<'EOF'
-#include <pthread.h>
-#include <stdio.h>
-#include <math.h>
-static void *f(void *p) { return p; }
-int main(void) { pthread_t t; pthread_create(&t, 0, f, 0); pthread_join(t, 0); printf("ok %g\n", sqrt(2.0)); return 0; }
-EOF
-"$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 -march=x86-64-v3 "$B/t.c" -o "$B/t" -lpthread -lm
-"$B/t"
-cat > "$B/t.cpp" <<'EOF'
-#include <algorithm>
-#include <filesystem>
-#include <format>
-#include <string>
-extern "C" int t_cpp(int v) { return (int)std::format("{}", v).size(); }
-EOF
-"$L/emsdk/upstream/bin/clang++" --sysroot="$S" -fuse-ld=lld -std=c++20 -O2 -march=x86-64-v3 -shared -fPIC -static-libstdc++ -static-libgcc \
-    "$B/t.cpp" -o "$B/t.so" -ldl -lpthread -lm
 
 # ---- the AppDir's own files ----
 cp builder/linux/AppRun "$APPDIR/AppRun"
+chmod +x "$APPDIR/AppRun"
 cp builder/linux/hookshot-builder.desktop "$APPDIR/"
-# (RecompLauncher reads this from inside the AppImage, at /recomplauncher.json)
-cp recomplauncher.json "$APPDIR/recomplauncher.json"
 cp assets/hookshot.png "$APPDIR/hookshot.png"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.png"
 
-# (the update list, beside AppRun and not inside a hashed part: hookshot-linux.txt names each part's checksum)
-# (the parts are served from the linux-parts release of the repository this is built in, where
-# scripts/linux/publish_parts.sh uploads them: without --base the list named NotRexed/Hookshot's release, which a fork's
-# CI does not upload to, so a fork's update list named parts that were not there)
-python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts" \
-    --base "https://github.com/${GITHUB_REPOSITORY:-NotRexed/Hookshot}/releases/download/linux-parts"
+# (the update list, beside AppRun and outside every hashed part: it names the parts' checksums, and the Flutter
+# updater (builder/flutter/lib/updater/installer.dart) downloads only the parts that changed)
+BASE="https://github.com/$REPOSITORY/releases/download/linux-parts"
+scripts/linux/make_parts.sh "$APPDIR" "$VERSION" "$B/parts" "$BASE"
+
+# ---- appimagetool, pinned (its own runtime download fails whenever GitHub answers 504) ----
+APPIMAGETOOL=1.9.1
+APPIMAGETOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+APPIMAGE_RUNTIME=20251108
+APPIMAGE_RUNTIME_SHA256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+mkdir -p "$TOOLS"
+fetch() {   # url file sha256
+    [ -f "$2" ] && echo "$3  $2" | sha256sum -c --quiet - && return 0
+    echo "downloading $1"
+    curl -fL --retry 5 --retry-delay 10 --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 300 -o "$2.part" "$1"
+    echo "$3  $2.part" | sha256sum -c --quiet -
+    mv -f "$2.part" "$2"
+}
+fetch "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL/appimagetool-x86_64.AppImage" \
+    "$TOOLS/appimagetool" "$APPIMAGETOOL_SHA256"
+chmod +x "$TOOLS/appimagetool"
+fetch "https://github.com/AppImage/type2-runtime/releases/download/$APPIMAGE_RUNTIME/runtime-x86_64" \
+    "$TOOLS/runtime-x86_64" "$APPIMAGE_RUNTIME_SHA256"
 
 # The update information AppImageUpdate and Gear Lever read: the newest .zsync of this repository's latest release (or of
-# the release HOOKSHOT_UPDATE_RELEASE names). appimagetool writes it into the image and makes the .zsync beside it with
-# its bundled zsyncmake, which names the AppImage by its file name, next to the .zsync on the same release.
-UPDATE_REPO=${GITHUB_REPOSITORY:-NotRexed/Hookshot}
+# the release HOOKSHOT_UPDATE_RELEASE names). appimagetool writes it into the image and makes the .zsync beside it.
+UPDATE_REPO=$REPOSITORY
 UPDATE_INFO=${HOOKSHOT_UPDATE_INFO:-"gh-releases-zsync|${UPDATE_REPO%%/*}|${UPDATE_REPO#*/}|${HOOKSHOT_UPDATE_RELEASE:-latest}|Hookshot-*-x86_64.AppImage.zsync"}
 OUT=$B/Hookshot-$VERSION-x86_64.AppImage
 rm -f "$OUT" "$OUT.zsync"
-# (from build-linux/: appimagetool writes the .zsync into the current folder)
-(cd "$B" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$DEPS/appimagetool" --runtime-file "$DEPS/runtime-x86_64" \
+echo "== appimagetool"
+(cd "$B" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOLS/appimagetool" --runtime-file "$TOOLS/runtime-x86_64" \
     --comp zstd -u "$UPDATE_INFO" "$APPDIR" "$(basename "$OUT")")
 [ -f "$OUT.zsync" ] || { echo "appimagetool made no $OUT.zsync"; exit 1; }
 echo "$OUT: $(du -h "$OUT" | cut -f1), update information: $UPDATE_INFO"

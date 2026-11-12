@@ -1,7 +1,7 @@
 #!/bin/bash
-# Upload the Linux builder's parts (scripts/linux/make_parts.py) to the linux-parts release, which is not "latest".
+# Upload the Linux builder's parts (scripts/linux/make_parts.sh) to the linux-parts release, which is not "latest".
 # A zip whose name is already there is left (its checksum is in the name). hookshot-linux.txt itself goes on the
-# version release, with the AppImage. Run from CI on a tag, with GH_TOKEN and GITHUB_REPOSITORY.
+# version release, with the AppImage. Run from CI on a tag, with GH_TOKEN and GITHUB_REPOSITORY. Needs jq.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 PARTS=${1:-$ROOT/build-linux/parts}
@@ -14,25 +14,19 @@ trap 'rm -f "$J"' EXIT
 
 code=$(curl -s -o "$J" -w '%{http_code}' "${AUTH[@]}" "$API/releases/tags/linux-parts")
 if [ "$code" = "404" ]; then
-    curl -fsSL "${AUTH[@]}" -X POST "$API/releases" -d "$(python3 - <<'PY'
-import json, os
-print(json.dumps({
-    "tag_name": "linux-parts",
-    "target_commitish": os.environ["GITHUB_SHA"],
-    "name": "Linux builder parts",
-    "body": "Parts Hookshot's Linux builder downloads. A file's name is its checksum; a part that did not change is not uploaded again. This release is not a version of the game.",
-    "prerelease": True,
-    "make_latest": "false",
-}))
-PY
-)" > "$J"
+    jq -n --arg sha "${GITHUB_SHA:?}" \
+        --arg body "Parts the Linux builder downloads. A file name is its checksum; a part that did not change is not uploaded again. This release is not a version of the game." '{
+        tag_name: "linux-parts",
+        target_commitish: $sha,
+        name: "Linux builder parts",
+        body: $body,
+        prerelease: true,
+        make_latest: "false"
+    }' | curl -fsSL "${AUTH[@]}" -X POST "$API/releases" -d @- > "$J"
 fi
-python3 - "$J" <<'PY'
-import json, sys
-json.load(open(sys.argv[1]))["upload_url"]
-PY
-upload=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["upload_url"].split("{")[0])' "$J")
-have=$(python3 -c 'import json, sys; print("\n".join(a["name"] for a in json.load(open(sys.argv[1])).get("assets", [])))' "$J")
+jq -e '.upload_url' "$J" >/dev/null || { echo "linux-parts could not be read"; exit 1; }
+upload=$(jq -r '.upload_url' "$J" | cut -d'{' -f1)
+have=$(jq -r '.assets[]?.name' "$J")
 for zip in "$PARTS"/HookshotLinux-*.zip; do
     [ -f "$zip" ] || continue
     name=$(basename "$zip")
@@ -45,7 +39,7 @@ for zip in "$PARTS"/HookshotLinux-*.zip; do
     if ! curl -fsSL --retry 5 --retry-delay 10 -X POST "${AUTH[@]}" -H "Content-Type: application/zip" \
         --data-binary @"$zip" "$upload?name=$name" >/dev/null; then
         curl -fsSL "${AUTH[@]}" "$API/releases/tags/linux-parts" |
-            python3 -c 'import json, sys; sys.exit(sys.argv[1] not in [a["name"] for a in json.load(sys.stdin)["assets"]])' "$name"
+            jq -e --arg n "$name" '[.assets[]?.name] | index($n) != null' >/dev/null
         echo "already on linux-parts: $name (uploaded by another run)"
     fi
 done
