@@ -83,6 +83,7 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 |---|---|
 | `HOS_HEADLESS` (set) | No window: the renderer draws offscreen, for screenshots and frame dumps |
 | `HOS_WINDOW_SIZE=<w>x<h>` | The window's size in pixels (1280x720 by default, wider for an ultrawide picture) |
+| `HOS_WINDOW_TITLE=<text>`, `HOS_WM_CLASS=<id>` | Over the window's title and its Wayland `app_id` / X11 `WM_CLASS`; empty or unset keeps Hookshot's own |
 | `HOS_WINDOW_NOACTIVATE` (set) | The window opens behind the others and does not take the focus (Windows) |
 | `HOS_FULLSCREEN=1` | Starts in fullscreen; the Insert menu's Fullscreen row is then left alone |
 | `HOS_AUDIO=0` | No sound device is opened (the mixer still runs); `scripts/run-vk.ps1` sets it unless `-Sound` |
