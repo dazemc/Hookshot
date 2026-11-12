@@ -55,16 +55,42 @@ void main() {
     });
 
     test('an import names the chosen emulator user and never forces past a running game', () async {
-      final calls = <List<String>>[];
-      final service = ProfilesService(run: (args) async {
-        calls.add(args);
-        return ProcessResult(0, 0, 'Copied 2 slots', '');
+      final calls = <Map<String, Object?>>[];
+      final service = ProfilesService(call: (request) {
+        calls.add(request);
+        return {'text': 'Copied 2 slots'};
       });
       final profiles = Profiles.fromJson(_list);
       final out = await service.importSave('/game', profiles, profiles.selected, '/emu', sourceProfile: 'ABC');
       expect(out, 'Copied 2 slots');
-      expect(calls.single, containsAll(['import', '--from', '/emu', '--profile=ABC']));
-      expect(calls.single, isNot(contains('--force')));
+      expect(calls.single['command'], 'saves.import');
+      expect(calls.single['from'], '/emu');
+      expect(calls.single['hookshot'], '/home/player/.local/share/hookshot/save/${profiles.selected}');
+      expect(calls.single['profile'], 'ABC');
+      expect(calls.single.containsKey('force'), isFalse);
+    });
+
+    test('lists the saves the engine found for the chosen folder', () async {
+      final calls = <Map<String, Object?>>[];
+      final service = ProfilesService(call: (request) {
+        calls.add(request);
+        return {
+          'saves': [
+            {
+              'id': 'ABC',
+              'path': '/emu/save/ABC',
+              'user': 'Link',
+              'label': 'Link (ABC…): 2 slots',
+            }
+          ]
+        };
+      });
+      final saves = await service.saves('/emu');
+      expect(calls.single, {'command': 'saves.list', 'folder': '/emu'});
+      expect(saves.single.id, 'ABC');
+      expect(saves.single.path, '/emu/save/ABC');
+      expect(saves.single.user, 'Link');
+      expect(saves.single.label, 'Link (ABC…): 2 slots');
     });
   });
 }
