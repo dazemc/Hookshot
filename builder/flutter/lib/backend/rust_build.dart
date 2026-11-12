@@ -55,30 +55,31 @@ String rustBuildWork() {
   );
 }
 
-/// build.all needs an unpacked exefs/romfs pair, and no shader preparation or
-/// NVIDIA SDK download: those two are still make_game.py's.
+/// build.all needs an unpacked exefs/romfs pair. Shader preparation is Rust's
+/// now; NVIDIA's DLSS SDK download is still make_game.py's.
 bool rustBuildApplies({
   required String kind,
   required bool prepare,
   required bool dlss,
   required String? cli,
 }) =>
-    kind != 'nup' && !prepare && !dlss && cli != null;
+    kind != 'nup' && !dlss && cli != null;
 
-/// A NUP the engine has just read can continue in build.all under the same
-/// conditions; otherwise make_game.py still prepares shaders or fetches DLSS.
+/// A NUP the engine has just read can continue in build.all; only the DLSS
+/// SDK download still needs make_game.py.
 bool rustNupBuildApplies({
   required bool prepare,
   required bool dlss,
   required String? cli,
 }) =>
-    !prepare && !dlss && cli != null;
+    !dlss && cli != null;
 
 /// The build.all request for what build.prepare left: work/exefs and out/romfs.
 String rustNupBuildRequest({
   required String out,
   required String work,
   required String language,
+  required bool prepare,
   String assets = '',
   String vk = '',
 }) =>
@@ -90,6 +91,7 @@ String rustNupBuildRequest({
       assets: assets,
       vk: vk,
       language: language,
+      prepare: prepare,
     );
 
 /// The request `hookshot_engine --stream` takes to read a .nup into work/exefs
@@ -136,6 +138,7 @@ String rustBuildRequest({
   required String out,
   required String work,
   required String language,
+  bool prepare = false,
   String assets = '',
   String vk = '',
 }) =>
@@ -148,4 +151,5 @@ String rustBuildRequest({
       'assets': assets,
       'vk': vk,
       'language': language,
+      'prepare': prepare,
     });

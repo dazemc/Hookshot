@@ -91,7 +91,7 @@ void main() {
           dlss: false,
           cli: '/engine',
         ),
-        isFalse,
+        isTrue,
       );
       expect(
         rustBuildApplies(
@@ -143,7 +143,7 @@ void main() {
       );
       expect(
         rustNupBuildApplies(prepare: true, dlss: false, cli: '/engine'),
-        isFalse,
+        isTrue,
       );
       expect(
         rustNupBuildApplies(prepare: false, dlss: true, cli: '/engine'),
@@ -158,6 +158,7 @@ void main() {
           out: '/games/Hookshot',
           work: '/cache/hookshot-builder',
           language: 'fr',
+          prepare: false,
         ),
       );
       expect(request, {
@@ -169,6 +170,7 @@ void main() {
         'assets': '',
         'vk': '',
         'language': 'fr',
+        'prepare': false,
       });
     });
 
@@ -235,6 +237,7 @@ void main() {
       'assets': '',
       'vk': '',
       'language': 'fr',
+      'prepare': false,
     });
   });
 }

@@ -635,14 +635,15 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
             out: out,
             work: work,
             language: code,
+            prepare: s.prepare,
             vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
           ),
           title: 'Building your game',
         );
         return;
       }
-      // Shader preparation, the button prompts and NVIDIA's DLSS SDK are still
-      // make_game.py's; it continues from the files the engine extracted.
+      // NVIDIA's DLSS SDK download is still make_game.py's; it continues from
+      // the files the engine extracted.
       _startProcess(
         emit,
         [
@@ -663,9 +664,8 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       );
       return;
     }
-    // An unpacked folder can go through the Rust build.all engine. Shader
-    // preparation and NVIDIA's DLSS SDK stay in make_game.py until they are
-    // ported, so those builds fall back.
+    // An unpacked folder can go through the Rust build.all engine; only the
+    // NVIDIA DLSS SDK download still falls back to make_game.py.
     final rust = rustEngineCli();
     if (rust != null && rustBuildApplies(kind: s.kind, prepare: s.prepare, dlss: s.dlss, cli: rust)) {
       _startProcess(
@@ -678,6 +678,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
           work: rustBuildWork(),
           vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
           language: code,
+          prepare: s.prepare,
         ),
         title: 'Building your game',
       );
