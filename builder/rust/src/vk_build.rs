@@ -1833,6 +1833,22 @@ mod tests {
     }
 
     #[test]
+    fn gcn_gets_no_mirrors_batching_or_f16() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let memory = fs::read_to_string(root.join("gpu/vk/vk_memory.cpp")).unwrap();
+        let replay = fs::read_to_string(root.join("gpu/vk/vk_replay.cpp")).unwrap();
+        let shader = fs::read_to_string(root.join("gpu/vk/vk_shader.cpp")).unwrap();
+        assert!(
+            memory.contains("const bool gcn = dev.sg32_stages == 0 && dev.subgroup_size > 32;")
+        );
+        assert!(memory.contains("discrete && !gcn"));
+        assert!(replay.contains("radv && !gcn"));
+        assert!(shader.contains("!env_on(\"RX_VK_NO_F16\") && dev.vk12.shaderFloat16"));
+        assert!(shader.contains("0x6e663136u"));
+        assert!(shader.contains("!dev.vk12.shaderFloat16"));
+    }
+
+    #[test]
     fn image_pool_blocks_are_made_at_the_start() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let vma = fs::read_to_string(root.join("gpu/vk/vk_vma.cpp")).unwrap();

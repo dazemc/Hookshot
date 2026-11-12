@@ -156,6 +156,8 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_NOOPT` (set) | Pipelines built without the driver's optimisations |
 | `RX_VK_SKIP_PROG=<prefix>,...` | Leaves out the draws of these programs (default `53509044401d78d2`; `-` leaves out none) |
 | `RX_VK_WORKERS=<n>` | Background workers for shader translation and pipelines, 1 to 16. By default 6 on a machine with 16 or more hardware threads, else a third of the threads (2 to 4) |
+| `RX_VK_BATCH=0` or `1` | Batched submits off or on; by default on with RADV, except GCN (RX 400/500, Vega), where an RX 580 ran 24 fps without them and 20 with |
+| `RX_VK_NO_F16=1` | The game's f16 math lowered to f32. By default f16 is used only where the GPU reports f16 shaders; a GPU without them (RX 400/500, GTX 10xx) lowers it |
 | `RX_VK_PIPE_SKIP=0`, `1` or `2` | Default/`1`: wait for shader translation; a pending pipeline can be skipped only for attachment-only draws whose targets hold an earlier frame. `0`: wait for every pipeline too. `2`: restore the old skip for untranslated draws with persistent targets; this can omit writes before the shader is known. Translated memory-writing draws still wait |
 | `RX_VK_PRECOMPILE=0` or `1` | The shader preparation before the title off or on (on in builds made with `RX_RELEASE=1`, as the builders' are) |
 | `RX_VK_TASK_MESH_FALLBACK=0` or `1` | Task + mesh draws through the compute fallback (1) or the driver's mesh shaders (0). By default the fallback is on for AMD's Navi 21 and Navi 22 on Windows (RX 6800, 6800 XT, 6900 XT, 6700 XT), where the native path timed out the driver (issue 996) |
@@ -164,7 +166,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
 | `RX_VK_FETCH_BOUNDS=0` or `1`, `RX_VK_NAN_BITS=0` or `1`, `RX_VK_GATHER_OFFSET=0` or `1` | The translation's vendor and driver workarounds (`gpu/vk/vk_vendor.h`) off or on for one run, whatever the GPU; the log's `vk: vendor fixes` line says which are on. By default: out-of-bounds texel fetches answered with 0 on every GPU but NVIDIA's; NaN tests on a value's bits on AMD's older Windows shader compiler (RX 5000 and RX 6000); gathers nudged by 1/512 of a texel on AMD's and Intel's drivers. They change the shaders' translation (one preparation of the shaders) |
 | `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
-| `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
+| `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards, except GCN: RX 400/500 and Vega have no stage pinned to 32 lanes and waves of 64); their budget |
 | `RX_VK_KEEP_RETIRED`, `RX_VK_RETIRE_SECS=<s>`, `RX_VK_RETIRE_MIN_SECS=<s>` | Retired pools' imports: `=1` keeps them for the session and `=0`, `off`, `false` or `no` gives them back at once. Unset, Windows AMD and Intel give them back after 30 s (2 s while the system heap is past its high watermark); every other OS and vendor gives them back at once. The two seconds switches set those waits |
 | `RX_VK_IMAGE_PREALLOC=<blocks>` | The images' pool's 128 MB blocks made at the start, 2 to 24 by default (15% of the card's device-local memory); `0` makes them as needed, as before |
 | `RX_VK_VRAM_MB=<MB>` | The texture cache's budget (default 70% of what the driver allows, at most 6 GB) |
