@@ -733,6 +733,15 @@ fn empty_files(path: &Path) -> Vec<PathBuf> {
 }
 
 fn copy_dir(source: &Path, target: &Path) -> Result<(), String> {
+    // (a copy into a folder below its source reads the folder it just made and
+    // recurses forever: refuse it even if a caller's own check missed it)
+    if inside(target, source) {
+        return Err(format!(
+            "{} is inside {}: a copy would include itself",
+            target.display(),
+            source.display()
+        ));
+    }
     fs::create_dir_all(target).map_err(err)?;
     for entry in fs::read_dir(source).map_err(err)? {
         let entry = entry.map_err(err)?;
@@ -920,17 +929,37 @@ fn absolute(path: &Path) -> PathBuf {
     out
 }
 
-/// `fs::canonicalize` for a path that may not be there yet.
+/// `fs::canonicalize` for a path that may not be there yet: the longest
+/// existing prefix is canonicalized and the missing parts are appended.
+///
+/// Both sides of a comparison must have the same form. Windows returns a
+/// `\\?\C:\...` path from `fs::canonicalize` but a plain `C:\...` path from
+/// `absolute`, and mixing them made `inside` miss a backup folder below a
+/// target that existed (`C:\...` is not a prefix of `\\?\C:\...`), after which
+/// `copy_dir` copied the target into its own backup until the stack ran out.
 fn resolved(path: &Path) -> PathBuf {
-    if let Ok(real) = fs::canonicalize(path) {
-        return real;
-    }
-    if let Some(parent) = path.parent() {
-        if let Ok(real) = fs::canonicalize(parent) {
-            return real.join(path.file_name().unwrap_or_default());
+    let absolute = absolute(path);
+    let mut existing = absolute.as_path();
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = fs::canonicalize(existing) {
+            let mut out = real;
+            for part in missing.iter().rev() {
+                out.push(part);
+            }
+            return out;
         }
+        let Some(parent) = existing.parent() else {
+            return absolute;
+        };
+        if parent == existing {
+            return absolute;
+        }
+        if let Some(name) = existing.file_name() {
+            missing.push(name.to_os_string());
+        }
+        existing = parent;
     }
-    absolute(path)
 }
 
 fn comparison(path: &Path) -> String {
@@ -1538,6 +1567,21 @@ mod tests {
         );
         assert!(!backups_dir.exists());
         assert_eq!(tree(&target), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_missing_path_below_the_target_is_inside_it() {
+        let root = temp("inside-missing");
+        let target = root.join("hookshot/save").join(UID);
+        make_save(&target, "TARGET", &["slot_00"]);
+        let backup = target.join("backups").join("import-folder");
+        assert!(
+            inside(&backup, &target),
+            "{} should be inside {}",
+            backup.display(),
+            target.display()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
