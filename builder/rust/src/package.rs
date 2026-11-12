@@ -82,7 +82,10 @@ pub fn package_json(
     let mut linked = 0u64;
     bytes += copy(&work.join("sa/image/image.bin"), &out.join("image.bin"))?;
     let vk = if vk.is_empty() {
-        if !assets.is_empty() {
+        let built = root.join("build-linux/vk-work/sa/build/hookshot_vk.so");
+        if built.is_file() {
+            built
+        } else if !assets.is_empty() {
             PathBuf::from(assets).join("hookshot_vk.so")
         } else {
             PathBuf::new()
