@@ -1014,6 +1014,30 @@ pub fn list_json(path: &str) -> Result<Value, String> {
 }
 
 /// The romfs .zs files that do not start as zstd, with "/" between folders.
+/// Whether a .zs file that starts as zstd (`head`: its first 18 bytes) is the
+/// .nup's own frame round a damaged file, as builders before #456 wrote them
+/// (#2361): a frame whose content is as large as the file, and that starts
+/// with zeros or does not decompress. Only those are decompressed, and only
+/// their start: a game .zs file's content is larger than the file, and most of
+/// them need the game's dictionary to decompress at all.
+fn still_in_nup_frame(file: &mut File, head: &[u8], size: u64) -> bool {
+    if content_size(head) != Some(size) {
+        return false;
+    }
+    if file.seek(SeekFrom::Start(0)).is_err() {
+        return true;
+    }
+    let Ok(mut decoder) = zstd::stream::read::Decoder::new(&mut *file) else {
+        return true;
+    };
+    let mut start = [0u8; 16];
+    match decoder.read(&mut start) {
+        Ok(0) => true, // (nothing: the frame says it holds the file, and holds nothing)
+        Ok(n) => !start[..n].iter().any(|byte| *byte != 0), // (zeros: what a damaged .bntx looked like)
+        Err(_) => true, // (does not decompress)
+    }
+}
+
 pub fn damaged_files(romfs: &Path) -> Result<Vec<String>, String> {
     let mut found = Vec::new();
     for entry in walkdir::WalkDir::new(romfs).sort_by_file_name() {
@@ -1025,12 +1049,13 @@ pub fn damaged_files(romfs: &Path) -> Result<Vec<String>, String> {
         if path.extension().is_none_or(|ext| ext != "zs") {
             continue;
         }
-        let mut head = [0u8; 4];
+        let size = entry.metadata().map_err(|e| e.to_string())?.len();
+        let mut head = [0u8; 18];
         let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let got = file
             .read(&mut head)
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        if !zstd_start(&head[..got]) {
+        if !zstd_start(&head[..got]) || still_in_nup_frame(&mut file, &head[..got], size) {
             let rel = path.strip_prefix(romfs).map_err(|e| e.to_string())?;
             found.push(rel.to_string_lossy().replace('\\', "/"));
         }
@@ -1453,12 +1478,44 @@ mod tests {
         fs::write(root.join("a_Nrm.zs"), vec![0u8; damaged.len()]).unwrap();
         fs::write(root.join("b_Nrm.zs"), &damaged).unwrap();
         fs::write(root.join("unrelated.bin"), b"not a texture").unwrap();
-        assert_eq!(damaged_files(&root).unwrap(), vec!["a_Nrm.zs"]);
+        // (#2361: still in the .nup's frame, as builders before #456 wrote them: content as large as the file)
+        fn wrapped(content: &[u8]) -> Vec<u8> {
+            let mut frame = zstd::bulk::compress(content, 3).unwrap();
+            assert!(content.len() >= frame.len());
+            frame.resize(content.len(), b'x');
+            frame
+        }
+        let zeros = wrapped(&vec![0u8; 1000]);
+        let healthy = zstd::bulk::compress(b"BNTX wall", 3).unwrap();
+        let mut broken = zeros[..8].to_vec(); // (the header says 1000 bytes; the rest does not decompress)
+        broken.resize(1000, 0xff);
+        let nonzero = wrapped(&b"BNTX".repeat(250));
+        fs::write(root.join("Wall_Gate_M_01_Nrm.zs"), &zeros).unwrap();
+        fs::write(root.join("Wall_Gate_M_02_Nrm.zs"), &broken).unwrap();
+        fs::write(root.join("Wall_Gate_P_01_Nrm.zs"), &healthy).unwrap();
+        fs::write(root.join("Wall_Gate_W_01_Alb.zs"), &nonzero).unwrap();
+        assert_eq!(
+            damaged_files(&root).unwrap(),
+            vec![
+                "Wall_Gate_M_01_Nrm.zs",
+                "Wall_Gate_M_02_Nrm.zs",
+                "a_Nrm.zs"
+            ]
+        );
         let done = stand_in_damaged(&root, None).unwrap();
-        assert_eq!(done.len(), 1);
-        assert_eq!(done[0].0, "a_Nrm.zs");
-        assert_eq!(done[0].1.as_deref(), Some("b_Nrm.zs"));
+        assert_eq!(done.len(), 3);
+        assert_eq!(done[0].0, "Wall_Gate_M_01_Nrm.zs");
+        assert_eq!(done[0].1.as_deref(), Some("Wall_Gate_P_01_Nrm.zs"));
+        assert_eq!(done[1].0, "Wall_Gate_M_02_Nrm.zs");
+        assert_eq!(done[1].1.as_deref(), Some("Wall_Gate_P_01_Nrm.zs"));
+        assert_eq!(done[2].0, "a_Nrm.zs");
+        assert_eq!(done[2].1.as_deref(), Some("b_Nrm.zs"));
         assert_eq!(fs::read(root.join("a_Nrm.zs")).unwrap(), damaged);
+        assert_eq!(
+            fs::read(root.join("Wall_Gate_M_01_Nrm.zs")).unwrap(),
+            healthy
+        );
+        assert_eq!(fs::read(root.join("Wall_Gate_W_01_Alb.zs")).unwrap(), nonzero);
         let _ = fs::remove_dir_all(root);
     }
 }
