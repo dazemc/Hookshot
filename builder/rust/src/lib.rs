@@ -29,6 +29,7 @@ mod rtgen;
 mod shader;
 mod split_hot;
 mod stage;
+mod text;
 mod toolchain;
 mod ui_fonts;
 mod version;
@@ -183,6 +184,9 @@ pub fn dispatch(text: &str) -> String {
             request.get("reg").and_then(Value::as_u64).unwrap_or(0) as u8,
             u64::from_str_radix(&string(&request, "table").unwrap_or_default(), 16).unwrap_or(0),
         ),
+        "lift.frame" => Ok(text::frame_json(
+            &string(&request, "text").unwrap_or_default(),
+        )),
         "lift.runtime" => {
             emitter::runtime_text(request.get("which").and_then(Value::as_i64).unwrap_or(0) as i32)
                 .map(|text| json!({"text": text}))
