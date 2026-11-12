@@ -127,7 +127,7 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
-- **Menu languages (upstream #1864, #2654, #2679)**: Gameplay's **Menu language** row picks English, Português (Brasil),
+- **Menu languages (upstream #1864, #2654 and the open #2679)**: Gameplay's **Menu language** row picks English, Português (Brasil),
   Español (Latinoamérica and España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文
   or 繁體中文, or Auto (the game's own language); it is saved as `menu_language`. The separate **Game language** row
   writes `language.txt` and applies after a restart, so the game's text and the menu's can differ. `gpu/vk/menu_i18n.h`
