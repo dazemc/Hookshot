@@ -60,6 +60,7 @@ pub struct Lifter<'a, C: Code> {
     pub jt: BTreeMap<u64, Vec<u64>>,
     pub jt_missing: BTreeMap<u64, u8>,
     pub plt: BTreeMap<u64, (u64, u64)>,
+    pub last_table_debug: Option<String>,
     pub stats: BTreeMap<&'static str, usize>,
 }
 
@@ -77,6 +78,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             jt: BTreeMap::new(),
             jt_missing: BTreeMap::new(),
             plt: BTreeMap::new(),
+            last_table_debug: None,
             stats: BTreeMap::new(),
         }
     }
@@ -508,6 +510,7 @@ impl<'a, C: Code> Lifter<'a, C> {
                     match v {
                         V::Const(base) => Some(V::Const(base.wrapping_add(imm))),
                         V::Add { .. } => None,
+                        V::Reg(reg) if d == reg => None,
                         _ => Some(V::Add {
                             left: Box::new(v),
                             right: Box::new(V::Const(imm)),
@@ -656,6 +659,9 @@ impl<'a, C: Code> Lifter<'a, C> {
             Some(count) => (count, true),
             None => (if size == 1 { 256 } else { 1024 }, false),
         };
+        self.last_table_debug = Some(format!(
+            "base={base:x} shift={shift} count={count} size={size} index={index} tables={tables:x?}"
+        ));
         let (lo, hi) = self.function_extent(br_pc);
         let mut targets =
             self.read_table_targets(&tables, base, shift, count, size, signed, lo, hi);
@@ -867,6 +873,12 @@ pub fn debug_json(exefs: &str, br: u64, reg: u8, table: u64) -> Result<serde_jso
         .read(table, 16)
         .map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
         .unwrap_or_default();
+    let (lo, hi) = lift.function_extent(br);
+    let direct: Vec<String> = lift
+        .read_table_targets(&[table], 0x82191c50, 2, 46, 2, false, lo, hi)
+        .into_iter()
+        .map(|t| format!("{t:x}"))
+        .collect();
     let targets: Vec<String> = lift
         .jump_table(br, 9)
         .unwrap_or_default()
@@ -880,6 +892,8 @@ pub fn debug_json(exefs: &str, br: u64, reg: u8, table: u64) -> Result<serde_jso
         "reaching": reaching,
         "table_bytes": bytes,
         "targets": targets,
+        "direct": direct,
+        "symbolic": lift.last_table_debug,
     }))
 }
 
