@@ -74,11 +74,26 @@ String configPath() {
 String toolsRoot() {
   final tools = Platform.environment['HOOKSHOT_TOOLS'];
   if (tools != null && tools.isNotEmpty) return tools;
-  // Walk up from the running binary until the Rust builder is found
-  // (debug bundle, test runner and packaged layouts all differ).
+  // Walk up from the running binary until the sources are found: a packaged
+  // builder keeps them in <app>/tools, a source checkout at the repository
+  // root (debug bundle, test runner and packaged layouts all differ).
+  bool hasSources(String path) =>
+      Directory('$path/third_party/a64-kit').existsSync() ||
+      File('$path/builder/rust/Cargo.toml').existsSync();
+  try {
+    var dir = File(Platform.resolvedExecutable).parent;
+    for (var i = 0; i < 10; i++) {
+      if (hasSources('${dir.path}/tools')) return '${dir.path}/tools';
+      if (hasSources(dir.path)) return dir.path;
+      final parent = dir.parent;
+      if (parent.path == dir.path) break;
+      dir = parent;
+    }
+  } catch (_) {}
   var dir = Directory(File(Platform.script.toFilePath()).parent.path);
   for (var i = 0; i < 10; i++) {
-    if (File('${dir.path}/builder/rust/Cargo.toml').existsSync()) return dir.path;
+    if (hasSources('${dir.path}/tools')) return '${dir.path}/tools';
+    if (hasSources(dir.path)) return dir.path;
     final parent = dir.parent;
     if (parent.path == dir.path) break;
     dir = parent;
