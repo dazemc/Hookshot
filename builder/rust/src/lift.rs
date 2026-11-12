@@ -848,6 +848,41 @@ impl<'a, C: Code> Lifter<'a, C> {
     }
 }
 
+pub fn debug_json(exefs: &str, br: u64, reg: u8, table: u64) -> Result<serde_json::Value, String> {
+    let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
+    let mut lift = Lifter::new(&image, image.entries.iter().copied());
+    lift.eh_starts = image.eh_starts().to_vec();
+    lift.discover();
+    let reaching: Vec<String> = lift
+        .reaching(br, Loc::Reg(reg), 50000, 0)
+        .into_iter()
+        .map(|v| format!("{v:x}"))
+        .collect();
+    let constants: Vec<String> = lift
+        .function_constants(br, reg)
+        .into_iter()
+        .map(|v| format!("{v:x}"))
+        .collect();
+    let bytes = image
+        .read(table, 16)
+        .map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+        .unwrap_or_default();
+    let targets: Vec<String> = lift
+        .jump_table(br, 9)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| format!("{t:x}"))
+        .collect();
+    Ok(serde_json::json!({
+        "extent": lift.function_extent(br),
+        "hoisted": lift.hoisted_constant(br, reg, 1024).map(|v| format!("{v:x}")),
+        "constants": constants,
+        "reaching": reaching,
+        "table_bytes": bytes,
+        "targets": targets,
+    }))
+}
+
 pub fn tables_json(exefs: &str) -> Result<serde_json::Value, String> {
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
     let mut lift = Lifter::new(&image, image.entries.iter().copied());

@@ -163,6 +163,12 @@ pub fn dispatch(text: &str) -> String {
         "build.plan" => compile::plan_json(&request, &kit::root()),
         "lift.translate" => emitter::translate_json(&request),
         "lift.tables" => lift::tables_json(&string(&request, "exefs").unwrap_or_default()),
+        "lift.debug" => lift::debug_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            u64::from_str_radix(&string(&request, "br").unwrap_or_default(), 16).unwrap_or(0),
+            request.get("reg").and_then(Value::as_u64).unwrap_or(0) as u8,
+            u64::from_str_radix(&string(&request, "table").unwrap_or_default(), 16).unwrap_or(0),
+        ),
         "lift.runtime" => {
             emitter::runtime_text(request.get("which").and_then(Value::as_i64).unwrap_or(0) as i32)
                 .map(|text| json!({"text": text}))
