@@ -5,6 +5,7 @@
 //! released by `hookshot_engine_free`. The same commands are available from
 //! the CLI for tests and for development without Flutter.
 
+mod a64;
 mod chunks;
 mod compile;
 mod diagnostics;
@@ -150,6 +151,13 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.compile_one" => compile::compile_one_json(&request, &kit::root()),
         "build.compile_many" => compile::many_json(&request, &kit::root()),
+        "build.classify" => {
+            let word = request.get("word").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let pc = request.get("pc").and_then(Value::as_u64).unwrap_or(0);
+            Ok(
+                json!({"kind": format!("{:?}", a64::classify(word, pc)), "pc_relative": a64::pc_relative(word)}),
+            )
+        }
         "build.plan" => compile::plan_json(&request, &kit::root()),
         "build.eta" => {
             let pending: Vec<f64> = request
