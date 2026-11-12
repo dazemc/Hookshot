@@ -50,9 +50,19 @@ and responds to the supplied controller input.
 
 Physical keyboard and mouse input stays with the foreground window. Physical controllers can also play in the
 background when the existing "Controller in background" option or `HOS_INPUT_BACKGROUND=1` enables them;
-`HOS_INPUT_BACKGROUND=0` overrides that option. With `HOS_INPUT_EXCLUSIVE=1` the script
-alone drives the game until 5 s after its last press; without it the player's devices add to the script's presses. It
-is not a focus override.
+`HOS_INPUT_BACKGROUND=0` overrides that option. A pad's motion follows the same rule: with the window behind another
+and background pads off, `GetSixAxisSensorStates` reports the pad at rest, so a gyro stops with the buttons. With
+`HOS_INPUT_EXCLUSIVE=1` the script alone drives the game until 5 s after its last press; without it the player's
+devices add to the script's presses. It is not a focus override.
+
+When an SDL controller connects, its `hid: controller` log line includes the hardware `guid` and active
+`mapping-name` (names are limited to 128 bytes). The `mapping-string` follows in GUID-labelled parts of at most
+512 bytes, up to 1024 bytes in total, with a note when truncated. The GUID and mapping describe a device model's
+button layout; no serial, path, user or account call is made. A mapping the player supplied himself, by environment
+or file, is logged as he wrote it, within those limits.
+`mapping=available` means SDL returned a mapping, not that its origin is known; `mapping=none` means SDL returned
+none, and `unavailable` means the loaded SDL lacks a required diagnostic call. A zero GUID is `unknown`.
+These queries do not change bindings, load a mapping file, or change which controllers are read.
 
 ## Switches for testing and debugging
 
