@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn whole_frames_rewrite_the_cut() {
-        let (head, old, key) = WHOLE_SITES[2];
+        let (head, old, _key) = WHOLE_SITES[2];
         let head = head.replace('@', "\n");
         let old = old.replace('@', "\n");
         let site = format!("#include \"a64.h\"\n{head}{old}}}");
