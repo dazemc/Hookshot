@@ -269,15 +269,6 @@ pub fn plan_json_with(
             .map_err(|e| e.to_string())?;
         }
     }
-    let patch_info = if standalone && game_gen.is_dir() {
-        crate::oot_patches::apply_json(
-            game_gen.to_str().unwrap_or_default(),
-            &build,
-            lift_limit == 0 && !lift_all,
-        )?
-    } else {
-        Value::Null
-    };
     let chunks = fs::read_dir(&game_gen)
         .map(|entries| {
             entries
@@ -459,7 +450,6 @@ pub fn plan_json_with(
         "chunks": chunks,
         "standalone": standalone,
         "standalone_info": standalone_info,
-        "patches": patch_info,
         "lift_kept": lift_kept,
         "compiled": compiled,
         "romfs_entries": romfs_files,

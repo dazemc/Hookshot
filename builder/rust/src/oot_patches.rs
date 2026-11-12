@@ -31,7 +31,12 @@ fn python() -> Result<PathBuf, String> {
 
 /// Apply `oot_patches.apply` and `apply_output_size` to `gen`.
 /// `whole` marks a full supported-build lift: its output-size edits are required.
-pub fn apply_json(folder: &str, build: &str, whole: bool) -> Result<Value, String> {
+pub fn apply_json(
+    folder: &str,
+    build: &str,
+    protect_hearts: bool,
+    whole: bool,
+) -> Result<Value, String> {
     if std::env::var_os("HOOKSHOT_NO_PATCHES").is_some() {
         return Ok(json!({"applied": false, "reason": "HOOKSHOT_NO_PATCHES"}));
     }
@@ -51,9 +56,18 @@ pub fn apply_json(folder: &str, build: &str, whole: bool) -> Result<Value, Strin
     let path =
         serde_json::to_string(&nx2.to_string_lossy().to_string()).map_err(|e| e.to_string())?;
     let script = format!(
-        "import sys; sys.path.insert(0, {path}); import oot_patches; oot_patches.apply({gen_path}, protect_hearts=True, required={}); oot_patches.apply_output_size({gen_path}, required={})",
-        if whole { "True" } else { "False" },
-        if whole { "True" } else { "False" }
+        "import sys; sys.path.insert(0, {path}); import oot_patches; oot_patches.apply({gen_path}, protect_hearts={}, required={}); oot_patches.apply_output_size({gen_path}, required={})",
+        if protect_hearts { "True" } else { "False" },
+        if protect_hearts && whole {
+            "True"
+        } else {
+            "False"
+        },
+        if protect_hearts && whole {
+            "True"
+        } else {
+            "False"
+        }
     );
     let output = Command::new(&python)
         .args(["-I", "-c", &script])

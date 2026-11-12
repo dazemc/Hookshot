@@ -859,7 +859,10 @@ impl<'a, C: Code> Lifter<'a, C> {
 
     /// C for one discovered function. This is the plain control-flow emission;
     /// the flag, frame and local-register transforms follow separately.
-    pub fn emit_function(&self, entry: u64, texts: &[String]) -> String {
+    /// C with only the local-register pass applied, before page marks:
+    /// nx2/chunks.py applies the game's patches in this state and groups the
+    /// marks afterwards.
+    pub fn emit_function_unmarked(&self, entry: u64, texts: &[String]) -> String {
         let Some(body) = self.funcs.get(&entry) else {
             return String::new();
         };
@@ -1011,9 +1014,11 @@ impl<'a, C: Code> Lifter<'a, C> {
         if frame {
             text = crate::text::frame_stores(&text);
         }
-        let text =
-            crate::text::localize_regs(&text, crate::text::local_count(), (&dirty.0, &dirty.1));
-        crate::text::mark_groups(&text)
+        crate::text::localize_regs(&text, crate::text::local_count(), (&dirty.0, &dirty.1))
+    }
+
+    pub fn emit_function(&self, entry: u64, texts: &[String]) -> String {
+        crate::text::mark_groups(&self.emit_function_unmarked(entry, texts))
     }
 
     fn dirty_regs(
@@ -1530,7 +1535,25 @@ fn emit_entry<C: Code>(lift: &Lifter<C>, code: &C, entry: u64) -> Result<String,
         .keys()
         .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
         .collect();
-    Ok(lift.emit_function(entry, &texts))
+    Ok(lift.emit_function_unmarked(entry, &texts))
+}
+
+fn mark_chunk_files(dir: &std::path::Path) -> Result<(), String> {
+    let pattern = regex::Regex::new(r"^code_\d{3}\.c$").expect("chunk name regex");
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !pattern.is_match(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(entry.path())
+            .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        let marked = crate::text::mark_groups(&text);
+        if marked != text {
+            std::fs::write(entry.path(), marked)
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn write_json(
@@ -1710,6 +1733,14 @@ pub fn write_json(
     )?;
     save_chunk_boundaries(out, &starts)?;
     remove_stale_chunks(out, files.len())?;
+    let build = crate::nso::build_id(&path.join("main")).unwrap_or_default();
+    let patches = crate::oot_patches::apply_json(
+        out.to_str().unwrap_or_default(),
+        &build,
+        standalone,
+        limit == 0,
+    )?;
+    mark_chunk_files(out)?;
     let mut table = String::from("#include \"a64.h\"\n");
     for entry in &written_entries {
         table.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
@@ -1750,6 +1781,7 @@ pub fn write_json(
         "adr_new": adr_new,
         "adr_spans": adr_spans,
         "boundaries": starts.len(),
+        "patches": patches,
     }))
 }
 pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
@@ -1821,7 +1853,7 @@ pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
         })
         .collect();
     Ok(
-        serde_json::json!({"entry": format!("{entry:x}"), "frame_false": frame_false, "v_ops": v_ops, "branches": branches, "c": lift.emit_function(entry, &texts)}),
+        serde_json::json!({"entry": format!("{entry:x}"), "frame_false": frame_false, "v_ops": v_ops, "branches": branches, "c": lift.emit_function_unmarked(entry, &texts)}),
     )
 }
 
