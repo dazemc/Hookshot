@@ -58,6 +58,10 @@ fn copy(src: &Path, dst: &Path) -> Result<u64, String> {
 
 /// Hard links where the disk allows (the 26 GB romfs is not written twice),
 /// copies across volumes.
+///
+/// The link comes first: a tree staged into a new folder has no file there
+/// yet, and asking the filesystem whether one is (`to.exists()`) costs a stat
+/// per file, 186,000 of them for the romfs. An existing file is kept as it is.
 pub(crate) fn link_tree(src: &Path, dst: &Path, counter: &mut u64) -> Result<(), String> {
     if !src.is_dir() {
         return Ok(());
@@ -70,14 +74,33 @@ pub(crate) fn link_tree(src: &Path, dst: &Path, counter: &mut u64) -> Result<(),
         let kind = entry.file_type().map_err(|e| e.to_string())?;
         if kind.is_dir() {
             link_tree(&from, &to, counter)?;
-        } else if kind.is_file() && !to.exists() {
-            if fs::hard_link(&from, &to).is_err() {
-                fs::copy(&from, &to).map_err(|e| format!("{}: {e}", to.display()))?;
-            }
-            *counter += 1;
+        } else if kind.is_file() {
+            link_file(&from, &to, counter)?;
         }
     }
     Ok(())
+}
+
+/// One file of a tree: a hard link, a copy across volumes, and never over a
+/// file already staged.
+fn link_file(from: &Path, to: &Path, counter: &mut u64) -> Result<(), String> {
+    match fs::hard_link(from, to) {
+        Ok(()) => {
+            *counter += 1;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(_) => {
+            // (no link: another volume, or a filesystem without them. A copy
+            // would replace what is there, which the old check kept)
+            if to.exists() {
+                return Ok(());
+            }
+            fs::copy(from, to).map_err(|e| format!("{}: {e}", to.display()))?;
+            *counter += 1;
+            Ok(())
+        }
+    }
 }
 
 struct LibrarySource {
@@ -540,6 +563,32 @@ mod tests {
         }
         assert!(out.join("image.bin").is_file());
         assert!(!out.join("bin").join("hookshot").exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_staged_tree_links_files_and_keeps_what_is_already_there() {
+        let base = temp("link-tree");
+        let src = base.join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("one.bin"), b"one").unwrap();
+        fs::write(src.join("sub/two.bin"), b"two").unwrap();
+        let dst = base.join("dst");
+        let mut linked = 0;
+        link_tree(&src, &dst, &mut linked).unwrap();
+        assert_eq!(linked, 2);
+        assert_eq!(fs::read(dst.join("one.bin")).unwrap(), b"one");
+        assert_eq!(fs::read(dst.join("sub/two.bin")).unwrap(), b"two");
+        // (a second pass has nothing to do: the files there are kept)
+        let mut again = 0;
+        link_tree(&src, &dst, &mut again).unwrap();
+        assert_eq!(again, 0);
+        // (and a file a player or an earlier build left is not replaced)
+        fs::write(dst.join("one.bin"), b"kept").unwrap();
+        let mut kept = 0;
+        link_tree(&src, &dst, &mut kept).unwrap();
+        assert_eq!(kept, 0);
+        assert_eq!(fs::read(dst.join("one.bin")).unwrap(), b"kept");
         let _ = fs::remove_dir_all(base);
     }
 }
