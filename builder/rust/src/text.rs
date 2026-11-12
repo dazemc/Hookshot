@@ -78,9 +78,27 @@ pub fn vectorize_fcmp(text: &str) -> String {
         "_eq" => 2,
         _ => 0,
     };
+    // Scalar FCMP/FCMPE: one helper call guards the exact integer block.
+    let sfcmp = Regex::new(r"\{ uint64_t _a=0,_b=0; memcpy\(&_a,([^;]+?),(4|8)\);(?: memcpy\(&_b,([^;]+?),(4|8)\);)? [^\n]*? c->n=\(uint8_t\)_lt; c->z=\(uint8_t\)_eq; c->c=\(uint8_t\)!_lt; c->v=0; \} \}").unwrap();
+    let text = sfcmp
+        .replace_all(&text, |c: &regex::Captures| {
+            if let (Some(b), Some(size2)) = (c.get(3), c.get(4)) {
+                let _ = b;
+                if size2.as_str() != &c[2] {
+                    return c[0].to_owned();
+                }
+            }
+            let bits = if &c[2] == "4" { 32 } else { 64 };
+            let other = c.get(3).map(|m| m.as_str()).unwrap_or("a64_vzero");
+            format!(
+                "{{ if (!a64_fcmp{bits}(c,{},{})) {} }}",
+                &c[1], other, &c[0]
+            )
+        })
+        .into_owned();
     let vfcmp = Regex::new(r"(?s)\{ uint32_t _n\[4\],_m\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); memcpy\(_m,c->vreg\[(\d+)\],16\); for\(int _i=0;_i<([24]);_i\+\+\) \{ .*?if\((_eq\|\|_gt|_gt|_eq)\) _v=~\(uint64_t\)0; \} _r\[_i\]=\(uint32_t\)_v; \} memcpy\(c->vreg\[(\d+)\],_r,16\); \}").unwrap();
     let text = vfcmp
-        .replace_all(text, |c: &regex::Captures| {
+        .replace_all(&text, |c: &regex::Captures| {
             format!(
                 "if (!a64_vfcmp(c,c->vreg[{}],c->vreg[{}],c->vreg[{}],{},{})) {}",
                 &c[5],
@@ -134,7 +152,7 @@ pub fn outline_fpx(text: &str) -> String {
             let prefix_matches = {
                 let a: Vec<&str> = fast_args.split(',').map(str::trim).collect();
                 let b: Vec<&str> = exact_args.split(',').map(str::trim).collect();
-                a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x == y)
+                a.len() >= nf && b.len() >= nf && a[..nf] == b[..nf]
             };
             if out != out2 || !prefix_matches || nf == 0 || ne == 0 {
                 return c[0].to_owned();
