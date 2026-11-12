@@ -197,6 +197,7 @@ def package(a):
     tools = os.path.join(out, "tools")
     for f in tracked("gpu", "host", "nx2", "scripts", "third_party"):
         copy(os.path.join(ROOT, f), os.path.join(tools, *f.split("/")))
+    os.makedirs(tools, exist_ok=True)
     repository = (getattr(a, "repository", "") or os.environ.get("HOOKSHOT_REPOSITORY") or
                   os.environ.get("GITHUB_REPOSITORY") or "").strip()
     if repository:
