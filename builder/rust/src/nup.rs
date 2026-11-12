@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -682,18 +682,34 @@ impl Nup {
         let mut count = 0usize;
         let mut bytes = 0u64;
         let mut done = 0usize;
+        let mut where_to = Destination::new(out);
+        let mut stale = true;
         for (part, entries) in parts {
             let mut damaged = Vec::new();
             for (rel, record) in entries {
-                let relative = safe_relative(&rel)?;
-                let path = out.join(part).join(relative);
+                let path = where_to.path(part, &rel)?;
                 let checked = part == "romfs" && rel.ends_with(".zs");
                 let expected = if checked && record.hash != [0u8; 32] {
                     Some(record.hash)
                 } else {
                     None
                 };
-                if path.is_file() && path.metadata().map(|m| m.len()).unwrap_or(0) == record.size {
+                let info = match fs::symlink_metadata(&path) {
+                    Ok(meta) => Some(meta),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(format!("{}: {error}", path.display())),
+                };
+                if info.as_ref().is_some_and(is_link) {
+                    return Err(format!(
+                        "extraction path is a link or reparse point: {}",
+                        path.display()
+                    ));
+                }
+                // (a member cut short by an interrupted run is shorter than its size: written again)
+                if info
+                    .as_ref()
+                    .is_some_and(|meta| meta.is_file() && meta.len() == record.size)
+                {
                     if checked {
                         let previous =
                             fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -708,9 +724,6 @@ impl Nup {
                     progress(done, total);
                     continue;
                 }
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-                }
                 let data = self.read_bytes(&record, &rel)?;
                 if checked
                     && (!zstd_start(&data)
@@ -718,12 +731,30 @@ impl Nup {
                 {
                     damaged.push(rel.clone());
                 }
-                let mut temporary = path.as_os_str().to_owned();
-                temporary.push(".part");
-                let temporary = PathBuf::from(temporary);
-                fs::write(&temporary, &data)
-                    .map_err(|e| format!("{}: {e}", temporary.display()))?;
-                fs::rename(&temporary, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+                // Written in place: a temporary and a rename per member took
+                // most of an extraction's time on Windows. An old file is
+                // unlinked, not truncated, so another hard link keeps its data.
+                if info.is_some() {
+                    fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                }
+                if stale {
+                    // (an interrupted builder that wrote through a temporary left it beside the first member still to write)
+                    stale = false;
+                    let mut temporary = path.as_os_str().to_owned();
+                    temporary.push(".part");
+                    let _ = fs::remove_file(PathBuf::from(temporary));
+                }
+                let mut file = fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                if let Err(error) = file.write_all(&data) {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
+                    return Err(format!("{}: {error}", path.display()));
+                }
+                drop(file);
                 count += 1;
                 bytes += data.len() as u64;
                 done += 1;
@@ -849,6 +880,93 @@ fn content_size(head: &[u8]) -> Option<u64> {
         _ => return None,
     };
     Some(raw)
+}
+
+/// Whether a folder or member is a link or a Windows reparse point: the
+/// extraction must not write through one.
+fn is_link(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & 0x400 != 0 // (FILE_ATTRIBUTE_REPARSE_POINT)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// The extraction's output, resolved once, with each folder checked or made
+/// once: checking every folder on every member's path was most of a Windows
+/// extraction's time. A link where a folder should be is refused.
+struct Destination {
+    root: PathBuf,
+    folders: HashSet<PathBuf>,
+}
+
+impl Destination {
+    fn new(out: &Path) -> Self {
+        let root = fs::canonicalize(out).unwrap_or_else(|_| {
+            if out.is_absolute() {
+                out.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(out))
+                    .unwrap_or_else(|_| out.to_path_buf())
+            }
+        });
+        Self {
+            root,
+            folders: HashSet::new(),
+        }
+    }
+
+    fn folder(&mut self, path: &Path) -> Result<(), String> {
+        if self.folders.contains(path) {
+            return Ok(());
+        }
+        match fs::symlink_metadata(path) {
+            Ok(meta) => {
+                if is_link(&meta) {
+                    return Err(format!(
+                        "extraction path is a link or reparse point: {}",
+                        path.display()
+                    ));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        }
+        self.folders.insert(path.to_path_buf());
+        Ok(())
+    }
+
+    fn path(&mut self, part: &str, rel: &str) -> Result<PathBuf, String> {
+        let relative = safe_relative(rel)?;
+        let mut at = self.root.clone();
+        self.folder(&at)?;
+        at.push(part);
+        self.folder(&at)?;
+        if let Some(parent) = relative.parent() {
+            for name in parent.components() {
+                at.push(name);
+                self.folder(&at)?;
+            }
+        }
+        Ok(at.join(relative.file_name().unwrap_or_default()))
+    }
+
+    /// How many folders were checked or made: a check of "each folder once"
+    /// (the tests read it).
+    #[cfg(test)]
+    fn checked(&self) -> usize {
+        self.folders.len()
+    }
 }
 
 fn safe_relative(rel: &str) -> Result<PathBuf, String> {
@@ -1076,6 +1194,10 @@ mod tests {
     use std::io::Write;
 
     fn fixture() -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        // (one path a test: the tests run at once)
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
         // One title, one directory, one raw file and one zstd file.
         let raw = b"raw file contents";
         let packed = zstd::stream::encode_all(&b"packed file contents"[..], 0).unwrap();
@@ -1142,7 +1264,7 @@ mod tests {
         let digest: [u8; 32] = Sha256::digest(&bytes[0x80..0x80 + toc_size]).into();
         bytes[24..56].copy_from_slice(&digest);
         let path =
-            std::env::temp_dir().join(format!("hookshot-rust-nup-{}.nup", std::process::id()));
+            std::env::temp_dir().join(format!("hookshot-rust-nup-{}-{n}.nup", std::process::id()));
         let mut f = File::create(&path).unwrap();
         f.write_all(&bytes).unwrap();
         path
@@ -1178,6 +1300,145 @@ mod tests {
         let verify = verify_json(path.to_str().unwrap(), None, Some("romfs")).unwrap();
         assert_eq!(verify["checked_records"], 2);
         assert_eq!(verify["bad"], 0);
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    fn extract_into(out: &Path, path: &Path) {
+        let mut nup = Nup::open(path).unwrap();
+        nup.extract_with_progress(out, Some("romfs"), None, &mut |_, _| {})
+            .unwrap();
+    }
+
+    fn extract(out: &Path, path: &Path) {
+        let _ = fs::remove_dir_all(out);
+        extract_into(out, path);
+    }
+
+    #[test]
+    fn folders_are_checked_once_per_extraction() {
+        let root = std::env::temp_dir().join(format!(
+            "hookshot-rust-nup-folders-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let mut destination = Destination::new(&root);
+        for i in 0..30 {
+            let path = destination
+                .path("romfs", &format!("Map/{}/file{i}.bin", i % 3))
+                .unwrap();
+            assert!(path.starts_with(&destination.root));
+        }
+        // (the output, romfs, Map, then Map/0 to Map/2: each looked at once)
+        assert_eq!(destination.checked(), 1 + 1 + 1 + 3);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn extracts_members_in_place_without_a_temporary() {
+        let path = fixture();
+        let out =
+            std::env::temp_dir().join(format!("hookshot-rust-nup-inplace-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        extract(&out, &path);
+        assert_eq!(
+            fs::read(out.join("romfs/member.bin")).unwrap(),
+            b"raw file contents"
+        );
+        assert_eq!(
+            fs::read(out.join("romfs/packed.bin")).unwrap(),
+            b"packed file contents"
+        );
+        let leftovers: Vec<String> = walkdir::WalkDir::new(&out)
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".part"))
+            .map(|entry| entry.path().display().to_string())
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_member_cut_short_is_written_again_and_its_stale_part_removed() {
+        let path = fixture();
+        let out =
+            std::env::temp_dir().join(format!("hookshot-rust-nup-short-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        extract(&out, &path);
+        let romfs = out.join("romfs");
+        fs::write(romfs.join("member.bin"), b"cut").unwrap();
+        fs::remove_file(romfs.join("packed.bin")).unwrap();
+        fs::write(romfs.join("packed.bin.part"), b"an older builder's temporary").unwrap();
+        extract_into(&out, &path);
+        assert_eq!(fs::read(romfs.join("member.bin")).unwrap(), b"raw file contents");
+        assert_eq!(
+            fs::read(romfs.join("packed.bin")).unwrap(),
+            b"packed file contents"
+        );
+        assert!(!romfs.join("packed.bin.part").exists());
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn a_member_hard_link_is_replaced_without_truncating_it() {
+        let path = fixture();
+        let out =
+            std::env::temp_dir().join(format!("hookshot-rust-nup-hard-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        extract(&out, &path);
+        let romfs = out.join("romfs");
+        let sentinel = out.join("keep.bin");
+        fs::write(&sentinel, b"keep outside").unwrap();
+        fs::remove_file(romfs.join("member.bin")).unwrap();
+        fs::hard_link(&sentinel, romfs.join("member.bin")).unwrap();
+        extract_into(&out, &path);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep outside");
+        assert_eq!(fs::read(romfs.join("member.bin")).unwrap(), b"raw file contents");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_member_or_folder_is_refused() {
+        let path = fixture();
+        let out =
+            std::env::temp_dir().join(format!("hookshot-rust-nup-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        fs::create_dir_all(&out).unwrap();
+        let sentinel = out.join("keep.bin");
+        fs::write(&sentinel, b"keep outside data").unwrap();
+        std::os::unix::fs::symlink(&sentinel, out.join("romfs")).unwrap();
+        let mut nup = Nup::open(&path).unwrap();
+        let error = nup
+            .extract_with_progress(&out, Some("romfs"), None, &mut |_, _| {})
+            .unwrap_err();
+        assert!(error.contains("link or reparse point"), "{error}");
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(out);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_temporary_link_cannot_truncate_an_outside_file() {
+        let path = fixture();
+        let out = std::env::temp_dir().join(format!(
+            "hookshot-rust-nup-stale-link-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        let romfs = out.join("romfs");
+        fs::create_dir_all(&romfs).unwrap();
+        let sentinel = out.join("keep.bin");
+        fs::write(&sentinel, b"keep outside data").unwrap();
+        std::os::unix::fs::symlink(&sentinel, romfs.join("packed.bin.part")).unwrap();
+        extract_into(&out, &path);
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep outside data");
+        assert!(!romfs.join("packed.bin.part").exists());
+        assert_eq!(fs::read(romfs.join("member.bin")).unwrap(), b"raw file contents");
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(out);
     }
