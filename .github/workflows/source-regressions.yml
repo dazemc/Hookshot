@@ -89,6 +89,13 @@ jobs:
           channel: stable
           flutter-version: '3.47.9'
           cache: true
+      # (cnativeapi, which the window packages build, compiles its Linux shim
+      # against GTK 3, X11 and Xi: flutter test builds the package's native
+      # assets even though the tests do not open a window)
+      - name: Native asset development headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libgtk-3-dev libx11-dev libxi-dev
       - name: Packages
         run: flutter pub get
       - name: Tests
