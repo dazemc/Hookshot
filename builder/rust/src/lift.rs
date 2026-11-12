@@ -859,6 +859,7 @@ pub fn tables_json(exefs: &str) -> Result<serde_json::Value, String> {
         "plt_stubs": lift.plt.len(),
         "missing": lift.jt_missing.keys().map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
         "keys": lift.jt.keys().map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
+        "missing_in_body": lift.jt_missing.keys().map(|pc| (format!("{pc:x}"), lift.funcs.values().any(|body| body.contains_key(pc)))).collect::<Vec<_>>(),
         "jt_missing": lift.jt_missing.len(),
         "targets": lift.jt.values().map(Vec::len).sum::<usize>(),
         "stats": lift.stats,
