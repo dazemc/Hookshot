@@ -1840,7 +1840,9 @@ pub fn write_json(
         cache.put(key, &text)?;
         emitted[index] = Some(text);
     }
-    cache.save()?;
+    if !misses.is_empty() {
+        cache.save()?;
+    }
     cache_store.done();
     if emitted.iter().any(Option::is_none) {
         return Err("the lift cache left some functions without C".into());
