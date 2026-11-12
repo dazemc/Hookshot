@@ -1695,6 +1695,8 @@ pub fn write_json(
     standalone: bool,
 ) -> Result<serde_json::Value, String> {
     let path = std::path::Path::new(exefs);
+    let total = crate::timing::Stage::new("lift.total");
+    let read = crate::timing::Stage::new("lift.read");
     let hle = if standalone {
         crate::standalone::hle_symbols(exefs)?
     } else {
@@ -1702,6 +1704,8 @@ pub fn write_json(
     };
     let mut image = crate::image::Image::build(path, 0, false, &hle, &[])?;
     let (adr_refs, adr_new, adr_spans) = image.add_adr_entries(4);
+    read.done();
+    let discover = crate::timing::Stage::new("lift.discover");
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.hooks = image.hooks.clone();
     lift.entries.extend(lift.hooks.keys().copied());
@@ -1710,8 +1714,11 @@ pub fn write_json(
     lift.eh_starts = image.eh_starts().to_vec();
     lift.names = image.names().clone();
     lift.discover();
+    discover.done();
     if standalone {
+        let after = crate::timing::Stage::new("lift.after_sites");
         lift.after = crate::oot_after::sites(&image);
+        after.done();
     }
     let out = std::path::Path::new(out);
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -1722,7 +1729,9 @@ pub fn write_json(
         .take(if limit == 0 { usize::MAX } else { limit })
         .collect();
     let cache_dir = out.join("lift_cache");
+    let cache_open = crate::timing::Stage::new("lift.cache_open");
     let mut cache = crate::lift_cache::Cache::open(&cache_dir)?;
+    cache_open.done();
     let codegen = codegen_fingerprint();
     let mut env = env_fingerprint();
     if !lift.after.is_empty() {
@@ -1733,17 +1742,25 @@ pub fn write_json(
         }
         env.extend(after.finalize());
     }
+    let keys = crate::timing::Stage::new("lift.keys");
     let mut emitted: Vec<Option<String>> = vec![None; entries.len()];
     let mut misses: Vec<(usize, u64, [u8; 20])> = Vec::new();
+    let mut hits = 0usize;
     for (index, entry) in entries.iter().copied().enumerate() {
         let key = function_key(&lift, &image, entry, &codegen, &env);
         if let Some(text) = cache.get(&key) {
             emitted[index] = Some(text);
+            hits += 1;
         } else {
             misses.push((index, entry, key));
         }
     }
-    let texts = shared_texts(&lift, &image, &misses)?;
+    keys.mark(&format!("{hits} cache hits, {} misses", misses.len()));
+    keys.done();
+    let texts = crate::timing::span("lift.shared_texts", || {
+        shared_texts(&lift, &image, &misses)
+    })?;
+    let emit = crate::timing::Stage::new("lift.emit");
     let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -1782,12 +1799,15 @@ pub fn write_json(
                 .collect()
         })
     };
+    emit.done();
+    let cache_store = crate::timing::Stage::new("lift.cache_store");
     for (index, key, result) in results {
         let text = result?;
         cache.put(key, &text)?;
         emitted[index] = Some(text);
     }
     cache.save()?;
+    cache_store.done();
     if emitted.iter().any(Option::is_none) {
         return Err("the lift cache left some functions without C".into());
     }
@@ -1797,12 +1817,14 @@ pub fn write_json(
         .filter_map(|(index, text)| text.map(|text| (index, text)))
         .collect();
     emitted.sort_by_key(|(index, _)| *index);
+    let fpx = crate::timing::Stage::new("lift.fpx_collect");
     let mut used = std::collections::HashSet::new();
     for (_, text) in &emitted {
         collect_fpx(text, &mut used);
     }
     std::fs::write(out.join("a64_fpx.h"), crate::text::fpx_header(&used))
         .map_err(|e| e.to_string())?;
+    fpx.done();
     let written = entries.len();
     let mut written_entries = entries.clone();
     written_entries.extend(lift.hooks.keys().copied());
@@ -1817,6 +1839,7 @@ pub fn write_json(
             saved
         }
     };
+    let chunks = crate::timing::Stage::new("lift.chunks");
     let mut chunk = String::new();
     let mut decls = std::collections::BTreeSet::new();
     let mut chunk_start: Option<u64> = None;
@@ -1875,16 +1898,21 @@ pub fn write_json(
         &mut chunk_start,
         &reference,
     )?;
+    chunks.mark("assembled and written");
     save_chunk_boundaries(out, &starts)?;
     remove_stale_chunks(out, files.len())?;
+    chunks.done();
     let build = crate::nso::build_id(&path.join("main")).unwrap_or_default();
-    let patches = crate::oot_patches::apply_json(
-        out.to_str().unwrap_or_default(),
-        &build,
-        standalone,
-        limit == 0,
-    )?;
-    mark_chunk_files(out)?;
+    let patches = crate::timing::span("lift.patches", || {
+        crate::oot_patches::apply_json(
+            out.to_str().unwrap_or_default(),
+            &build,
+            standalone,
+            limit == 0,
+        )
+    })?;
+    crate::timing::span("lift.mark_groups", || mark_chunk_files(out))?;
+    let tables = crate::timing::Stage::new("lift.tables");
     let mut table = String::from("#include \"a64.h\"\n");
     for entry in &written_entries {
         table.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
@@ -1917,6 +1945,8 @@ pub fn write_json(
         ));
     }
     std::fs::write(out.join("a64_hooks.c"), hooks_c).map_err(|e| e.to_string())?;
+    tables.done();
+    total.done();
     Ok(serde_json::json!({
         "files": files,
         "functions": written,
