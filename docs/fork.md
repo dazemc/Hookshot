@@ -121,6 +121,8 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **2 DLSS/V-Sync fixes**: V-Sync Auto follows the Frame Gen runtime's real frame limit (#2701); a failed DLSS
+  feature is retried when a menu setting changes, not for the rest of the run (#2550).
 - **11 Vulkan fixes**: texture table, span aging, split fence wait, recorder packet, Intel storage loop, subgroup
   barrier, mesh grass hold, pipeline-cache header, 250 ms readback, RADV mesh default, Intel uniform snapshot.
 - **7 host fixes**: update downgrade guard, menu option order, Steam gyro, Aux/splitter audio, window title/class,
@@ -138,7 +140,8 @@ Do not port game-derived pipeline lists or generated game data.
 
 `source-regressions.yml` runs Rust tests on Linux and Windows, Flutter tests/analyze, three SPIR-V fixture builds and
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
-All five workflows are green on `0423785a`, the commit `v2.2.0-rs.1` was built from.
+All five workflows are green on `582049d0`. The pre-release `v2.2.0-rs.1` was built from `0423785a`; the
+compile-wave scheduler and the two DLSS/V-Sync fixes above came after it.
 
 The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
 app and Rust engine without Python; the pre-release (`v2.2.0-rs.1`) is published with the AppImage and the
