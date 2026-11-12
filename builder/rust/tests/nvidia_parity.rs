@@ -45,10 +45,11 @@ fn function(text: &str, marker: &str) -> String {
 }
 
 fn compiler() -> Option<String> {
-    let candidates = std::env::var("CXX")
-        .ok()
-        .into_iter()
-        .chain(["c++".into(), "g++".into(), "clang++".into()]);
+    let candidates =
+        std::env::var("CXX")
+            .ok()
+            .into_iter()
+            .chain(["c++".into(), "g++".into(), "clang++".into()]);
     for candidate in candidates {
         if Command::new(&candidate)
             .arg("--version")
@@ -135,7 +136,10 @@ fn a_refused_dlss_feature_is_retried_and_a_failing_evaluation_is_not_latched() {
     let early = release
         .find("if (!s.feature) return;")
         .expect("release's early return");
-    assert!(clear < early, "release must clear the refusal before its early return");
+    assert!(
+        clear < early,
+        "release must clear the refusal before its early return"
+    );
 
     // A failed evaluation is retried next frame (TemporalEngine::retry); its log is spaced, and 30 in a row remake it.
     let evaluate = function(&dlss, "bool evaluate(");
@@ -157,7 +161,10 @@ fn a_refused_dlss_feature_is_retried_and_a_failing_evaluation_is_not_latched() {
     // The menu's scaling rows clear the chain's latch and DLSS's own refusal, with the chain's lock held.
     assert!(dlss_h.contains("void dlss_retry();"));
     assert!(dlss.contains("void dlss_retry() { st().refused = 0; }"));
-    assert!(dlss.contains("void dlss_retry() {}"), "the build without NGX needs the stub");
+    assert!(
+        dlss.contains("void dlss_retry() {}"),
+        "the build without NGX needs the stub"
+    );
     let reset = function(&temporal, "void temporal_reset_failure()");
     assert!(reset.contains("dlss_retry();"));
 
@@ -395,7 +402,9 @@ fn switching_to_dlaa_waits_for_the_native_scene() {
     assert!(function(&fsr4, "int prepare(").contains("bool /*native_aa*/"));
 
     let Some(cxx) = compiler() else {
-        eprintln!("skipping the DLAA transition fixture: no C++ compiler (CXX, c++, g++ or clang++)");
+        eprintln!(
+            "skipping the DLAA transition fixture: no C++ compiler (CXX, c++, g++ or clang++)"
+        );
         return;
     };
     // The real dispatch and feature-reuse decisions are cut out of the source, as upstream's Python test did.
@@ -419,7 +428,13 @@ fn switching_to_dlaa_waits_for_the_native_scene() {
         .replace("/* REUSE */", reuse)
         .replace("/* DRAWN_MODE */", "s.drawn_mode = draw_mode;");
     let dir = scratch("dlaa-native");
-    let output = compile_and_run(&cxx, &dir, "dlaa_native", &fixture, &[root().to_str().unwrap()]);
+    let output = compile_and_run(
+        &cxx,
+        &dir,
+        "dlaa_native",
+        &fixture,
+        &[root().to_str().unwrap()],
+    );
     assert!(output.contains("PASS"));
     let _ = fs::remove_dir_all(dir);
 }
@@ -435,13 +450,18 @@ fn reflex_submit_ids_vsync_auto_and_ngx_runtimes_stay_as_ported() {
     assert!(reflex.contains("VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV"));
     assert!(reflex.contains("RX_VK_REFLEX_SUBMIT_IDS"));
     assert!(reflex.contains("VK_LATENCY_MARKER_RENDERSUBMIT_END_NV"));
-    assert!(reflex_h.contains("const void* reflex_submit_id(const void* next, uint64_t frame = kReflexThisFrame);"));
+    assert!(reflex_h.contains(
+        "const void* reflex_submit_id(const void* next, uint64_t frame = kReflexThisFrame);"
+    ));
     for site in [
         "si.pNext = reflex_submit_id(nullptr, pend.reflex);",
         "si.pNext = reflex_submit_id(nullptr);",
         "si.pNext = reflex_submit_id(nullptr, reflex_present_frame);",
     ] {
-        assert!(replay.contains(site), "a Reflex submit site is missing: {site}");
+        assert!(
+            replay.contains(site),
+            "a Reflex submit site is missing: {site}"
+        );
     }
 
     // V-Sync Auto asks DLSS-G for the multiplier less one and follows the runtime's real limit, known at its first

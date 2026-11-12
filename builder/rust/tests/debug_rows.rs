@@ -122,8 +122,17 @@ fn switch_age_is_offered_only_once_the_age_is_known() {
     let mut fixture = FIXTURE.to_string();
     for (marker, function) in [
         ("/* AGE_SHOWN */", block(&menu, "bool age_shown(int i) {")),
-        ("/* CONFIRM */", block(&menu, "const char* cheat_confirm(int i) {")),
-        ("/* PRESS */", block(&menu, "void cheat_press(int i, const bool* press, bool& changed) {")),
+        (
+            "/* CONFIRM */",
+            block(&menu, "const char* cheat_confirm(int i) {"),
+        ),
+        (
+            "/* PRESS */",
+            block(
+                &menu,
+                "void cheat_press(int i, const bool* press, bool& changed) {",
+            ),
+        ),
     ] {
         fixture = fixture.replace(marker, &function);
     }
@@ -159,7 +168,9 @@ fn switch_age_is_offered_only_once_the_age_is_known() {
         "{cxx}: {}",
         String::from_utf8_lossy(&build.stderr)
     );
-    let run = Command::new(&exe).output().expect("run the Debug row fixture");
+    let run = Command::new(&exe)
+        .output()
+        .expect("run the Debug row fixture");
     let _ = fs::remove_dir_all(dir);
     assert!(
         run.status.success(),

@@ -70,11 +70,14 @@ fn the_old_row_is_gone_and_the_switch_chooses() {
         "create_device no longer reads the old mesh_shaders= line that existing files keep"
     );
     assert!(
-        device.contains("logf(\"vk: mesh shaders: %s, from %s: %s\"") && device.contains("mesh_choice.why"),
+        device.contains("logf(\"vk: mesh shaders: %s, from %s: %s\"")
+            && device.contains("mesh_choice.why"),
         "the log line does not say where the mesh mode came from"
     );
     assert!(
-        device.contains("if (mesh_mode_used == 0 && dev.props.vendorID == 0x1002) mesh_mode_used = 2;"),
+        device.contains(
+            "if (mesh_mode_used == 0 && dev.props.vendorID == 0x1002) mesh_mode_used = 2;"
+        ),
         "Automatic no longer picks Compute on Linux AMD"
     );
 
@@ -91,7 +94,8 @@ fn the_old_row_is_gone_and_the_switch_chooses() {
     );
     let save = block(&menu, "void save() {");
     assert!(
-        !save.contains("mine |= key == \"mesh_shaders\"") && !save.contains("fprintf(f, \"mesh_shaders"),
+        !save.contains("mine |= key == \"mesh_shaders\"")
+            && !save.contains("fprintf(f, \"mesh_shaders"),
         "save() treats mesh_shaders as its own: an existing line would be dropped or rewritten"
     );
     assert!(
@@ -119,7 +123,15 @@ fn the_old_row_is_gone_and_the_switch_chooses() {
 fn the_rule_compiles_and_runs_game_free() {
     let header = source("gpu/vk/mesh_mode.h");
     let fixture = source("tests/test_mesh_mode_switch.cpp");
-    for forbidden in ["fopen", "getenv", "romfs", "exefs", ".nup", "work/dump", "HOS_DUMP"] {
+    for forbidden in [
+        "fopen",
+        "getenv",
+        "romfs",
+        "exefs",
+        ".nup",
+        "work/dump",
+        "HOS_DUMP",
+    ] {
         assert!(
             !header.contains(forbidden) && !fixture.contains(forbidden),
             "the mesh rule or its fixture reads {forbidden}: it must stay pure and game-free"

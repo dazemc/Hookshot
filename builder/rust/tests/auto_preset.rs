@@ -80,7 +80,10 @@ fn the_menu_reaches_auto_and_keeps_a_saved_preset() {
     }
     let options = source("gpu/vk/vk_menu.h");
     assert!(options.contains("constexpr int kAutoPreset = 6;"));
-    assert!(!menu.contains("constexpr int kAutoPreset"), "vk_menu.cpp defines kAutoPreset again");
+    assert!(
+        !menu.contains("constexpr int kAutoPreset"),
+        "vk_menu.cpp defines kAutoPreset again"
+    );
 
     // (the upscaler is set before the tier's rows: apply_preset snaps the Render resolution to it)
     let auto = block(&menu, "void apply_auto(bool keep_own) {");
@@ -102,9 +105,15 @@ fn the_menu_reaches_auto_and_keeps_a_saved_preset() {
     );
 
     // (the CPU holding the frame rate ends the tuning for this run only: no auto_tuned for it)
-    let tune = block(&menu, "void menu_auto_tune(double gpu_ms, double draws, double fps) {");
+    let tune = block(
+        &menu,
+        "void menu_auto_tune(double gpu_ms, double draws, double fps) {",
+    );
     assert!(tune.contains("::auto_settings::resolution_for(c, ur::engine(u), v,"));
-    let cpu = tune[tune.find("verdict == ::auto_settings::CPU_BOUND) {").expect("the CPU-bound branch")..].to_string();
+    let cpu = tune[tune
+        .find("verdict == ::auto_settings::CPU_BOUND) {")
+        .expect("the CPU-bound branch")..]
+        .to_string();
     let cpu = &cpu[..cpu.find("} else {").expect("the settled branch")];
     assert!(
         !cpu.contains("auto_tuned") && cpu.contains("return;"),
@@ -117,7 +126,10 @@ fn the_menu_reaches_auto_and_keeps_a_saved_preset() {
         .find("if (!::auto_settings::should_apply(first, opts.preset, auto_for, fp)) {")
         .expect("the saved-preset guard");
     let apply = profile.find("apply_auto(!first);").expect("apply_auto");
-    assert!(not_auto < apply, "menu_auto_for_gpu applies Auto before checking the saved preset");
+    assert!(
+        not_auto < apply,
+        "menu_auto_for_gpu applies Auto before checking the saved preset"
+    );
     let guard = &profile[not_auto..apply];
     assert!(
         guard.contains("the settings chosen for this PC before")
@@ -159,10 +171,16 @@ fn the_menu_reaches_auto_and_keeps_a_saved_preset() {
         .nth(1)
         .and_then(|s| s.split('}').next())
         .expect("kTierResolution");
-    let values: Vec<i32> = table.split(',').map(|s| s.trim().parse().unwrap()).collect();
+    let values: Vec<i32> = table
+        .split(',')
+        .map(|s| s.trim().parse().unwrap())
+        .collect();
     assert_eq!(own.len(), 5, "apply_preset's five tiers not found");
     for (tier, resolution) in own {
-        assert_eq!(values[tier], resolution, "auto_settings.h kTierResolution disagrees with apply_preset tier {tier}");
+        assert_eq!(
+            values[tier], resolution,
+            "auto_settings.h kTierResolution disagrees with apply_preset tier {tier}"
+        );
     }
 
     let main = source("gpu/vk/vk_main.cpp");
@@ -176,8 +194,11 @@ fn the_menu_reaches_auto_and_keeps_a_saved_preset() {
         assert!(main.contains(needle), "vk_main.cpp no longer has: {needle}");
     }
     assert!(
-        main.find("dev.mesh_capable = m.meshShader && m.taskShader;").unwrap()
-            < main.find("if (mesh_mode_used == 2) dev.mesh_shader = false;").unwrap(),
+        main.find("dev.mesh_capable = m.meshShader && m.taskShader;")
+            .unwrap()
+            < main
+                .find("if (mesh_mode_used == 2) dev.mesh_shader = false;")
+                .unwrap(),
         "vk_main.cpp: dev.mesh_capable must be read before the Mesh shaders mode is applied"
     );
     assert!(
@@ -209,7 +230,15 @@ fn the_menu_reaches_auto_and_keeps_a_saved_preset() {
 fn the_rules_compile_for_authored_hardware_and_read_no_game_data() {
     let rules = source("gpu/vk/auto_settings.h");
     let fixture = source("tests/test_auto_settings.cpp");
-    for forbidden in ["fopen", "getenv", "romfs", "exefs", ".nup", "work/dump", "HOS_DUMP"] {
+    for forbidden in [
+        "fopen",
+        "getenv",
+        "romfs",
+        "exefs",
+        ".nup",
+        "work/dump",
+        "HOS_DUMP",
+    ] {
         assert!(
             !rules.contains(forbidden) && !fixture.contains(forbidden),
             "the Auto rule or its fixture reads {forbidden}: it must stay pure and game-free"
@@ -239,7 +268,10 @@ fn the_rules_compile_for_authored_hardware_and_read_no_game_data() {
         "the CPU holds it",
         "at most two steps",
     ] {
-        assert!(fixture.contains(profile), "the Auto fixture no longer covers {profile}");
+        assert!(
+            fixture.contains(profile),
+            "the Auto fixture no longer covers {profile}"
+        );
     }
 
     let Some(cxx) = compiler() else {

@@ -13,10 +13,11 @@ fn root() -> PathBuf {
 }
 
 fn compiler() -> Option<String> {
-    let candidates = std::env::var("CC")
-        .ok()
-        .into_iter()
-        .chain(["cc".into(), "gcc".into(), "clang".into()]);
+    let candidates =
+        std::env::var("CC")
+            .ok()
+            .into_iter()
+            .chain(["cc".into(), "gcc".into(), "clang".into()]);
     for candidate in candidates {
         if Command::new(&candidate)
             .arg("--version")
@@ -61,7 +62,13 @@ fn the_bridge_carries_the_debug_tabs_teleport_and_age_switch() {
     // (control.c's POSIX transport uses accept4 and struct ucred, so _GNU_SOURCE is the build's own)
     let build = Command::new(&cc)
         // (not -Werror: the fixture's fixed-size socket paths trip GCC's format-truncation warning on a long scratch path)
-        .args(["-std=gnu11", "-D_GNU_SOURCE", "-DHOS_CONTROL_NO_GAME", "-Wall", "-Wextra"])
+        .args([
+            "-std=gnu11",
+            "-D_GNU_SOURCE",
+            "-DHOS_CONTROL_NO_GAME",
+            "-Wall",
+            "-Wextra",
+        ])
         .arg(format!("-I{}", repo.join("host").display()))
         .arg(format!("-I{}", repo.join("gpu/vk/compat").display()))
         .arg(repo.join("tests/control_test.c"))

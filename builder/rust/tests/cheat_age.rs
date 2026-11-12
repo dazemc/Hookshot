@@ -11,10 +11,11 @@ fn root() -> PathBuf {
 }
 
 fn compiler() -> Option<String> {
-    let candidates = std::env::var("CC")
-        .ok()
-        .into_iter()
-        .chain(["cc".into(), "gcc".into(), "clang".into()]);
+    let candidates =
+        std::env::var("CC")
+            .ok()
+            .into_iter()
+            .chain(["cc".into(), "gcc".into(), "clang".into()]);
     for candidate in candidates {
         if Command::new(&candidate)
             .arg("--version")
@@ -193,7 +194,9 @@ fn age_toggle_flips_the_saved_flag_and_undoes_a_refused_reload() {
         "{cc}: {}",
         String::from_utf8_lossy(&build.stderr)
     );
-    let run = Command::new(&exe).output().expect("run the age toggle fixture");
+    let run = Command::new(&exe)
+        .output()
+        .expect("run the age toggle fixture");
     let _ = fs::remove_dir_all(dir);
     assert!(
         run.status.success(),

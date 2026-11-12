@@ -45,21 +45,38 @@ fn the_row_and_the_counter_use_one_name_per_engine() {
     );
     let menu = source("gpu/vk/vk_menu.cpp");
     assert!(
-        menu.contains("{TAB_GRAPHICS, \"Frame generation by\", &opts.framegen_by, 0, 1, 1, tx_framegen_by,"),
+        menu.contains(
+            "{TAB_GRAPHICS, \"Frame generation by\", &opts.framegen_by, 0, 1, 1, tx_framegen_by,"
+        ),
         "the Frame generation by row no longer keeps its 0..1 values"
     );
     let tx = block(&menu, "const char* tx_framegen_by(int v) {");
-    assert!(tx.contains("\"Built-in FG\""), "the chosen built-in value is not named Built-in FG");
+    assert!(
+        tx.contains("\"Built-in FG\""),
+        "the chosen built-in value is not named Built-in FG"
+    );
     assert!(tx.contains("\"Auto\""), "the row's Auto text is gone");
-    assert!(tx.contains("snprintf(b, sizeof b, \"Auto: %s\", who)"), "Auto does not name the maker");
+    assert!(
+        tx.contains("snprintf(b, sizeof b, \"Auto: %s\", who)"),
+        "Auto does not name the maker"
+    );
     let name = block(&menu, "const char* framegen_maker_name() {");
     for maker in ["\"DLSS FG\"", "\"FSR 3.1 FG\"", "\"Built-in FG\""] {
         assert!(name.contains(maker), "framegen_maker_name misses {maker}");
     }
-    assert!(name.contains("opts.framegen < 1"), "a name is shown with frame generation off");
+    assert!(
+        name.contains("opts.framegen < 1"),
+        "a name is shown with frame generation off"
+    );
 
-    let sub = menu[menu.find("char fps_sub[96] = \"\";").expect("fps_sub")..].split('\n').next().unwrap();
-    assert!(sub.contains("UTF-8"), "the counter's second line is not sized for a UTF-8 name");
+    let sub = menu[menu.find("char fps_sub[96] = \"\";").expect("fps_sub")..]
+        .split('\n')
+        .next()
+        .unwrap();
+    assert!(
+        sub.contains("UTF-8"),
+        "the counter's second line is not sized for a UTF-8 name"
+    );
     let tick = block(&menu, "void menu_tick() {");
     assert!(
         tick.contains("snprintf(fps_sub, sizeof fps_sub, \"Base %.0f, %s\", game, who)")
@@ -71,9 +88,13 @@ fn the_row_and_the_counter_use_one_name_per_engine() {
         "the old game/Built-in texts are still written"
     );
     assert!(
-        block(&menu, "const char* framegen_skip_text(int why, unsigned most) {")
-            .contains("\"Not DLSS FG now: %s\"")
-            || block(&menu, "const char* hn_framegen_by(int v, int variant) {").contains("\"Not DLSS FG now: %s\""),
+        block(
+            &menu,
+            "const char* framegen_skip_text(int why, unsigned most) {"
+        )
+        .contains("\"Not DLSS FG now: %s\"")
+            || block(&menu, "const char* hn_framegen_by(int v, int variant) {")
+                .contains("\"Not DLSS FG now: %s\""),
         "the row's help does not say why another maker has the frames"
     );
     for reason in [
@@ -89,7 +110,8 @@ fn the_row_and_the_counter_use_one_name_per_engine() {
         assert!(menu.contains(reason), "the row cannot name {reason}");
     }
     assert!(
-        source("readme.md").contains("Base 60, DLSS FG") && source("readme.md").contains("FSR 3.1 FG"),
+        source("readme.md").contains("Base 60, DLSS FG")
+            && source("readme.md").contains("FSR 3.1 FG"),
         "readme.md does not document the row and the counter"
     );
 }
@@ -105,12 +127,15 @@ fn the_maker_is_noted_and_dlss_names_its_reasons() {
     );
     let maker = block(&framegen, "FgMaker framegen_maker() {");
     assert!(
-        maker.contains("500000000") && maker.contains("FgMaker::Dlss") && maker.contains("FgMaker::Fsr3"),
+        maker.contains("500000000")
+            && maker.contains("FgMaker::Dlss")
+            && maker.contains("FgMaker::Fsr3"),
         "framegen_maker does not pick the most noted maker or time out"
     );
     let note = block(&framegen, "void note_maker(FgMaker m) {");
     assert!(
-        note.contains("maker_count[slot].fetch_sub") && note.contains("maker_count[slot].fetch_add"),
+        note.contains("maker_count[slot].fetch_sub")
+            && note.contains("maker_count[slot].fetch_add"),
         "note_maker does not keep the ring's counts"
     );
     let record = block(&framegen, "bool framegen_record(");
@@ -153,7 +178,9 @@ fn the_maker_is_noted_and_dlss_names_its_reasons() {
             && block(&dlss, "int dlss_fg_skip(unsigned* most) {").contains("fg_skip_most.load"),
         "dlss_fg_skip does not give the last reason and the runtime's most"
     );
-    let stub = &dlss[dlss.find("bool dlss_fg_wanted() { return false; }").expect("the no-NGX stubs")..];
+    let stub = &dlss[dlss
+        .find("bool dlss_fg_wanted() { return false; }")
+        .expect("the no-NGX stubs")..];
     assert!(
         stub.contains("return FG_SKIP_NOT_BUILT;"),
         "a build without the NGX SDK does not say so"
@@ -170,7 +197,15 @@ fn the_naming_reads_no_game_data() {
         "const char* hn_framegen_by(int v, int variant) {",
     ] {
         let text = block(&menu, marker);
-        for forbidden in ["fopen", "getenv", "romfs", "exefs", ".nup", "work/dump", "HOS_DUMP"] {
+        for forbidden in [
+            "fopen",
+            "getenv",
+            "romfs",
+            "exefs",
+            ".nup",
+            "work/dump",
+            "HOS_DUMP",
+        ] {
             assert!(
                 !text.contains(forbidden),
                 "{marker} reads {forbidden}: naming must stay independent of the game's data"

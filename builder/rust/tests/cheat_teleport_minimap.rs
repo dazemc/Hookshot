@@ -14,10 +14,11 @@ fn root() -> PathBuf {
 }
 
 fn compiler() -> Option<String> {
-    let candidates = std::env::var("CC")
-        .ok()
-        .into_iter()
-        .chain(["cc".into(), "gcc".into(), "clang".into()]);
+    let candidates =
+        std::env::var("CC")
+            .ok()
+            .into_iter()
+            .chain(["cc".into(), "gcc".into(), "clang".into()]);
     for candidate in candidates {
         if Command::new(&candidate)
             .arg("--version")
@@ -259,7 +260,9 @@ fn a_teleport_repairs_the_minimap_flag_for_the_save_too() {
         "{cc}: {}",
         String::from_utf8_lossy(&build.stderr)
     );
-    let run = Command::new(&exe).output().expect("run the minimap fixture");
+    let run = Command::new(&exe)
+        .output()
+        .expect("run the minimap fixture");
     let _ = fs::remove_dir_all(dir);
     assert!(
         run.status.success(),
