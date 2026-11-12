@@ -1,12 +1,16 @@
 //! The standalone host half of the build: compile the native runtime, opus and
 //! zstd, then link every game object into the `hookshot` executable. Ported
-//! from nx2/build.py's standalone Linux path.
+//! from nx2/build.py's standalone Linux path. Windows needs build.py's other
+//! source list and llvm-mingw link libraries, which this engine does not have
+//! yet: `link_json` says so instead of guessing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::{Value, json};
+
+use crate::platform::Platform;
 
 fn sources(folder: &Path, keep: impl Fn(&str) -> bool) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
@@ -74,8 +78,55 @@ fn job(cc: &str, src: &Path, obj: &Path, flags: &[String], deps: &Path, cache: &
     })
 }
 
-/// Compile the host runtime and link `out/bin/hookshot`.
-pub fn link_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> {
+/// Why the host half of the build stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostBuildError {
+    /// nx2/build.py's Windows branch (its source list, llvm-mingw target and
+    /// link libraries) is not ported to this engine yet.
+    WindowsNotPorted,
+    /// The Linux build could not run, or the compiler/linker rejected it.
+    Build(String),
+}
+
+impl std::fmt::Display for HostBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WindowsNotPorted => formatter.write_str(
+                "Windows host linking is not ported to the Rust engine yet: use the Python builder (python -I nx2/build.py --standalone) on Windows, or build the host on Linux.",
+            ),
+            Self::Build(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for HostBuildError {}
+
+impl From<HostBuildError> for String {
+    fn from(error: HostBuildError) -> Self {
+        error.to_string()
+    }
+}
+
+/// Compile the host runtime and link `out/bin/<platform executable>`.
+pub fn link_json(exefs: &str, work: &str, out: &str) -> Result<Value, HostBuildError> {
+    link_json_on(Platform::current(), exefs, work, out)
+}
+
+fn link_json_on(
+    platform: Platform,
+    exefs: &str,
+    work: &str,
+    out: &str,
+) -> Result<Value, HostBuildError> {
+    match platform {
+        Platform::Windows => Err(HostBuildError::WindowsNotPorted),
+        Platform::Linux => link_linux_json(exefs, work, out).map_err(HostBuildError::Build),
+    }
+}
+
+/// The Linux standalone host build: the source list and link line from
+/// nx2/build.py's LINUX branch.
+fn link_linux_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> {
     let root = crate::kit::root();
     let work = Path::new(work);
     let out = Path::new(out);
@@ -334,7 +385,7 @@ pub fn link_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> {
     objects.sort();
     let bin = out.join("bin");
     fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-    let exe = bin.join("hookshot");
+    let exe = bin.join(Platform::Linux.executable());
     let mut args = vec![
         "-fuse-ld=lld".to_owned(),
         "-o".to_owned(),
@@ -361,4 +412,25 @@ pub fn link_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> {
         "size": size,
         "ffmpeg": ffmpeg_linked,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_host_link_is_reported_as_not_ported() {
+        let error = link_json_on(Platform::Windows, "", "", "").unwrap_err();
+        assert_eq!(error, HostBuildError::WindowsNotPorted);
+        let message = error.to_string();
+        assert!(message.contains("not ported"), "{message}");
+        assert!(message.contains("nx2/build.py"), "{message}");
+    }
+
+    #[test]
+    fn linux_host_link_still_checks_its_inputs() {
+        let error = link_json_on(Platform::Linux, "", "", "").unwrap_err();
+        assert!(matches!(error, HostBuildError::Build(_)));
+        assert!(error.to_string().contains("has no main module"));
+    }
 }

@@ -29,6 +29,7 @@ mod nso_image;
 mod nup;
 mod orchestrate;
 mod package;
+mod platform;
 mod poll;
 mod profiles;
 mod rtgen;
@@ -159,7 +160,8 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "exefs").unwrap_or_default(),
             &string(&request, "work").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
-        ),
+        )
+        .map_err(String::from),
         "build.cpu" => host::check_json(),
         "build.jobs" => {
             let given = request

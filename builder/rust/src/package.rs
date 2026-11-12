@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::platform::Platform;
+
 const LANGUAGES: [(&str, &str); 16] = [
     ("en-US", "English (US)"),
     ("en-GB", "English (UK)"),
@@ -78,7 +80,109 @@ fn link_tree(src: &Path, dst: &Path, counter: &mut u64) -> Result<(), String> {
     Ok(())
 }
 
+struct LibrarySource {
+    name: &'static str,
+    source: PathBuf,
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The runtime libraries staged beside the executable in `bin`. Linux keeps
+/// the AppImage's single SDL2; Windows copies the DLLs nx2/make_game.py's
+/// `BESIDE` list names, the SDL ones from third_party/sdl2 and wgpu-native
+/// from WGPU_NATIVE.
+fn runtime_libraries(
+    platform: Platform,
+    root: &Path,
+    assets: Option<&Path>,
+    sdl2: Option<&Path>,
+    wgpu: Option<&Path>,
+) -> Vec<LibrarySource> {
+    match platform {
+        Platform::Linux => {
+            let source = sdl2
+                .filter(|path| path.is_file())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| root.join("build-linux/deps/sdl2/libSDL2-2.0.so.0"));
+            vec![LibrarySource {
+                name: platform.primary_sdl_library(),
+                source,
+            }]
+        }
+        Platform::Windows => {
+            let mut libraries = Vec::new();
+            for name in ["SDL2.dll", "SDL3.dll"] {
+                let built = root.join("third_party/sdl2").join(name);
+                let source = if built.is_file() {
+                    built
+                } else {
+                    assets.map(|assets| assets.join(name)).unwrap_or(built)
+                };
+                libraries.push(LibrarySource { name, source });
+            }
+            let built = wgpu
+                .map(|path| {
+                    if path.is_dir() {
+                        path.join("lib/wgpu_native.dll")
+                    } else {
+                        path.to_path_buf()
+                    }
+                })
+                .unwrap_or_else(|| root.join("third_party/wgpu-native/lib/wgpu_native.dll"));
+            let source = if built.is_file() {
+                built
+            } else {
+                assets
+                    .map(|assets| assets.join("wgpu_native.dll"))
+                    .unwrap_or(built)
+            };
+            libraries.push(LibrarySource {
+                name: "wgpu_native.dll",
+                source,
+            });
+            libraries
+        }
+    }
+}
+
+/// The Vulkan back end: an explicit path, else the standalone build's own,
+/// else the assets folder's copy.
+fn vulkan_library_source(
+    platform: Platform,
+    root: &Path,
+    work: &Path,
+    vk: &str,
+    assets: Option<&Path>,
+) -> PathBuf {
+    if !vk.is_empty() {
+        return PathBuf::from(vk);
+    }
+    let built = platform.built_vulkan(root, work);
+    if built.is_file() {
+        return built;
+    }
+    assets
+        .map(|assets| assets.join(platform.vulkan_library()))
+        .unwrap_or_default()
+}
+
 pub fn package_json(
+    work: &str,
+    out: &str,
+    romfs: &str,
+    vk: &str,
+    assets: &str,
+    language: &str,
+) -> Result<Value, String> {
+    package_json_on(Platform::current(), work, out, romfs, vk, assets, language)
+}
+
+fn package_json_on(
+    platform: Platform,
     work: &str,
     out: &str,
     romfs: &str,
@@ -89,38 +193,33 @@ pub fn package_json(
     let root = crate::kit::root();
     let work = Path::new(work);
     let out = Path::new(out);
+    let assets = Path::new(assets);
+    let assets_dir = (!assets.as_os_str().is_empty()).then_some(assets);
     let bin = out.join("bin");
     fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-    let exe = bin.join("hookshot");
+    let exe = bin.join(platform.executable());
     if !exe.is_file() {
         return Err(format!("{} is not built yet", exe.display()));
     }
     let mut bytes = 0u64;
     let mut linked = 0u64;
     bytes += copy(&work.join("sa/image/image.bin"), &out.join("image.bin"))?;
-    let vk = if vk.is_empty() {
-        let built = root.join("build-linux/vk-work/sa/build/hookshot_vk.so");
-        if built.is_file() {
-            built
-        } else if !assets.is_empty() {
-            PathBuf::from(assets).join("hookshot_vk.so")
-        } else {
-            PathBuf::new()
-        }
-    } else {
-        PathBuf::from(vk)
-    };
+    let vk = vulkan_library_source(platform, &root, work, vk, assets_dir);
     if vk.is_file() {
-        bytes += copy(&vk, &bin.join("hookshot_vk.so"))?;
+        bytes += copy(&vk, &bin.join(platform.vulkan_library()))?;
     }
-    let sdl = Path::new(&std::env::var("HOOKSHOT_SDL2").unwrap_or_default()).to_path_buf();
-    let sdl = if sdl.is_file() {
-        sdl
-    } else {
-        root.join("build-linux/deps/sdl2/libSDL2-2.0.so.0")
-    };
-    if sdl.is_file() {
-        bytes += copy(&sdl, &bin.join("libSDL2-2.0.so.0"))?;
+    let sdl2 = env_path("HOOKSHOT_SDL2");
+    let wgpu = env_path("WGPU_NATIVE");
+    for library in runtime_libraries(
+        platform,
+        &root,
+        assets_dir,
+        sdl2.as_deref(),
+        wgpu.as_deref(),
+    ) {
+        if library.source.is_file() {
+            bytes += copy(&library.source, &bin.join(library.name))?;
+        }
     }
     bytes += copy(&root.join("assets/hookshot.png"), &out.join("hookshot.png"))?;
     let romfs = Path::new(romfs);
@@ -128,8 +227,7 @@ pub fn package_json(
     if romfs.is_dir() && !target_romfs.exists() {
         link_tree(romfs, &target_romfs, &mut linked)?;
     }
-    if !assets.is_empty() {
-        let assets = Path::new(assets);
+    if let Some(assets) = assets_dir {
         for name in [
             "hookshot_shaders.bin",
             "hookshot_pipeline_states_shipped.bin",
@@ -187,8 +285,215 @@ pub fn package_json(
         "bytes": bytes,
         "linked": linked,
         "language": language,
-        "vk": bin.join("hookshot_vk.so").is_file(),
-        "sdl": bin.join("libSDL2-2.0.so.0").is_file(),
+        "vk": bin.join(platform.vulkan_library()).is_file(),
+        "sdl": bin.join(platform.primary_sdl_library()).is_file(),
         "seed": seed,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let folder = std::env::temp_dir().join(format!(
+            "hookshot-rust-package-{}-{name}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    #[test]
+    fn linux_libraries_keep_the_old_names_and_paths() {
+        let base = temp("linux-libs");
+        let root = base.join("root");
+        let libraries = runtime_libraries(Platform::Linux, &root, None, None, None);
+        assert_eq!(libraries.len(), 1);
+        assert_eq!(libraries[0].name, "libSDL2-2.0.so.0");
+        assert_eq!(
+            libraries[0].source,
+            root.join("build-linux/deps/sdl2/libSDL2-2.0.so.0")
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn linux_sdl_override_wins_when_it_exists() {
+        let base = temp("linux-sdl");
+        let root = base.join("root");
+        let sdl = base.join("sdl/libSDL2-2.0.so.0");
+        fs::create_dir_all(sdl.parent().unwrap()).unwrap();
+        fs::write(&sdl, b"SDL").unwrap();
+        let libraries = runtime_libraries(Platform::Linux, &root, None, Some(&sdl), None);
+        assert_eq!(libraries[0].source, sdl);
+        let missing = base.join("missing/libSDL2-2.0.so.0");
+        let libraries = runtime_libraries(Platform::Linux, &root, None, Some(&missing), None);
+        assert_eq!(
+            libraries[0].source,
+            root.join("build-linux/deps/sdl2/libSDL2-2.0.so.0")
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn windows_libraries_use_the_builder_names_and_sources() {
+        let base = temp("windows-libs");
+        let root = base.join("root");
+        let sdl = root.join("third_party/sdl2");
+        fs::create_dir_all(&sdl).unwrap();
+        fs::write(sdl.join("SDL2.dll"), b"SDL2").unwrap();
+        fs::write(sdl.join("SDL3.dll"), b"SDL3").unwrap();
+        let wgpu = base.join("wgpu-native");
+        fs::create_dir_all(wgpu.join("lib")).unwrap();
+        fs::write(wgpu.join("lib/wgpu_native.dll"), b"wgpu").unwrap();
+        let libraries = runtime_libraries(Platform::Windows, &root, None, None, Some(&wgpu));
+        assert_eq!(
+            libraries
+                .iter()
+                .map(|library| library.name)
+                .collect::<Vec<_>>(),
+            ["SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+        );
+        assert_eq!(libraries[0].source, sdl.join("SDL2.dll"));
+        assert_eq!(libraries[1].source, sdl.join("SDL3.dll"));
+        assert_eq!(libraries[2].source, wgpu.join("lib/wgpu_native.dll"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn windows_libraries_fall_back_to_the_assets_folder() {
+        let base = temp("windows-assets");
+        let root = base.join("root");
+        let assets = base.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        for name in ["SDL2.dll", "SDL3.dll", "wgpu_native.dll"] {
+            fs::write(assets.join(name), b"dll").unwrap();
+        }
+        let libraries = runtime_libraries(Platform::Windows, &root, Some(&assets), None, None);
+        assert_eq!(libraries[0].source, assets.join("SDL2.dll"));
+        assert_eq!(libraries[1].source, assets.join("SDL3.dll"));
+        assert_eq!(libraries[2].source, assets.join("wgpu_native.dll"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn vulkan_library_prefers_explicit_then_built_then_assets() {
+        let base = temp("vulkan-source");
+        let root = base.join("root");
+        let work = base.join("work");
+        let assets = base.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        let built = work.join("sa/build/hookshot_vk.dll");
+        fs::create_dir_all(built.parent().unwrap()).unwrap();
+        fs::write(&built, b"vk").unwrap();
+        let explicit = base.join("given/hookshot_vk.dll");
+        assert_eq!(
+            vulkan_library_source(
+                Platform::Windows,
+                &root,
+                &work,
+                explicit.to_str().unwrap(),
+                Some(&assets)
+            ),
+            explicit
+        );
+        assert_eq!(
+            vulkan_library_source(Platform::Windows, &root, &work, "", Some(&assets)),
+            built
+        );
+        fs::remove_file(&built).unwrap();
+        let from_assets = assets.join("hookshot_vk.dll");
+        fs::write(&from_assets, b"vk").unwrap();
+        assert_eq!(
+            vulkan_library_source(Platform::Windows, &root, &work, "", Some(&assets)),
+            from_assets
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn linux_package_keeps_the_appimage_layout() {
+        let base = temp("linux-package");
+        let work = base.join("work");
+        let out = base.join("out");
+        fs::create_dir_all(work.join("sa/image")).unwrap();
+        fs::write(work.join("sa/image/image.bin"), b"image").unwrap();
+        fs::create_dir_all(out.join("bin")).unwrap();
+        fs::write(out.join("bin/hookshot"), b"exe").unwrap();
+        let vk = base.join("hookshot_vk.so");
+        fs::write(&vk, b"vk").unwrap();
+        let assets = base.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        fs::write(assets.join("hookshot_shaders.bin"), b"shaders").unwrap();
+        let answer = package_json_on(
+            Platform::Linux,
+            work.to_str().unwrap(),
+            out.to_str().unwrap(),
+            "",
+            vk.to_str().unwrap(),
+            assets.to_str().unwrap(),
+            "en-US",
+        )
+        .unwrap();
+        assert_eq!(answer["stage"], "packaged");
+        assert_eq!(
+            Path::new(answer["exe"].as_str().unwrap()),
+            out.join("bin/hookshot")
+        );
+        assert_eq!(answer["vk"], true);
+        assert_eq!(answer["seed"]["copied"], false);
+        assert!(out.join("bin/hookshot_vk.so").is_file());
+        assert!(!out.join("bin/hookshot.exe").exists());
+        assert!(out.join("image.bin").is_file());
+        assert!(out.join("hookshot_shaders.bin").is_file());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn windows_package_puts_the_executable_and_dlls_in_bin() {
+        let base = temp("windows-package");
+        let work = base.join("work");
+        let out = base.join("out");
+        fs::create_dir_all(work.join("sa/image")).unwrap();
+        fs::write(work.join("sa/image/image.bin"), b"image").unwrap();
+        fs::create_dir_all(out.join("bin")).unwrap();
+        fs::write(out.join("bin/hookshot.exe"), b"exe").unwrap();
+        let vk = base.join("hookshot_vk.dll");
+        fs::write(&vk, b"vk").unwrap();
+        let assets = base.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        for name in ["SDL2.dll", "SDL3.dll", "wgpu_native.dll"] {
+            fs::write(assets.join(name), b"dll").unwrap();
+        }
+        let answer = package_json_on(
+            Platform::Windows,
+            work.to_str().unwrap(),
+            out.to_str().unwrap(),
+            "",
+            vk.to_str().unwrap(),
+            assets.to_str().unwrap(),
+            "en-US",
+        )
+        .unwrap();
+        assert_eq!(answer["stage"], "packaged");
+        assert_eq!(answer["vk"], true);
+        assert_eq!(answer["sdl"], true);
+        for name in [
+            "hookshot.exe",
+            "hookshot_vk.dll",
+            "SDL2.dll",
+            "SDL3.dll",
+            "wgpu_native.dll",
+        ] {
+            assert!(
+                out.join("bin").join(name).is_file(),
+                "{name} was not staged"
+            );
+        }
+        assert!(out.join("image.bin").is_file());
+        assert!(!out.join("bin").join("hookshot").exists());
+        let _ = fs::remove_dir_all(base);
+    }
 }
