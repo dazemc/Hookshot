@@ -43,6 +43,7 @@ pub fn inputs(
         ("faces.rs", include_str!("faces.rs")),
         ("font.rs", include_str!("font.rs")),
         ("keys.rs", include_str!("keys.rs")),
+        ("guide.rs", include_str!("guide.rs")),
         ("layout.rs", include_str!("layout.rs")),
         ("restbl.rs", include_str!("restbl.rs")),
         ("bntx.rs", include_str!("bntx.rs")),

@@ -91,6 +91,78 @@ impl Mask {
         out
     }
 
+    /// The bounding box of the non-zero pixels: (left, upper, right, lower),
+    /// right and lower exclusive (Pillow's `getbbox`).
+    pub fn bbox(&self) -> Option<(u32, u32, u32, u32)> {
+        let (mut x0, mut y0, mut x1, mut y1) = (self.width, self.height, 0, 0);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.at(x, y) != 0 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        (x1 > 0).then_some((x0, y0, x1, y1))
+    }
+
+    /// The lighter of two masks, pixel by pixel (Pillow's `ImageChops.lighter`).
+    pub fn lighter(&self, other: &Mask) -> Mask {
+        self.combine(other, |a, b| a.max(b))
+    }
+
+    /// The first minus the second, never below zero (`ImageChops.subtract`).
+    pub fn subtract(&self, other: &Mask) -> Mask {
+        self.combine(other, |a, b| a.saturating_sub(b))
+    }
+
+    /// The product over 255, truncated (`ImageChops.multiply`).
+    pub fn multiply(&self, other: &Mask) -> Mask {
+        self.combine(other, |a, b| ((u32::from(a) * u32::from(b)) / 255) as u8)
+    }
+
+    fn combine(&self, other: &Mask, op: impl Fn(u8, u8) -> u8) -> Mask {
+        let width = self.width.min(other.width);
+        let height = self.height.min(other.height);
+        let mut out = Mask::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                out.set(x, y, op(self.at(x, y), other.at(x, y)));
+            }
+        }
+        out
+    }
+
+    /// The largest value in a (2 * radius + 1) square around each pixel,
+    /// zeros outside the mask (`ImageFilter.MaxFilter`).
+    pub fn max_filter(&self, radius: u32) -> Mask {
+        let horizontal = self.max_filter_axis(radius, true);
+        horizontal.max_filter_axis(radius, false)
+    }
+
+    fn max_filter_axis(&self, radius: u32, horizontal: bool) -> Mask {
+        let mut out = Mask::new(self.width, self.height);
+        let radius = radius as usize;
+        if horizontal {
+            for y in 0..self.height {
+                let row = sliding_max(self.width as usize, radius, |x| self.at(x as u32, y));
+                for (x, value) in row.into_iter().enumerate() {
+                    out.set(x as u32, y, value);
+                }
+            }
+        } else {
+            for x in 0..self.width {
+                let column = sliding_max(self.height as usize, radius, |y| self.at(x, y as u32));
+                for (y, value) in column.into_iter().enumerate() {
+                    out.set(x, y as u32, value);
+                }
+            }
+        }
+        out
+    }
+
     /// This glyph centred in a texture-sized mask.
     pub fn place(&self, width: u32, height: u32) -> Mask {
         let mut out = Mask::new(width, height);
@@ -106,6 +178,38 @@ impl Mask {
         }
         out
     }
+}
+
+fn sliding_max(len: usize, radius: usize, value: impl Fn(usize) -> u8) -> Vec<u8> {
+    let mut out = vec![0u8; len];
+    if len == 0 {
+        return out;
+    }
+    let mut deque = std::collections::VecDeque::new();
+    for i in 0..=radius.min(len - 1) {
+        let v = value(i);
+        while deque.back().is_some_and(|back| value(*back) <= v) {
+            deque.pop_back();
+        }
+        deque.push_back(i);
+    }
+    for (x, slot) in out.iter_mut().enumerate() {
+        if x > 0 {
+            let add = x + radius;
+            if add < len {
+                let v = value(add);
+                while deque.back().is_some_and(|back| value(*back) <= v) {
+                    deque.pop_back();
+                }
+                deque.push_back(add);
+            }
+            while deque.front().is_some_and(|front| front + radius < x) {
+                deque.pop_front();
+            }
+        }
+        *slot = deque.front().map(|front| value(*front)).unwrap_or(0);
+    }
+    out
 }
 
 #[derive(Default)]
@@ -273,6 +377,47 @@ mod tests {
         );
         // (A has a counter: the hole is an enclosed part of the shape)
         assert!(icon.holes().any());
+    }
+
+    #[test]
+    fn filters_and_combinations_match_their_definitions() {
+        let mut mask = Mask::new(9, 7);
+        for y in 0..7 {
+            for x in 0..9 {
+                let value = ((x * 37 + y * 53 + x * y * 11) % 256) as u8;
+                mask.set(x, y, value);
+            }
+        }
+        for radius in 0..4 {
+            let filtered = mask.max_filter(radius);
+            for y in 0..7 {
+                for x in 0..9 {
+                    let mut best = 0u8;
+                    for dy in -(radius as i64)..=radius as i64 {
+                        for dx in -(radius as i64)..=radius as i64 {
+                            let (px, py) = (x as i64 + dx, y as i64 + dy);
+                            if px >= 0 && py >= 0 && px < 9 && py < 7 {
+                                best = best.max(mask.at(px as u32, py as u32));
+                            }
+                        }
+                    }
+                    assert_eq!(filtered.at(x, y), best, "radius {radius} at {x},{y}");
+                }
+            }
+        }
+        assert_eq!(mask.bbox(), Some((0, 0, 9, 7)));
+        let mut other = Mask::new(9, 7);
+        other.set(0, 0, 200);
+        assert_eq!(mask.lighter(&other).at(0, 0), mask.at(0, 0).max(200));
+        assert_eq!(
+            mask.multiply(&other).at(0, 0),
+            (u32::from(mask.at(0, 0)) * 200 / 255) as u8
+        );
+        assert_eq!(
+            other.subtract(&mask).at(0, 0),
+            200u8.saturating_sub(mask.at(0, 0))
+        );
+        assert_eq!(Mask::new(9, 7).bbox(), None);
     }
 
     #[test]

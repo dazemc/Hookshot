@@ -13,6 +13,7 @@ pub mod cff;
 pub mod cmap;
 pub mod faces;
 pub mod font;
+pub mod guide;
 pub mod keys;
 pub mod layout;
 pub mod raster;
