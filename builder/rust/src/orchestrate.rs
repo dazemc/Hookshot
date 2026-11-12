@@ -50,20 +50,14 @@ pub fn all_json_with(
     if exefs.is_empty() {
         return Err("build.all needs an exefs folder".into());
     }
-    // (NVIDIA's DLSS, before the long stages: the Windows DLL's NGX link is
-    // not this engine's yet, and a DLSS build with no SDK folder cannot go on.
-    // HOOKSHOT_NGX_SDK alone asks for it too, as it does in build.py)
+    // (NVIDIA's DLSS, before the long stages: both platforms compile and
+    // link their Vulkan back end with NGX, and a DLSS build with no SDK
+    // folder cannot go on. HOOKSHOT_NGX_SDK alone asks for it too, as it
+    // does in build.py)
     let requested_ngx = (!ngx.is_empty()).then(|| std::path::Path::new(ngx));
     let requested_ngx = crate::vk_build::ngx_folder(requested_ngx);
     let dlss = dlss || requested_ngx.is_some();
     let dlss_sdk = if dlss {
-        if crate::ngx_sdk::Platform::current() == crate::ngx_sdk::Platform::Windows {
-            return Err(
-                "NVIDIA DLSS builds on Windows need hookshot_vk.dll, which the Rust engine does not build \
-                 yet: the DLSS build is Linux-only for now."
-                    .into(),
-            );
-        }
         Some(requested_ngx.ok_or(
             "NVIDIA DLSS needs NVIDIA's SDK folder: set HOOKSHOT_NGX_SDK, or pass the request's ngx \
              folder (build.ngx_fetch fetches it).",

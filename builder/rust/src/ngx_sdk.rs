@@ -122,6 +122,10 @@ const LINUX_RUNTIME: (&str, &str) = (
     "lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.310.9.16",
     "30982c937afed85c96b8d313323de9a650a2eec6de1bb0f714b21750f4ce98f6",
 );
+const LINUX_FRAMEGEN: (&str, &str) = (
+    "lib/Linux_x86_64/rel/libnvidia-ngx-dlssg.so.310.9.16",
+    "574839cae01c835de4d5845c36ca9cf75361f8160bd52397142c36a24e29e6f7",
+);
 const WINDOWS_LIBRARY: (&str, &str) = (
     "lib/Windows_x86_64/x64/nvsdk_ngx_s.lib",
     "7b9a5239c1145af5f645ab472aa066f9ea79db36ac819562312aae69d65f3765",
@@ -130,6 +134,31 @@ const WINDOWS_RUNTIME: (&str, &str) = (
     "lib/Windows_x86_64/rel/nvngx_dlss.dll",
     "d00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e",
 );
+const WINDOWS_FRAMEGEN: (&str, &str) = (
+    "lib/Windows_x86_64/rel/nvngx_dlssg.dll",
+    "8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7",
+);
+
+/// The two runtimes NGX loads from the game folder: DLSS's and DLSS Frame
+/// Generation's. Without the latter beside the former, NGX takes the
+/// driver's own copy, which may be older (one that makes a single frame, or
+/// refuses every set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeKind {
+    Dlss,
+    FrameGeneration,
+}
+
+impl RuntimeKind {
+    pub const ALL: [Self; 2] = [Self::Dlss, Self::FrameGeneration];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dlss => "dlss",
+            Self::FrameGeneration => "framegen",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform {
@@ -154,15 +183,16 @@ impl Platform {
             LINUX_LIBRARY
         }
     }
-    fn runtime(self) -> (&'static str, &'static str) {
-        if self == Self::Windows {
-            WINDOWS_RUNTIME
-        } else {
-            LINUX_RUNTIME
+    fn runtime(self, kind: RuntimeKind) -> (&'static str, &'static str) {
+        match (self, kind) {
+            (Self::Windows, RuntimeKind::Dlss) => WINDOWS_RUNTIME,
+            (Self::Windows, RuntimeKind::FrameGeneration) => WINDOWS_FRAMEGEN,
+            (Self::Linux, RuntimeKind::Dlss) => LINUX_RUNTIME,
+            (Self::Linux, RuntimeKind::FrameGeneration) => LINUX_FRAMEGEN,
         }
     }
-    pub fn runtime_name(self) -> &'static str {
-        self.runtime().0.rsplit('/').next().unwrap_or_default()
+    pub fn runtime_name(self, kind: RuntimeKind) -> &'static str {
+        self.runtime(kind).0.rsplit('/').next().unwrap_or_default()
     }
 }
 
@@ -186,17 +216,19 @@ pub fn library(sdk: &Path, platform: Platform) -> PathBuf {
     sdk.join(destination(platform.library().0))
 }
 
-/// DLSS's runtime the game folder carries (`runtime/libnvidia-ngx-dlss.so.*`
-/// or `runtime/nvngx_dlss.dll`).
-pub fn runtime(sdk: &Path, platform: Platform) -> PathBuf {
-    sdk.join(destination(platform.runtime().0))
+/// A runtime the game folder carries: DLSS's
+/// (`runtime/libnvidia-ngx-dlss.so.*` or `runtime/nvngx_dlss.dll`) or DLSS
+/// Frame Generation's (`runtime/libnvidia-ngx-dlssg.so.*` or
+/// `runtime/nvngx_dlssg.dll`).
+pub fn runtime(sdk: &Path, platform: Platform, kind: RuntimeKind) -> PathBuf {
+    sdk.join(destination(platform.runtime(kind).0))
 }
 
 fn files(platform: Platform, with_runtime: bool) -> Vec<(&'static str, &'static str)> {
     let mut out: Vec<(&'static str, &'static str)> = COMMON.to_vec();
     out.push(platform.library());
     if with_runtime {
-        out.push(platform.runtime());
+        out.extend(RuntimeKind::ALL.map(|kind| platform.runtime(kind)));
     }
     out
 }
@@ -277,19 +309,77 @@ pub fn fetch(sdk: &Path, platform: Platform, with_runtime: bool) -> Result<Value
     }))
 }
 
-/// Copy the SDK's DLSS runtime into the game folder's ngx directory.
+/// Copy the SDK's runtimes into the game folder's ngx directory: DLSS's and,
+/// when the SDK folder has it, DLSS Frame Generation's. An SDK folder fetched
+/// before frame generation's runtime was in the table still installs DLSS's;
+/// the next fetch adds the other.
 pub fn install_runtime(sdk: &Path, platform: Platform, folder: &Path) -> Result<Value, String> {
-    let src = runtime(sdk, platform);
-    if !src.is_file() {
-        return Ok(json!({"placed": false, "reason": format!("{} is missing", src.display())}));
+    let dlss = runtime(sdk, platform, RuntimeKind::Dlss);
+    if !dlss.is_file() {
+        return Ok(json!({"placed": false, "reason": format!("{} is missing", dlss.display())}));
     }
     fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-    let dst = folder.join(platform.runtime_name());
-    if dst.is_file() && sha256(&dst)? == sha256(&src)? {
-        return Ok(json!({"placed": true, "path": dst.to_string_lossy(), "reused": true}));
+    let mut runtimes = Vec::new();
+    let mut missing = Vec::new();
+    let mut dlss_path = PathBuf::new();
+    let mut dlss_reused = false;
+    let mut framegen_path: Option<PathBuf> = None;
+    for kind in RuntimeKind::ALL {
+        let src = runtime(sdk, platform, kind);
+        let name = platform.runtime_name(kind);
+        if !src.is_file() {
+            missing.push(name);
+            continue;
+        }
+        let dst = folder.join(name);
+        let reused = dst.is_file()
+            && fs::metadata(&dst)
+                .map(|meta| meta.len())
+                .unwrap_or(u64::MAX)
+                == fs::metadata(&src).map(|meta| meta.len()).unwrap_or(0)
+            && sha256(&dst)? == sha256(&src)?;
+        if !reused {
+            let part = folder.join(format!("{name}.part"));
+            fs::copy(&src, &part).map_err(|e| format!("{}: {e}", part.display()))?;
+            fs::rename(&part, &dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+        }
+        if kind == RuntimeKind::Dlss {
+            dlss_path = dst.clone();
+            dlss_reused = reused;
+        } else {
+            framegen_path = Some(dst.clone());
+        }
+        runtimes.push(json!({
+            "kind": kind.label(),
+            "path": dst.to_string_lossy(),
+            "reused": reused,
+        }));
     }
-    fs::copy(&src, &dst).map_err(|e| format!("{}: {e}", dst.display()))?;
-    Ok(json!({"placed": true, "path": dst.to_string_lossy(), "reused": false}))
+    if dlss_path.as_os_str().is_empty() {
+        return Ok(json!({"placed": false, "reason": format!("{} is missing", dlss.display())}));
+    }
+    Ok(json!({
+        "placed": true,
+        "path": dlss_path.to_string_lossy(),
+        "reused": dlss_reused,
+        "framegen": framegen_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
+        "runtimes": runtimes,
+        "missing": missing,
+    }))
+}
+
+/// Remove both of NGX's runtimes from a game folder's ngx directory and the
+/// directory when it is empty: a folder rebuilt without DLSS loses them too.
+pub fn remove_runtimes(folder: &Path, platform: Platform) -> bool {
+    let mut removed = false;
+    for kind in RuntimeKind::ALL {
+        let path = folder.join(platform.runtime_name(kind));
+        if path.is_file() && fs::remove_file(&path).is_ok() {
+            removed = true;
+        }
+    }
+    let _ = fs::remove_dir(folder);
+    removed
 }
 
 pub fn fetch_json(request: &Value) -> Result<Value, String> {
@@ -326,6 +416,22 @@ pub fn install_json(request: &Value) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    fn temp(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("hookshot-rust-ngx-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    fn sdk_runtimes(sdk: &Path, platform: Platform) {
+        for kind in RuntimeKind::ALL {
+            let path = runtime(sdk, platform, kind);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"runtime").unwrap();
+        }
+    }
+
     #[test]
     fn destinations_match_the_python_layout() {
         assert_eq!(destination("include/nvsdk_ngx.h"), "include/nvsdk_ngx.h");
@@ -334,18 +440,120 @@ mod tests {
             destination(LINUX_RUNTIME.0),
             "runtime/libnvidia-ngx-dlss.so.310.9.16"
         );
+        assert_eq!(
+            destination(LINUX_FRAMEGEN.0),
+            "runtime/libnvidia-ngx-dlssg.so.310.9.16"
+        );
         assert_eq!(destination(WINDOWS_RUNTIME.0), "runtime/nvngx_dlss.dll");
+        assert_eq!(destination(WINDOWS_FRAMEGEN.0), "runtime/nvngx_dlssg.dll");
     }
 
     #[test]
-    fn every_file_has_a_sha256() {
-        for (path, digest) in files(Platform::Linux, true)
-            .into_iter()
-            .chain(files(Platform::Windows, true))
-        {
-            assert!(!path.is_empty());
-            assert_eq!(digest.len(), 64, "{path}");
-            assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{path}");
+    fn every_file_has_a_sha256_and_both_runtimes_are_in_the_table() {
+        for (platform, names) in [
+            (
+                Platform::Linux,
+                (
+                    "libnvidia-ngx-dlss.so.310.9.16",
+                    "libnvidia-ngx-dlssg.so.310.9.16",
+                ),
+            ),
+            (Platform::Windows, ("nvngx_dlss.dll", "nvngx_dlssg.dll")),
+        ] {
+            let table = files(platform, true);
+            for (path, digest) in &table {
+                assert!(!path.is_empty());
+                assert_eq!(digest.len(), 64, "{path}");
+                assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{path}");
+            }
+            for (kind, name) in [
+                (RuntimeKind::Dlss, names.0),
+                (RuntimeKind::FrameGeneration, names.1),
+            ] {
+                assert_eq!(platform.runtime_name(kind), name);
+                assert!(
+                    table
+                        .iter()
+                        .any(|(path, _)| destination(path) == format!("runtime/{name}")),
+                    "{name} is not fetched"
+                );
+            }
+            // (the build-only set leaves both runtimes for the fetch)
+            assert!(
+                !files(platform, false)
+                    .iter()
+                    .any(|(path, _)| path.contains("/rel/"))
+            );
         }
+    }
+
+    #[test]
+    fn install_places_both_runtimes_and_reuses_them() {
+        let base = temp("install");
+        let platform = Platform::Linux;
+        let sdk = base.join("sdk");
+        let folder = base.join("game/ngx");
+        sdk_runtimes(&sdk, platform);
+        let answer = install_runtime(&sdk, platform, &folder).unwrap();
+        assert_eq!(answer["placed"], true);
+        assert_eq!(answer["reused"], false);
+        assert!(answer["missing"].as_array().unwrap().is_empty());
+        assert!(
+            folder
+                .join(platform.runtime_name(RuntimeKind::Dlss))
+                .is_file()
+        );
+        assert!(
+            folder
+                .join(platform.runtime_name(RuntimeKind::FrameGeneration))
+                .is_file()
+        );
+        assert_eq!(
+            Path::new(answer["framegen"].as_str().unwrap()),
+            folder.join(platform.runtime_name(RuntimeKind::FrameGeneration))
+        );
+        let again = install_runtime(&sdk, platform, &folder).unwrap();
+        assert_eq!(again["reused"], true);
+        assert!(
+            again["runtimes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|runtime| runtime["reused"] == true)
+        );
+        // (an older SDK folder still installs DLSS's, and says what is missing)
+        fs::remove_file(runtime(&sdk, platform, RuntimeKind::FrameGeneration)).unwrap();
+        let older = install_runtime(&sdk, platform, &folder).unwrap();
+        assert_eq!(older["placed"], true);
+        assert_eq!(older["framegen"], Value::Null);
+        assert_eq!(
+            older["missing"],
+            json!([platform.runtime_name(RuntimeKind::FrameGeneration)])
+        );
+        // (a folder rebuilt without DLSS loses both and the directory)
+        assert!(remove_runtimes(&folder, platform));
+        assert!(!folder.exists());
+        assert!(!remove_runtimes(&folder, platform));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn windows_runtime_names_are_the_dlls_the_game_loads() {
+        assert_eq!(
+            Platform::Windows.runtime_name(RuntimeKind::Dlss),
+            "nvngx_dlss.dll"
+        );
+        assert_eq!(
+            Platform::Windows.runtime_name(RuntimeKind::FrameGeneration),
+            "nvngx_dlssg.dll"
+        );
+        assert_eq!(
+            Platform::Linux.runtime_name(RuntimeKind::Dlss),
+            "libnvidia-ngx-dlss.so.310.9.16"
+        );
+        assert_eq!(
+            Platform::Linux.runtime_name(RuntimeKind::FrameGeneration),
+            "libnvidia-ngx-dlssg.so.310.9.16"
+        );
     }
 }
