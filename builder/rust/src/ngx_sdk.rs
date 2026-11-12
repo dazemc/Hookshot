@@ -180,11 +180,14 @@ pub fn destination(path: &str) -> String {
     }
 }
 
-#[allow(dead_code)] // (the Vulkan build links it)
+/// NVIDIA's static library for the build (`lib/libnvsdk_ngx.a` on Linux,
+/// `lib/nvsdk_ngx_s.lib` on Windows).
 pub fn library(sdk: &Path, platform: Platform) -> PathBuf {
     sdk.join(destination(platform.library().0))
 }
 
+/// DLSS's runtime the game folder carries (`runtime/libnvidia-ngx-dlss.so.*`
+/// or `runtime/nvngx_dlss.dll`).
 pub fn runtime(sdk: &Path, platform: Platform) -> PathBuf {
     sdk.join(destination(platform.runtime().0))
 }

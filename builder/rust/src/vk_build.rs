@@ -4,8 +4,11 @@
 //!
 //! The Windows host link and DLL path are still build.py's: this module
 //! compiles and links the Linux shared object, which needs no game data.
-//! NGC/FSR build options are not ported: `vk_dlss.cpp` and `vk_fsr4.cpp`
-//! compile their "not available" stubs, as a build without those SDKs does.
+//! NVIDIA's DLSS SDK (`HOOKSHOT_NGX_SDK` or the request's `ngx` folder) adds
+//! `-DHOOKSHOT_NGX` and its headers to `vk_dlss.cpp` and links its static
+//! library; AMD's vendored FSR 4 headers do the same for `vk_fsr4.cpp` when
+//! `third_party/fidelityfx` is there. Without either, those files compile
+//! their "not available" stubs, as build.py's do.
 //!
 //! Header roots come from `HOOKSHOT_VULKAN_HEADERS`, `HOOKSHOT_SPIRV_HEADERS`
 //! and `HOOKSHOT_VMA_HEADERS` first, then the system's `/usr` and
@@ -253,6 +256,97 @@ pub fn missing_guidance(missing: &[&str]) -> String {
         Platform::current().vulkan_library(),
         missing.join(", ")
     )
+}
+
+/// What this build asks of the optional SDKs beyond the headers.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// NVIDIA's DLSS SDK folder: the request's `ngx` path, else
+    /// `HOOKSHOT_NGX_SDK` (what build.py reads).
+    pub ngx: Option<PathBuf>,
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|dir| dir.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+/// The DLSS SDK folder a build reads: the request's, else `HOOKSHOT_NGX_SDK`.
+/// No check of what it holds: the build fetches what is missing first.
+pub fn ngx_folder(requested: Option<&Path>) -> Option<PathBuf> {
+    requested
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            std::env::var_os("HOOKSHOT_NGX_SDK")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .map(|path| absolute(&path))
+}
+
+/// The DLSS SDK folder a build reads, checked: one that lacks this
+/// platform's static library is an error rather than a silent build without
+/// DLSS, because the caller asked for it.
+pub fn resolve_ngx(requested: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    let Some(sdk) = ngx_folder(requested) else {
+        return Ok(None);
+    };
+    let library = crate::ngx_sdk::library(&sdk, crate::ngx_sdk::Platform::current());
+    if !library.is_file() {
+        return Err(format!(
+            "NVIDIA DLSS: {} has no {} (build.ngx_fetch, or scripts/ngx_sdk.py, fetches it): \
+             the Vulkan back end was not built. Unset HOOKSHOT_NGX_SDK to build without DLSS.",
+            sdk.display(),
+            library.display()
+        ));
+    }
+    Ok(Some(sdk))
+}
+
+/// `-DHOOKSHOT_NGX` and NVIDIA's headers, for `vk_dlss.cpp` alone.
+pub fn ngx_flags(sdk: &Path) -> Vec<String> {
+    vec![
+        "-DHOOKSHOT_NGX".to_owned(),
+        format!("-I{}", sdk.join("include").display()),
+    ]
+}
+
+/// AMD's FSR 4 API headers, vendored under `third_party/fidelityfx` (MIT).
+pub fn fsr_headers(root: &Path) -> Option<PathBuf> {
+    let folder = root.join("third_party/fidelityfx");
+    folder
+        .join("api/include/ffx_api.h")
+        .is_file()
+        .then_some(folder)
+}
+
+/// `-DHOOKSHOT_FSR` and AMD's header root, for `vk_fsr4.cpp` alone.
+pub fn fsr_flags(folder: &Path) -> Vec<String> {
+    vec![
+        "-DHOOKSHOT_FSR".to_owned(),
+        format!("-I{}", folder.display()),
+    ]
+}
+
+/// The link's tail: NVIDIA's static library before the system libraries, as
+/// build.py writes `@objs.rsp <libnvsdk_ngx.a> -ldl -lpthread -lm`.
+pub fn link_libraries(ngx: Option<&Path>) -> Vec<String> {
+    let mut libraries = Vec::new();
+    if let Some(sdk) = ngx {
+        libraries.push(
+            crate::ngx_sdk::library(sdk, crate::ngx_sdk::Platform::current())
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    libraries.extend(["-ldl", "-lpthread", "-lm"].map(str::to_owned));
+    libraries
 }
 
 fn cpp_files(folder: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -661,7 +755,7 @@ pub fn build_json(work: &str) -> Result<Value, String> {
 }
 
 /// The same, from an explicit repository root and work folder: the tests and
-/// the build driver use it.
+/// the build driver use it. `HOOKSHOT_NGX_SDK` still names NVIDIA's SDK.
 pub fn build_at(root: &Path, work: &Path) -> Result<Value, String> {
     build_at_with(
         root,
@@ -679,6 +773,27 @@ pub fn build_at_with(
     search: &HeaderSearch,
     environment: &HeaderEnv,
 ) -> Result<Value, String> {
+    build_at_with_options_search(root, work, search, environment, &Options::default())
+}
+
+/// The same, with the optional SDKs (NVIDIA's DLSS, AMD's FSR 4 headers).
+pub fn build_at_with_options(root: &Path, work: &Path, options: &Options) -> Result<Value, String> {
+    build_at_with_options_search(
+        root,
+        work,
+        &HeaderSearch::for_repo(root, work),
+        &HeaderEnv::from_environment(),
+        options,
+    )
+}
+
+pub fn build_at_with_options_search(
+    root: &Path,
+    work: &Path,
+    search: &HeaderSearch,
+    environment: &HeaderEnv,
+    options: &Options,
+) -> Result<Value, String> {
     if Platform::current() != Platform::Linux {
         return Err(
             "The Vulkan back end's Windows build is not ported to the Rust engine yet: use the Python builder \
@@ -690,6 +805,15 @@ pub fn build_at_with(
     let Some(roots) = headers.roots() else {
         return Ok(skipped(&headers.missing()));
     };
+    // (NVIDIA's DLSS: the request's SDK folder, else HOOKSHOT_NGX_SDK)
+    let ngx = resolve_ngx(options.ngx.as_deref())?;
+    // (AMD's FSR 4: MIT headers in the tree; HOOKSHOT_FSR=0 leaves the stubs)
+    let fsr = fsr_headers(root).filter(|_| {
+        std::env::var("HOOKSHOT_FSR")
+            .ok()
+            .as_deref()
+            .is_none_or(|value| value != "0")
+    });
     let vk = root.join("gpu/vk");
     let gpu = root.join("gpu");
     let zstd = root.join("third_party/zstd/lib");
@@ -746,6 +870,20 @@ pub fn build_at_with(
         digest.update(imgui_deps.as_bytes());
         format!("{:x}", digest.finalize())
     };
+    // (NVIDIA's and AMD's headers are that file's dependency alone: an SDK
+    // update rebuilds vk_dlss.cpp or vk_fsr4.cpp and nothing else, as
+    // build.py's ngx_deps and FSR flags do)
+    let vdeps_ngx = match &ngx {
+        Some(sdk) => Some(format!("{vdeps}{}", tree_headers(&[sdk.join("include")])?)),
+        None => None,
+    };
+    let vdeps_fsr = match &fsr {
+        Some(folder) => Some(format!(
+            "{vdeps}{}",
+            tree_headers(std::slice::from_ref(folder))?
+        )),
+        None => None,
+    };
     let zstd_deps = zstd_headers(&zstd)?;
     let posix_deps = tree_headers(&[root.join("host/posix")])?;
     let deps = |name: &str| build.join(name);
@@ -753,6 +891,8 @@ pub fn build_at_with(
     let vdeps_file = deps("vk_deps.bin");
     let vdeps_imgui_file = deps("vk_deps_imgui.bin");
     let vdeps_ui_file = deps("vk_deps_ui.bin");
+    let vdeps_ngx_file = deps("vk_deps_ngx.bin");
+    let vdeps_fsr_file = deps("vk_deps_fsr.bin");
     let imgui_deps_file = deps("vk_deps_imgui_own.bin");
     let zstd_deps_file = deps("vk_deps_zstd.bin");
     let posix_deps_file = deps("vk_deps_posix.bin");
@@ -761,6 +901,8 @@ pub fn build_at_with(
         (&vdeps_file, vdeps.as_str()),
         (&vdeps_imgui_file, vdeps_imgui.as_str()),
         (&vdeps_ui_file, vdeps_ui.as_str()),
+        (&vdeps_ngx_file, vdeps_ngx.as_deref().unwrap_or_default()),
+        (&vdeps_fsr_file, vdeps_fsr.as_deref().unwrap_or_default()),
         (&imgui_deps_file, imgui_deps.as_str()),
         (&zstd_deps_file, zstd_deps.as_str()),
         (&posix_deps_file, posix_deps.as_str()),
@@ -823,6 +965,10 @@ pub fn build_at_with(
             .is_some_and(|top| top.as_os_str() == "eden" || top.as_os_str() == "sirit");
         let deps_file = if lib {
             &vk_lib_deps_file
+        } else if name == "vk_dlss.cpp" && vdeps_ngx.is_some() {
+            &vdeps_ngx_file
+        } else if name == "vk_fsr4.cpp" && vdeps_fsr.is_some() {
+            &vdeps_fsr_file
         } else if IMGUI_USERS.contains(&name) {
             if name == "vk_imgui.cpp" {
                 &vdeps_imgui_file
@@ -840,6 +986,16 @@ pub fn build_at_with(
             // (the Insert menu's version line: build.py gives it this file only,
             // so a new release name rebuilds this one and nothing else)
             flags.push(crate::version::define(root));
+        }
+        if name == "vk_dlss.cpp"
+            && let Some(sdk) = &ngx
+        {
+            flags.extend(ngx_flags(sdk));
+        }
+        if name == "vk_fsr4.cpp"
+            && let Some(folder) = &fsr
+        {
+            flags.extend(fsr_flags(folder));
         }
         if IMGUI_USERS.contains(&name) {
             flags.extend(imflags.iter().cloned());
@@ -894,7 +1050,7 @@ pub fn build_at_with(
         "-static-libstdc++".to_owned(),
         "-static-libgcc".to_owned(),
     ];
-    let libs = vec!["-ldl".to_owned(), "-lpthread".to_owned(), "-lm".to_owned()];
+    let libs = link_libraries(ngx.as_deref());
     let link = crate::linker::link_json(&json!({
         "cc": cxx,
         "out": library.to_string_lossy(),
@@ -936,6 +1092,8 @@ pub fn build_at_with(
         "sources": sources(root)?.len(),
         "objects": objects.len(),
         "headers": roots.json(),
+        "ngx": ngx.as_ref().map(|sdk| sdk.to_string_lossy().into_owned()),
+        "fsr4": fsr.as_ref().map(|folder| folder.to_string_lossy().into_owned()),
         "compiled": compiled,
         "link": link,
     }))
@@ -1289,6 +1447,54 @@ mod tests {
         };
         let found = header_package(&search, "vulkanheaders", "vulkan/vulkan.h", None);
         assert_eq!(found, Some(package));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn ngx_flags_name_the_sdk_and_the_link_puts_it_before_the_system_libs() {
+        let base = temp("ngx");
+        let sdk = base.join("sdk");
+        let platform = crate::ngx_sdk::Platform::current();
+        touch(&sdk.join("include/nvsdk_ngx.h"));
+        touch(&crate::ngx_sdk::library(&sdk, platform));
+        let resolved = resolve_ngx(Some(&sdk)).unwrap().unwrap();
+        assert_eq!(resolved, sdk);
+        let flags = ngx_flags(&resolved);
+        assert!(flags.iter().any(|flag| flag == "-DHOOKSHOT_NGX"));
+        assert!(
+            flags
+                .iter()
+                .any(|flag| flag == &format!("-I{}", sdk.join("include").display()))
+        );
+        let libs = link_libraries(Some(&resolved));
+        assert_eq!(
+            PathBuf::from(&libs[0]),
+            crate::ngx_sdk::library(&sdk, platform)
+        );
+        assert_eq!(&libs[1..], ["-ldl", "-lpthread", "-lm"]);
+        // (a folder without the library is an error, not a silent stub build)
+        let broken = base.join("broken");
+        fs::create_dir_all(&broken).unwrap();
+        let error = resolve_ngx(Some(&broken)).unwrap_err();
+        assert!(error.contains("has no"), "{error}");
+        assert!(error.contains("Unset HOOKSHOT_NGX_SDK"), "{error}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn fsr_flags_follow_the_vendored_headers() {
+        let base = temp("fsr");
+        assert_eq!(fsr_headers(&base), None);
+        touch(&base.join("third_party/fidelityfx/api/include/ffx_api.h"));
+        let folder = fsr_headers(&base).unwrap();
+        assert_eq!(folder, base.join("third_party/fidelityfx"));
+        let flags = fsr_flags(&folder);
+        assert!(flags.iter().any(|flag| flag == "-DHOOKSHOT_FSR"));
+        assert!(
+            flags
+                .iter()
+                .any(|flag| flag == &format!("-I{}", folder.display()))
+        );
         let _ = fs::remove_dir_all(base);
     }
 }
