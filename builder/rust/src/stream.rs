@@ -14,6 +14,7 @@ fn stage_floor(id: &str) -> f64 {
         "read" => 0.0,
         "lift" => 0.05,
         "compile" => 0.25,
+        "dlss" => 0.88,
         "vulkan" => 0.90,
         "finish" => 0.95,
         _ => 0.0,
@@ -117,6 +118,11 @@ fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
         .get("prepare")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let dlss = request
+        .get("dlss")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let ngx = text(request, "ngx");
     let mut protocol = Protocol { out, last: None };
     let result = crate::orchestrate::all_json_with(
         &exefs,
@@ -127,6 +133,8 @@ fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
         &vk,
         &language,
         prepare,
+        dlss,
+        &ngx,
         &mut |id, text| protocol.stage(id, text),
     );
     match result {
@@ -256,6 +264,15 @@ fn failure_message(value: &Value) -> String {
         }
         Some("vulkan-compile") => {
             "The build did not compile the Vulkan back end; no game folder was made.".into()
+        }
+        Some("dlss-runtime") => {
+            let reason = value["package"]["ngx"]["reason"]
+                .as_str()
+                .or_else(|| value["package"]["ngx"]["error"].as_str())
+                .unwrap_or("NVIDIA's runtime was not there");
+            format!(
+                "NVIDIA DLSS's runtime was not placed in the game folder's ngx folder: {reason}"
+            )
         }
         Some("lift") => {
             "The build stopped before translating the game to PC code; no game folder was made."

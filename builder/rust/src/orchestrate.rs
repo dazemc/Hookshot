@@ -3,6 +3,7 @@
 
 use serde_json::{Value, json};
 
+#[allow(clippy::too_many_arguments)]
 pub fn all_json(
     exefs: &str,
     romfs: &str,
@@ -12,6 +13,8 @@ pub fn all_json(
     vk: &str,
     language: &str,
     prepare: bool,
+    dlss: bool,
+    ngx: &str,
 ) -> Result<Value, String> {
     all_json_with(
         exefs,
@@ -22,6 +25,8 @@ pub fn all_json(
         vk,
         language,
         prepare,
+        dlss,
+        ngx,
         &mut |_, _| Ok(()),
     )
 }
@@ -38,11 +43,34 @@ pub fn all_json_with(
     vk: &str,
     language: &str,
     prepare: bool,
+    dlss: bool,
+    ngx: &str,
     say_stage: &mut dyn FnMut(&str, &str) -> Result<(), String>,
 ) -> Result<Value, String> {
     if exefs.is_empty() {
         return Err("build.all needs an exefs folder".into());
     }
+    // (NVIDIA's DLSS, before the long stages: the Windows DLL's NGX link is
+    // not this engine's yet, and a DLSS build with no SDK folder cannot go on.
+    // HOOKSHOT_NGX_SDK alone asks for it too, as it does in build.py)
+    let requested_ngx = (!ngx.is_empty()).then(|| std::path::Path::new(ngx));
+    let requested_ngx = crate::vk_build::ngx_folder(requested_ngx);
+    let dlss = dlss || requested_ngx.is_some();
+    let dlss_sdk = if dlss {
+        if crate::ngx_sdk::Platform::current() == crate::ngx_sdk::Platform::Windows {
+            return Err(
+                "NVIDIA DLSS builds on Windows need hookshot_vk.dll, which the Rust engine does not build \
+                 yet: the DLSS build is Linux-only for now."
+                    .into(),
+            );
+        }
+        Some(requested_ngx.ok_or(
+            "NVIDIA DLSS needs NVIDIA's SDK folder: set HOOKSHOT_NGX_SDK, or pass the request's ngx \
+             folder (build.ngx_fetch fetches it).",
+        )?)
+    } else {
+        None
+    };
     say_stage("read", "Reading your game files")?;
     let driver =
         crate::driver::plan_json_with(exefs, romfs, out, work, 0, true, true, true, say_stage)?;
@@ -84,13 +112,24 @@ pub fn all_json_with(
     // explicit path (the AppImage's prebuilt) is used as built; otherwise
     // the sources are compiled, and no header set is a message and a game
     // folder without a renderer, not a silent black window.
-    let prebuilt = if !vk.is_empty() {
+    // (a prebuilt backend has no NVIDIA DLSS in it: a DLSS build compiles the
+    // backend instead, as make_game.py drops HOOKSHOT_VK_PREBUILT for one)
+    let prebuilt = if dlss_sdk.is_some() {
+        None
+    } else if !vk.is_empty() {
         Some(vk.to_owned())
     } else {
         std::env::var("HOOKSHOT_VK_PREBUILT")
             .ok()
             .filter(|path| !path.is_empty())
     };
+    let mut sdk_fetch = Value::Null;
+    if let Some(sdk) = &dlss_sdk {
+        // (every file is checked against its SHA-256: what is there and right
+        // is not downloaded again, and a missing header is fetched too)
+        say_stage("dlss", "Getting NVIDIA's DLSS SDK")?;
+        sdk_fetch = crate::ngx_sdk::fetch(sdk, crate::ngx_sdk::Platform::current(), true)?;
+    }
     let vk_build = if let Some(prebuilt) = &prebuilt {
         let message = if std::path::Path::new(prebuilt).is_file() {
             format!("the Vulkan back end: {prebuilt}, as built")
@@ -106,7 +145,10 @@ pub fn all_json_with(
         })
     } else {
         say_stage("vulkan", "Building the Vulkan back end")?;
-        crate::vk_build::build_at(&crate::kit::root(), work_folder)?
+        let options = crate::vk_build::Options {
+            ngx: dlss_sdk.clone(),
+        };
+        crate::vk_build::build_at_with_options(&crate::kit::root(), work_folder, &options)?
     };
     if !vk_build["built"].as_bool().unwrap_or(false)
         && matches!(
@@ -123,6 +165,10 @@ pub fn all_json_with(
     }
     say_stage("finish", "Putting the game folder together")?;
     let work_text = work_folder.to_str().unwrap_or(work);
+    let ngx_text = dlss_sdk
+        .as_ref()
+        .map(|sdk| sdk.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let package = crate::package::package_json(
         work_text,
         out,
@@ -130,7 +176,18 @@ pub fn all_json_with(
         prebuilt.as_deref().unwrap_or(""),
         assets,
         language,
+        &ngx_text,
     )?;
+    // (a DLSS build whose runtime did not land in <out>/ngx is not a DLSS build)
+    if dlss_sdk.is_some() && package["ngx"]["placed"].as_bool() != Some(true) {
+        return Ok(json!({
+            "stage": "dlss-runtime",
+            "driver": driver,
+            "host": host,
+            "vk": vk_build,
+            "package": package,
+        }));
+    }
     // The game's shader list, as Python's finish stage makes it: the first
     // start translates it instead of compiling each program as it meets it.
     // A failure leaves that work to the first start, never stops the build.
@@ -166,6 +223,10 @@ pub fn all_json_with(
         "driver": driver,
         "host": host,
         "vk": vk_build,
+        "dlss": {
+            "sdk": dlss_sdk.as_ref().map(|sdk| sdk.to_string_lossy().into_owned()),
+            "fetched": sdk_fetch,
+        },
         "package": package,
         "shaders": shaders,
         "prepare": finish,

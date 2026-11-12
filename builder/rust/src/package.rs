@@ -177,10 +177,41 @@ pub fn package_json(
     vk: &str,
     assets: &str,
     language: &str,
+    ngx: &str,
 ) -> Result<Value, String> {
-    package_json_on(Platform::current(), work, out, romfs, vk, assets, language)
+    package_json_on(
+        Platform::current(),
+        work,
+        out,
+        romfs,
+        vk,
+        assets,
+        language,
+        ngx,
+    )
 }
 
+/// DLSS's runtime in `<out>/ngx`, as Python's `place_ngx_runtime` does: the
+/// SDK's file when a DLSS build names the folder, and out of the way when it
+/// does not (a folder rebuilt without DLSS loses the runtime too).
+fn place_ngx_runtime(platform: Platform, out: &Path, sdk: &Path) -> Value {
+    let ngx = match platform {
+        Platform::Linux => crate::ngx_sdk::Platform::Linux,
+        Platform::Windows => crate::ngx_sdk::Platform::Windows,
+    };
+    if !sdk.as_os_str().is_empty() {
+        return crate::ngx_sdk::install_runtime(sdk, ngx, &out.join("ngx"))
+            .unwrap_or_else(|error| json!({"placed": false, "error": error}));
+    }
+    let stale = out.join("ngx").join(ngx.runtime_name());
+    let removed = stale.is_file() && fs::remove_file(&stale).is_ok();
+    if removed {
+        let _ = fs::remove_dir(out.join("ngx"));
+    }
+    json!({"placed": false, "removed": removed})
+}
+
+#[allow(clippy::too_many_arguments)]
 fn package_json_on(
     platform: Platform,
     work: &str,
@@ -189,6 +220,7 @@ fn package_json_on(
     vk: &str,
     assets: &str,
     language: &str,
+    ngx: &str,
 ) -> Result<Value, String> {
     let root = crate::kit::root();
     let work = Path::new(work);
@@ -208,6 +240,8 @@ fn package_json_on(
     if vk.is_file() {
         bytes += copy(&vk, &bin.join(platform.vulkan_library()))?;
     }
+    // (NVIDIA DLSS: DLSS's runtime in <out>/ngx, never NGX's core)
+    let ngx_runtime = place_ngx_runtime(platform, out, Path::new(ngx));
     let sdl2 = env_path("HOOKSHOT_SDL2");
     let wgpu = env_path("WGPU_NATIVE");
     for library in runtime_libraries(
@@ -303,6 +337,7 @@ fn package_json_on(
         "language": language,
         "vk": bin.join(platform.vulkan_library()).is_file(),
         "sdl": bin.join(platform.primary_sdl_library()).is_file(),
+        "ngx": ngx_runtime,
         "seed": seed,
         "prompts": prompts,
     }))
@@ -449,6 +484,7 @@ mod tests {
             "",
             "",
             "en-US",
+            "",
         )
         .unwrap();
         assert_eq!(answer["vk"], true);
@@ -481,6 +517,7 @@ mod tests {
             vk.to_str().unwrap(),
             assets.to_str().unwrap(),
             "en-US",
+            "",
         )
         .unwrap();
         assert_eq!(answer["stage"], "packaged");
@@ -521,6 +558,7 @@ mod tests {
             vk.to_str().unwrap(),
             assets.to_str().unwrap(),
             "en-US",
+            "",
         )
         .unwrap();
         assert_eq!(answer["stage"], "packaged");
@@ -540,6 +578,46 @@ mod tests {
         }
         assert!(out.join("image.bin").is_file());
         assert!(!out.join("bin").join("hookshot").exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    fn package_into(base: &Path, platform: Platform, ngx: &str) -> Value {
+        let work = base.join("work");
+        let out = base.join("out");
+        fs::create_dir_all(work.join("sa/image")).unwrap();
+        fs::write(work.join("sa/image/image.bin"), b"image").unwrap();
+        fs::create_dir_all(out.join("bin")).unwrap();
+        fs::write(out.join("bin").join(platform.executable()), b"exe").unwrap();
+        package_json_on(
+            platform,
+            work.to_str().unwrap(),
+            out.to_str().unwrap(),
+            "",
+            "",
+            "",
+            "en-US",
+            ngx,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_dlss_package_puts_the_runtime_in_ngx_and_never_its_core() {
+        let base = temp("ngx-runtime");
+        let platform = crate::ngx_sdk::Platform::Linux;
+        let sdk = base.join("sdk");
+        let runtime = crate::ngx_sdk::runtime(&sdk, platform);
+        fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+        fs::write(&runtime, b"runtime").unwrap();
+        let answer = package_into(&base, Platform::Linux, sdk.to_str().unwrap());
+        assert_eq!(answer["ngx"]["placed"], true);
+        assert!(base.join("out/ngx").join(platform.runtime_name()).is_file());
+        assert!(!base.join("out/ngx/_nvngx.so").exists());
+        // (a folder rebuilt without DLSS loses the runtime, as Python's does)
+        let answer = package_into(&base, Platform::Linux, "");
+        assert_eq!(answer["ngx"]["placed"], false);
+        assert_eq!(answer["ngx"]["removed"], true);
+        assert!(!base.join("out/ngx").exists());
         let _ = fs::remove_dir_all(base);
     }
 }

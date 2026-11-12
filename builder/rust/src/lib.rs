@@ -165,6 +165,11 @@ pub fn dispatch(text: &str) -> String {
                 .get("prepare")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            request
+                .get("dlss")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            &string(&request, "ngx").unwrap_or_default(),
         ),
         "build.package" => package::package_json(
             &string(&request, "work").unwrap_or_default(),
@@ -173,6 +178,7 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "vk").unwrap_or_default(),
             &string(&request, "assets").unwrap_or_default(),
             &string(&request, "language").unwrap_or_default(),
+            &string(&request, "ngx").unwrap_or_default(),
         ),
         "build.host_link" => host_build::link_json(
             &string(&request, "exefs").unwrap_or_default(),

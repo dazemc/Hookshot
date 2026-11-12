@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 fn stream(request: &str) -> (i32, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_hookshot_engine"))
         .arg("--stream")
+        .env_remove("HOOKSHOT_NGX_SDK")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -30,6 +31,17 @@ fn a_build_request_that_cannot_run_becomes_an_error_line() {
     let (code, text) = stream(r#"{"command":"build.all"}"#);
     assert_eq!(code, 1);
     assert_eq!(text, "@@error build.all needs an exefs folder\n");
+}
+
+#[test]
+fn a_dlss_build_without_an_sdk_folder_stops_before_the_game_is_read() {
+    let (code, text) = stream(r#"{"command":"build.all","exefs":"/no/such/exefs","dlss":true}"#);
+    assert_eq!(code, 1);
+    assert!(
+        text.starts_with("@@error NVIDIA DLSS needs NVIDIA's SDK folder: "),
+        "{text}"
+    );
+    assert!(!text.contains("@@stage read"), "{text}");
 }
 
 #[test]
