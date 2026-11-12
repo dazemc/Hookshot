@@ -916,11 +916,11 @@ impl<'a, C: Code> Lifter<'a, C> {
             }
         }
         out.push("}".to_owned());
-        crate::text::localize_regs(
-            &(out.join("\n") + "\n"),
-            crate::text::local_count(),
-            (&dirty.0, &dirty.1),
-        )
+        let mut text = out.join("\n") + "\n";
+        if frame {
+            text = crate::text::frame_stores(&text);
+        }
+        crate::text::localize_regs(&text, crate::text::local_count(), (&dirty.0, &dirty.1))
     }
 
     fn dirty_regs(
@@ -1148,7 +1148,28 @@ pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
         .keys()
         .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
         .collect();
-    Ok(serde_json::json!({"entry": format!("{entry:x}"), "c": lift.emit_function(entry, &texts)}))
+    let frame_false: Vec<String> = body
+        .keys()
+        .zip(texts.iter())
+        .filter(|(pc, text)| matches!(body[*pc], Kind::Op) && !crate::text::fp_is_frame(text))
+        .map(|(pc, _)| format!("{pc:x}"))
+        .collect();
+    let branches: Vec<(String, Vec<String>)> = body
+        .iter()
+        .filter_map(|(pc, kind)| match kind {
+            Kind::Br(_) => Some((
+                format!("{pc:x}"),
+                lift.jt
+                    .get(pc)
+                    .map(|targets| targets.iter().map(|t| format!("{t:x}")).collect())
+                    .unwrap_or_default(),
+            )),
+            _ => None,
+        })
+        .collect();
+    Ok(
+        serde_json::json!({"entry": format!("{entry:x}"), "frame_false": frame_false, "branches": branches, "c": lift.emit_function(entry, &texts)}),
+    )
 }
 
 pub fn coverage_json(exefs: &str, pcs: &[u64]) -> Result<serde_json::Value, String> {
