@@ -80,8 +80,57 @@ pub fn all_json_with(
             json!({"stage": "host-link", "driver": driver, "host": host, "lift_kept": false}),
         );
     }
+    // The Vulkan back end, as build.py's standalone build makes it: an
+    // explicit path (the AppImage's prebuilt) is used as built; otherwise
+    // the sources are compiled, and no header set is a message and a game
+    // folder without a renderer, not a silent black window.
+    let prebuilt = if !vk.is_empty() {
+        Some(vk.to_owned())
+    } else {
+        std::env::var("HOOKSHOT_VK_PREBUILT")
+            .ok()
+            .filter(|path| !path.is_empty())
+    };
+    let vk_build = if let Some(prebuilt) = &prebuilt {
+        let message = if std::path::Path::new(prebuilt).is_file() {
+            format!("the Vulkan back end: {prebuilt}, as built")
+        } else {
+            format!("the Vulkan back end was not built: {prebuilt} is not there")
+        };
+        json!({
+            "stage": "vulkan",
+            "built": false,
+            "reason": "prebuilt",
+            "library": prebuilt,
+            "message": message,
+        })
+    } else {
+        say_stage("vulkan", "Building the Vulkan back end")?;
+        crate::vk_build::build_at(&crate::kit::root(), work_folder)?
+    };
+    if !vk_build["built"].as_bool().unwrap_or(false)
+        && matches!(
+            vk_build["stage"].as_str(),
+            Some("vulkan-compile" | "vulkan-link" | "vulkan-symbols")
+        )
+    {
+        return Ok(json!({
+            "stage": vk_build["stage"],
+            "driver": driver,
+            "host": host,
+            "vk": vk_build,
+        }));
+    }
     say_stage("finish", "Putting the game folder together")?;
-    let package = crate::package::package_json(work, out, romfs, vk, assets, language)?;
+    let work_text = work_folder.to_str().unwrap_or(work);
+    let package = crate::package::package_json(
+        work_text,
+        out,
+        romfs,
+        prebuilt.as_deref().unwrap_or(""),
+        assets,
+        language,
+    )?;
     // The game's shader list, as Python's finish stage makes it: the first
     // start translates it instead of compiling each program as it meets it.
     // A failure leaves that work to the first start, never stops the build.
@@ -116,6 +165,7 @@ pub fn all_json_with(
         "stage": "packaged",
         "driver": driver,
         "host": host,
+        "vk": vk_build,
         "package": package,
         "shaders": shaders,
         "prepare": finish,

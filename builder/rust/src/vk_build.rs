@@ -1,0 +1,1294 @@
+//! The Vulkan back end: `gpu/vk` and the shader recompiler it carries,
+//! compiled into `work/sa/build/hookshot_vk.so` (Linux). Ported from
+//! nx2/build.py's `vk_sources`, `vflags` and `vk_jobs` blocks.
+//!
+//! The Windows host link and DLL path are still build.py's: this module
+//! compiles and links the Linux shared object, which needs no game data.
+//! NGC/FSR build options are not ported: `vk_dlss.cpp` and `vk_fsr4.cpp`
+//! compile their "not available" stubs, as a build without those SDKs does.
+//!
+//! Header roots come from `HOOKSHOT_VULKAN_HEADERS`, `HOOKSHOT_SPIRV_HEADERS`
+//! and `HOOKSHOT_VMA_HEADERS` first, then the system's `/usr` and
+//! `/usr/local`, then a CPM cache (`RX_CPM`, `cpm/` in the clone, or the old
+//! project caches). Each names a package root with `include/`, or its
+//! `include/` folder itself.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+use sha1::{Digest, Sha1};
+
+use crate::platform::Platform;
+
+/// NVIDIA's NGX runtime shim: build.py compiles it only for the Windows DLL
+/// with the NGX SDK, never for the Linux shared object.
+const NGX_MSVC_RT: &str = "vk_ngx_msvc_rt.cpp";
+
+/// zstd's decoder, plain C, as build.py's `zstd_jobs` lists it.
+const ZSTD_DECODER: [&str; 10] = [
+    "common/debug.c",
+    "common/entropy_common.c",
+    "common/error_private.c",
+    "common/fse_decompress.c",
+    "common/xxhash.c",
+    "common/zstd_common.c",
+    "decompress/huf_decompress.c",
+    "decompress/zstd_ddict.c",
+    "decompress/zstd_decompress.c",
+    "decompress/zstd_decompress_block.c",
+];
+
+/// Dear ImGui's objects: the overlays' library and its Vulkan backend.
+const IMGUI_SOURCES: [&str; 5] = [
+    "imgui.cpp",
+    "imgui_draw.cpp",
+    "imgui_tables.cpp",
+    "imgui_widgets.cpp",
+    "backends/imgui_impl_vulkan.cpp",
+];
+
+/// The two back-end sources that also see Dear ImGui's headers.
+const IMGUI_USERS: [&str; 2] = ["vk_imgui.cpp", "vk_menu.cpp"];
+
+/// The header roots the compile needs, each with an `include/` folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Roots {
+    pub vulkan: PathBuf,
+    pub spirv: PathBuf,
+    pub vma: PathBuf,
+}
+
+impl Roots {
+    pub fn json(&self) -> Value {
+        json!({
+            "vulkan": self.vulkan.to_string_lossy(),
+            "spirv": self.spirv.to_string_lossy(),
+            "vma": self.vma.to_string_lossy(),
+        })
+    }
+}
+
+/// What the environment names for each header root.
+#[derive(Debug, Clone, Default)]
+pub struct HeaderEnv {
+    pub vulkan: Option<PathBuf>,
+    pub spirv: Option<PathBuf>,
+    pub vma: Option<PathBuf>,
+}
+
+impl HeaderEnv {
+    pub fn from_environment() -> Self {
+        let read = |name: &str| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        };
+        Self {
+            vulkan: read("HOOKSHOT_VULKAN_HEADERS"),
+            spirv: read("HOOKSHOT_SPIRV_HEADERS"),
+            vma: read("HOOKSHOT_VMA_HEADERS"),
+        }
+    }
+}
+
+/// Where a header root is looked for: the environment's overrides, the
+/// system's prefixes, then CPM package caches.
+#[derive(Debug, Clone, Default)]
+pub struct HeaderSearch {
+    pub system: Vec<PathBuf>,
+    pub cpm: Vec<PathBuf>,
+}
+
+impl HeaderSearch {
+    /// The roots build.py can find in this checkout: the distro's prefixes,
+    /// then a CPM cache. `RX_CPM` first, then `cpm/` in the clone and the
+    /// older project caches.
+    pub fn for_repo(root: &Path, work: &Path) -> Self {
+        let mut cpm = Vec::new();
+        let mut add = |path: PathBuf| {
+            if path.is_dir() && !cpm.contains(&path) {
+                cpm.push(path);
+            }
+        };
+        if let Some(dir) = std::env::var_os("RX_CPM").filter(|dir| !dir.is_empty()) {
+            add(PathBuf::from(dir));
+        }
+        add(root.join("cpm"));
+        add(work.join("eg/.cache/cpm"));
+        if let Some(parent) = root.parent() {
+            add(parent.join("mkw-recomp/work/eg/.cache/cpm"));
+            add(parent.join("Eglantine/.cache/cpm"));
+        }
+        Self {
+            system: vec![PathBuf::from("/usr"), PathBuf::from("/usr/local")],
+            cpm,
+        }
+    }
+}
+
+/// Whether a package root has `include/<probe>`.
+fn has_include(root: &Path, probe: &str) -> bool {
+    root.join("include").join(probe).is_file()
+}
+
+/// The newest version folder of a CPM package, when it holds a probe.
+fn cpm_package(cpm: &[PathBuf], name: &str, probe: &str) -> Option<PathBuf> {
+    for cache in cpm {
+        let folder = cache.join(name);
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        let mut versions: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.path())
+            .collect();
+        versions.sort();
+        if let Some(version) = versions.pop()
+            && has_include(&version, probe)
+        {
+            return Some(version);
+        }
+    }
+    None
+}
+
+/// One package root with `include/<probe>`: the environment's path (package
+/// root or its `include/` folder), then the system's prefixes, then CPM.
+pub fn header_package(
+    search: &HeaderSearch,
+    cpm_name: &str,
+    probe: &str,
+    environment: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(given) = environment.filter(|path| !path.as_os_str().is_empty()) {
+        let given = if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|dir| dir.join(given))
+                .unwrap_or_else(|_| given.to_path_buf())
+        };
+        if has_include(&given, probe) {
+            return Some(given);
+        }
+        // (`HOOKSHOT_*_HEADERS=<root>/include` is accepted too)
+        if given.join(probe).is_file()
+            && given.file_name().is_some_and(|name| name == "include")
+            && let Some(parent) = given.parent()
+        {
+            return Some(parent.to_path_buf());
+        }
+    }
+    for prefix in &search.system {
+        if has_include(prefix, probe) {
+            return Some(prefix.clone());
+        }
+    }
+    cpm_package(&search.cpm, cpm_name, probe)
+}
+
+/// The three header packages, each when it was found.
+#[derive(Debug, Clone, Default)]
+pub struct Headers {
+    pub vulkan: Option<PathBuf>,
+    pub spirv: Option<PathBuf>,
+    pub vma: Option<PathBuf>,
+}
+
+impl Headers {
+    pub fn find(search: &HeaderSearch, environment: &HeaderEnv) -> Self {
+        Self {
+            vulkan: header_package(
+                search,
+                "vulkanheaders",
+                "vulkan/vulkan.h",
+                environment.vulkan.as_deref(),
+            ),
+            spirv: header_package(
+                search,
+                "spirv-headers",
+                "spirv/unified1/spirv.h",
+                environment.spirv.as_deref(),
+            ),
+            vma: header_package(
+                search,
+                "vulkanmemoryallocator",
+                "vk_mem_alloc.h",
+                environment.vma.as_deref(),
+            ),
+        }
+    }
+
+    /// The labels build.py names in its message, in its order.
+    pub fn missing(&self) -> Vec<&'static str> {
+        [
+            ("Vulkan", &self.vulkan),
+            ("SPIR-V", &self.spirv),
+            ("VMA", &self.vma),
+        ]
+        .into_iter()
+        .filter(|(_, root)| root.is_none())
+        .map(|(name, _)| name)
+        .collect()
+    }
+
+    pub fn roots(&self) -> Option<Roots> {
+        Some(Roots {
+            vulkan: self.vulkan.clone()?,
+            spirv: self.spirv.clone()?,
+            vma: self.vma.clone()?,
+        })
+    }
+}
+
+/// build.py's sentence when a header package is missing, unchanged but for
+/// the library's name.
+pub fn missing_guidance(missing: &[&str]) -> String {
+    format!(
+        "no headers for {} (missing {}). Set RX_CPM to a CPM cache, or HOOKSHOT_VULKAN_HEADERS / \
+         HOOKSHOT_SPIRV_HEADERS / HOOKSHOT_VMA_HEADERS (package root or its include/ folder), or install \
+         distro packages vulkan-headers + spirv-headers + vulkan-memory-allocator, or set HOOKSHOT_VK_PREBUILT.",
+        Platform::current().vulkan_library(),
+        missing.join(", ")
+    )
+}
+
+fn cpp_files(folder: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", folder.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            cpp_files(&path, out)?;
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("cpp") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// build.py's `vk_sources`: `gpu/vk/*.cpp` without the NGX shim, Eden's and
+/// sirit's trees, and suyu's texture decoders (the back end's unswizzle).
+pub fn sources(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let vk = root.join("gpu/vk");
+    let mut out = Vec::new();
+    cpp_files(&vk.join("eden"), &mut out)?;
+    cpp_files(&vk.join("sirit/src"), &mut out)?;
+    if let Ok(entries) = fs::read_dir(&vk) {
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", vk.display()))?;
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().and_then(|ext| ext.to_str()) == Some("cpp")
+                && path.file_name().and_then(|name| name.to_str()) != Some(NGX_MSVC_RT)
+            {
+                out.push(path);
+            }
+        }
+    }
+    let textures = root.join("gpu/third_party/suyu/video_core/textures");
+    out.push(textures.join("decoders.cpp"));
+    out.push(textures.join("astc.cpp"));
+    out.sort();
+    Ok(out)
+}
+
+/// `-march` (RX_MARCH when named), `-ffp-contract=off` and a known tune, as
+/// build.py's `CPU` list orders them.
+fn cpu_flags() -> Vec<String> {
+    let march = std::env::var("RX_MARCH")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(crate::host::march);
+    cpu_flags_with(&march, crate::host::mtune_flag().as_deref())
+}
+
+fn cpu_flags_with(march: &str, tune: Option<&str>) -> Vec<String> {
+    let mut flags = vec![format!("-march={march}"), "-ffp-contract=off".to_owned()];
+    if let Some(tune) = tune {
+        flags.push(format!("-mtune={tune}"));
+    }
+    flags
+}
+
+fn release_requested() -> bool {
+    std::env::var("RX_RELEASE").as_deref() == Ok("1")
+}
+
+/// build.py's `vflags`, less the per-file defines: the forced includes, C++20,
+/// NDEBUG and the back end's defines, then its include order. Eden's
+/// recompiler comes before suyu's root (`-DMKWVK_INCLUDES=2`), which object
+/// keys see because include folders themselves are left out of them.
+pub fn vk_flags(root: &Path, gen_dir: &Path, headers: &Roots, release: bool) -> Vec<String> {
+    let vk = root.join("gpu/vk");
+    let mut flags = crate::toolchain::native_target(false);
+    flags.extend(cpu_flags());
+    flags.extend([
+        "-fPIC".to_owned(),
+        format!("-I{}", root.join("host/posix").display()),
+        "-D_GNU_SOURCE".to_owned(),
+        "-include".to_owned(),
+        "algorithm".to_owned(),
+        "-include".to_owned(),
+        "cstdio".to_owned(),
+        "-include".to_owned(),
+        "cstdlib".to_owned(),
+        "-include".to_owned(),
+        "cstring".to_owned(),
+        "-include".to_owned(),
+        "functional".to_owned(),
+        "-include".to_owned(),
+        "string".to_owned(),
+        "-include".to_owned(),
+        "vector".to_owned(),
+        "-std=c++20".to_owned(),
+        "-O2".to_owned(),
+        "-g0".to_owned(),
+        "-DNDEBUG".to_owned(),
+        "-Wno-everything".to_owned(),
+        "-DVK_NO_PROTOTYPES".to_owned(),
+        "-DMKWVK_BUILDING".to_owned(),
+    ]);
+    if release {
+        flags.push("-DHOOKSHOT_RELEASE".to_owned());
+    }
+    flags.push("-DMKWVK_INCLUDES=2".to_owned());
+    flags.extend([
+        format!("-I{}", vk.join("compat").display()),
+        format!("-I{}", root.join("gpu/compat").display()),
+        format!("-I{}", vk.join("eden").display()),
+        format!("-I{}", root.join("gpu/third_party/suyu").display()),
+        format!("-I{}", vk.join("sirit/include").display()),
+        format!("-I{}", vk.join("sirit/src").display()),
+        format!("-I{}", headers.spirv.join("include").display()),
+        format!(
+            "-I{}",
+            headers.spirv.join("include/spirv/unified1").display()
+        ),
+        format!("-I{}", headers.vulkan.join("include").display()),
+        format!("-I{}", headers.vma.join("include").display()),
+        format!("-I{}", vk.display()),
+        format!("-I{}", gen_dir.display()),
+    ]);
+    flags
+}
+
+/// Dear ImGui's own defines (the overlays draw over the window).
+pub fn imgui_flags(root: &Path) -> Vec<String> {
+    vec![
+        format!("-I{}", root.join("third_party/imgui").display()),
+        format!("-I{}", root.join("third_party/zstd/lib").display()),
+        "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES".to_owned(),
+        "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS".to_owned(),
+        "-DIMGUI_DISABLE_WIN32_FUNCTIONS".to_owned(),
+        "-DIMGUI_DISABLE_DEMO_WINDOWS".to_owned(),
+        "-DIMGUI_DISABLE_DEBUG_TOOLS".to_owned(),
+    ]
+}
+
+/// zstd's flags in the back end: a hidden, static decoder.
+pub fn zstd_flags() -> Vec<String> {
+    let mut flags = crate::toolchain::native_target(false);
+    flags.extend(cpu_flags());
+    flags.extend([
+        "-fPIC".to_owned(),
+        "-O2".to_owned(),
+        "-g0".to_owned(),
+        "-DNDEBUG".to_owned(),
+        "-Wno-everything".to_owned(),
+        "-fvisibility=hidden".to_owned(),
+        "-DZSTD_DISABLE_ASM".to_owned(),
+        "-DZSTD_LEGACY_SUPPORT=0".to_owned(),
+        "-DZSTD_MULTITHREAD=0".to_owned(),
+    ]);
+    flags
+}
+
+/// The bundled fonts' object: no optimisation, no warnings.
+pub fn ui_fonts_flags() -> Vec<String> {
+    let mut flags = crate::toolchain::native_target(false);
+    flags.extend([
+        "-fPIC".to_owned(),
+        "-O0".to_owned(),
+        "-g0".to_owned(),
+        "-w".to_owned(),
+    ]);
+    flags
+}
+
+/// The Win32 calls on POSIX, compiled into the back end.
+pub fn posix_flags(root: &Path) -> Vec<String> {
+    let mut flags = crate::toolchain::native_target(false);
+    flags.extend(cpu_flags());
+    flags.extend([
+        "-fPIC".to_owned(),
+        "-O2".to_owned(),
+        "-g0".to_owned(),
+        "-Wno-everything".to_owned(),
+        "-D_GNU_SOURCE".to_owned(),
+        format!("-I{}", root.join("host/posix").display()),
+    ]);
+    flags
+}
+
+fn walk_files(folder: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", folder.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            walk_files(&path, out)?;
+        } else if path.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn walk_headers(folder: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", folder.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            walk_headers(&path, out)?;
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| matches!(ext, "h" | "hpp" | "inc"))
+        {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn digest_files<'a>(paths: impl IntoIterator<Item = &'a PathBuf>) -> Result<String, String> {
+    let mut found: Vec<&PathBuf> = paths.into_iter().collect();
+    found.sort();
+    let mut digest = Sha1::new();
+    for path in found {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        digest.update(name.as_bytes());
+        let data = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        digest.update(data);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// build.py's `tree_headers`: every header under these roots, by name and
+/// content, as one fingerprint.
+pub fn tree_headers(roots: &[PathBuf]) -> Result<String, String> {
+    let mut found = Vec::new();
+    for root in roots {
+        walk_headers(root, &mut found)?;
+    }
+    digest_files(&found)
+}
+
+/// The headers directly in these folders (no walk), as Dear ImGui's
+/// dependency blob in build.py.
+fn flat_headers(folders: &[PathBuf]) -> Result<String, String> {
+    let mut found = Vec::new();
+    for folder in folders {
+        let Ok(entries) = fs::read_dir(folder) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", folder.display()))?;
+            let path = entry.path();
+            if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("h") {
+                found.push(path);
+            }
+        }
+    }
+    digest_files(&found)
+}
+
+/// zstd's headers, concatenated as build.py's `zstd_jobs` reads them.
+pub fn zstd_headers(zstd: &Path) -> Result<String, String> {
+    let mut paths = Vec::new();
+    for folder in [
+        zstd.to_path_buf(),
+        zstd.join("common"),
+        zstd.join("decompress"),
+    ] {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        let mut here: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("h")
+            })
+            .collect();
+        here.sort();
+        paths.extend(here);
+    }
+    let mut digest = Sha1::new();
+    for path in paths {
+        let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        digest.update(data);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// What makes the shader caches good for this translator (build.py's
+/// `HOOKSHOT_SHADER_STAMP`): Eden's, sirit's and the compat headers' files,
+/// then the four back-end files the translation goes through. Line endings
+/// are normalised, so a checkout's CRLF does not change the stamp.
+pub fn shader_stamp(root: &Path) -> Result<String, String> {
+    let vk = root.join("gpu/vk");
+    let mut files = Vec::new();
+    for top in ["eden", "sirit", "compat"] {
+        walk_files(&vk.join(top), &mut files)?;
+    }
+    for name in ["vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h"] {
+        files.push(vk.join(name));
+    }
+    files.sort();
+    let mut digest = Sha1::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(&vk)
+            .unwrap_or(&path)
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        digest.update(relative.as_bytes());
+        let data = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut line_endings = 0;
+        while line_endings < data.len() {
+            if data[line_endings] == b'\r' && data.get(line_endings + 1) == Some(&b'\n') {
+                line_endings += 1;
+                continue;
+            }
+            digest.update([data[line_endings]]);
+            line_endings += 1;
+        }
+    }
+    Ok(format!("{:x}", digest.finalize())[..16].to_owned())
+}
+
+pub fn shader_stamp_define(stamp: &str) -> String {
+    format!("-DHOOKSHOT_SHADER_STAMP=0x{stamp}ull")
+}
+
+/// The object name build.py gives a back-end source: its path under `gpu/vk`
+/// with underscores, and `vk_` in front. Sources outside `gpu/vk` keep the
+/// `..` Python's `os.path.relpath` writes, as underscores.
+fn object_name(relative: &Path) -> String {
+    let stem = relative
+        .to_string_lossy()
+        .trim_end_matches(".cpp")
+        .replace(['/', '\\'], "_");
+    format!("vk_{stem}.o")
+}
+
+/// `os.path.relpath` for the back end's object names: the `..` steps out of
+/// `gpu/vk` are part of the name, as build.py makes them.
+fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    let path_parts: Vec<_> = path.components().collect();
+    let base_parts: Vec<_> = base.components().collect();
+    let common = path_parts
+        .iter()
+        .zip(&base_parts)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut out = PathBuf::new();
+    for _ in common..base_parts.len() {
+        out.push("..");
+    }
+    for part in &path_parts[common..] {
+        out.push(part.as_os_str());
+    }
+    out
+}
+
+fn write_deps(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn job(cc: &str, src: &Path, obj: &Path, flags: &[String], deps: &Path, cache: &Path) -> Value {
+    json!({
+        "cc": cc,
+        "src": src.to_string_lossy(),
+        "obj": obj.to_string_lossy(),
+        "cache": cache.to_string_lossy(),
+        "flags": flags,
+        "deps_file": if deps.as_os_str().is_empty() { String::new() } else { deps.to_string_lossy().into_owned() },
+    })
+}
+
+/// The skipped answer: build.all keeps going and packages the game without a
+/// renderer, and the builder's log says why rather than leaving a black
+/// window.
+fn skipped(missing: &[&str]) -> Value {
+    json!({
+        "stage": "vulkan",
+        "built": false,
+        "reason": "headers",
+        "missing": missing,
+        "message": missing_guidance(missing),
+    })
+}
+
+/// Compile and link `hookshot_vk.so` into `work/sa/build`.
+pub fn build_json(work: &str) -> Result<Value, String> {
+    let work = if work.is_empty() {
+        crate::kit::work()
+    } else {
+        PathBuf::from(work)
+    };
+    let root = crate::kit::root();
+    build_at(&root, &work)
+}
+
+/// The same, from an explicit repository root and work folder: the tests and
+/// the build driver use it.
+pub fn build_at(root: &Path, work: &Path) -> Result<Value, String> {
+    build_at_with(
+        root,
+        work,
+        &HeaderSearch::for_repo(root, work),
+        &HeaderEnv::from_environment(),
+    )
+}
+
+/// Ported build.py path, with the header search callers can supply (a test
+/// with no headers must not find this PC's).
+pub fn build_at_with(
+    root: &Path,
+    work: &Path,
+    search: &HeaderSearch,
+    environment: &HeaderEnv,
+) -> Result<Value, String> {
+    if Platform::current() != Platform::Linux {
+        return Err(
+            "The Vulkan back end's Windows build is not ported to the Rust engine yet: use the Python builder \
+             (python -I nx2/build.py --standalone) for hookshot_vk.dll."
+                .into(),
+        );
+    }
+    let headers = Headers::find(search, environment);
+    let Some(roots) = headers.roots() else {
+        return Ok(skipped(&headers.missing()));
+    };
+    let vk = root.join("gpu/vk");
+    let gpu = root.join("gpu");
+    let zstd = root.join("third_party/zstd/lib");
+    let imgui = root.join("third_party/imgui");
+    let build = work.join("sa/build");
+    let obj_dir = build.join("obj");
+    let gen_dir = build.join("gen");
+    let cache = work.join("build/objcache");
+    for folder in [&obj_dir, &gen_dir] {
+        fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    }
+    // (the start-up screen's logo and the overlays' fonts: generated here as
+    // build.py's nx2/logo_rgba.py and nx2/ui_fonts.py make them)
+    let logo = crate::logo_rgba::write(
+        &gen_dir.join("hookshot_logo.h"),
+        &root.join("assets/hookshot.png"),
+    )?;
+    let fonts = gen_dir.join("ui_fonts.cpp");
+    crate::ui_fonts::write(&fonts, root)?;
+    let stamp = shader_stamp(root)?;
+    let cc = crate::toolchain::find("clang", false)
+        .to_string_lossy()
+        .into_owned();
+    let cxx = crate::toolchain::find("clang++", false)
+        .to_string_lossy()
+        .into_owned();
+    let release = release_requested();
+
+    // (the dependency blobs, as build.py groups them: Eden and sirit see only
+    // their own headers; the back end sees everything)
+    let vk_lib_deps = tree_headers(&[
+        vk.join("eden"),
+        vk.join("sirit"),
+        vk.join("compat"),
+        gpu.join("compat"),
+    ])?;
+    let vdeps = tree_headers(&[
+        vk.clone(),
+        gpu.join("render"),
+        gpu.join("compat"),
+        gpu.join("third_party/suyu/video_core/textures"),
+    ])?;
+    let imgui_deps = flat_headers(&[imgui.clone(), imgui.join("backends"), zstd.clone()])?;
+    let vdeps_imgui = {
+        let mut digest = Sha1::new();
+        digest.update(vdeps.as_bytes());
+        digest.update(logo.as_bytes());
+        digest.update(imgui_deps.as_bytes());
+        format!("{:x}", digest.finalize())
+    };
+    let vdeps_ui = {
+        let mut digest = Sha1::new();
+        digest.update(vdeps.as_bytes());
+        digest.update(imgui_deps.as_bytes());
+        format!("{:x}", digest.finalize())
+    };
+    let zstd_deps = zstd_headers(&zstd)?;
+    let posix_deps = tree_headers(&[root.join("host/posix")])?;
+    let deps = |name: &str| build.join(name);
+    let vk_lib_deps_file = deps("vk_deps_eden.bin");
+    let vdeps_file = deps("vk_deps.bin");
+    let vdeps_imgui_file = deps("vk_deps_imgui.bin");
+    let vdeps_ui_file = deps("vk_deps_ui.bin");
+    let imgui_deps_file = deps("vk_deps_imgui_own.bin");
+    let zstd_deps_file = deps("vk_deps_zstd.bin");
+    let posix_deps_file = deps("vk_deps_posix.bin");
+    for (path, text) in [
+        (&vk_lib_deps_file, vk_lib_deps.as_str()),
+        (&vdeps_file, vdeps.as_str()),
+        (&vdeps_imgui_file, vdeps_imgui.as_str()),
+        (&vdeps_ui_file, vdeps_ui.as_str()),
+        (&imgui_deps_file, imgui_deps.as_str()),
+        (&zstd_deps_file, zstd_deps.as_str()),
+        (&posix_deps_file, posix_deps.as_str()),
+    ] {
+        write_deps(path, text)?;
+    }
+
+    let vflags = vk_flags(root, &gen_dir, &roots, release);
+    let imflags = imgui_flags(root);
+    let mut jobs = Vec::new();
+    // (Dear ImGui's five objects)
+    let imgui_flags_here: Vec<String> = vflags.iter().chain(imflags.iter()).cloned().collect();
+    for name in IMGUI_SOURCES {
+        let src = imgui.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let obj = obj_dir.join(format!(
+            "vk_imgui_{}.o",
+            name.rsplit('/')
+                .next()
+                .unwrap_or(name)
+                .trim_end_matches(".cpp")
+        ));
+        jobs.push(job(
+            &cxx,
+            &src,
+            &obj,
+            &imgui_flags_here,
+            &imgui_deps_file,
+            &cache,
+        ));
+    }
+    // (zstd's decoder)
+    let zflags = zstd_flags();
+    for name in ZSTD_DECODER {
+        let src = zstd.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let obj = obj_dir.join(format!(
+            "vk_zstd_{}.o",
+            name.rsplit('/')
+                .next()
+                .unwrap_or(name)
+                .trim_end_matches(".c")
+        ));
+        jobs.push(job(&cc, &src, &obj, &zflags, &zstd_deps_file, &cache));
+    }
+    // (the bundled fonts)
+    jobs.push(job(
+        &cxx,
+        &fonts,
+        &obj_dir.join("vk_ui_fonts.o"),
+        &ui_fonts_flags(),
+        Path::new(""),
+        &cache,
+    ));
+    // (the back end's own sources)
+    for src in sources(root)? {
+        let relative = relative_to(&src, &vk);
+        let name = src.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let lib = relative
+            .components()
+            .next()
+            .is_some_and(|top| top.as_os_str() == "eden" || top.as_os_str() == "sirit");
+        let deps_file = if lib {
+            &vk_lib_deps_file
+        } else if IMGUI_USERS.contains(&name) {
+            if name == "vk_imgui.cpp" {
+                &vdeps_imgui_file
+            } else {
+                &vdeps_ui_file
+            }
+        } else {
+            &vdeps_file
+        };
+        let mut flags = vflags.clone();
+        if name == "vk_shader.cpp" {
+            flags.push(shader_stamp_define(&stamp));
+        }
+        if name == "vk_menu.cpp" {
+            // (the Insert menu's version line: build.py gives it this file only,
+            // so a new release name rebuilds this one and nothing else)
+            flags.push(crate::version::define(root));
+        }
+        if IMGUI_USERS.contains(&name) {
+            flags.extend(imflags.iter().cloned());
+        }
+        jobs.push(job(
+            &cxx,
+            &src,
+            &obj_dir.join(object_name(&relative)),
+            &flags,
+            deps_file,
+            &cache,
+        ));
+    }
+    // (the Win32 calls on POSIX)
+    jobs.push(job(
+        &cc,
+        &root.join("host/posix/win32_posix.c"),
+        &obj_dir.join("vk_posix_win32_posix.o"),
+        &posix_flags(root),
+        &posix_deps_file,
+        &cache,
+    ));
+
+    let mut compiled =
+        crate::compile::many_json(&json!({"jobs": jobs, "cache": cache, "parallel": 0}), root)?;
+    if compiled["failed"]
+        .as_array()
+        .is_some_and(|failed| !failed.is_empty())
+    {
+        return Ok(json!({
+            "stage": "vulkan-compile",
+            "built": false,
+            "reason": "compile",
+            "compiled": compiled,
+            "headers": roots.json(),
+        }));
+    }
+    let objects: Vec<String> = jobs
+        .iter()
+        .filter_map(|job| job["obj"].as_str().map(str::to_owned))
+        .collect();
+    let library = build.join(Platform::Linux.vulkan_library());
+    let args = vec![
+        "-fuse-ld=lld".to_owned(),
+        "-shared".to_owned(),
+        "-o".to_owned(),
+        library.to_string_lossy().into_owned(),
+        "-Xlinker".to_owned(),
+        format!("-Map={}.map", library.display()),
+        "-Wl,-Bsymbolic".to_owned(),
+        "-Wl,--gc-sections".to_owned(),
+        "-static-libstdc++".to_owned(),
+        "-static-libgcc".to_owned(),
+    ];
+    let libs = vec!["-ldl".to_owned(), "-lpthread".to_owned(), "-lm".to_owned()];
+    let link = crate::linker::link_json(&json!({
+        "cc": cxx,
+        "out": library.to_string_lossy(),
+        "objects": objects,
+        "args": args,
+        "libs": libs,
+    }))?;
+    if !link["ok"].as_bool().unwrap_or(false) {
+        return Ok(json!({
+            "stage": "vulkan-link",
+            "built": false,
+            "reason": "link",
+            "link": link,
+            "compiled": compiled,
+            "headers": roots.json(),
+        }));
+    }
+    // (as build.py's check_vk_symbols: a symbol left for the loader means the
+    // DLL would not load, and the only sign at run time is a black window)
+    let undefined = crate::linker::undefined_symbols(&library)?;
+    if !undefined.is_empty() {
+        return Ok(json!({
+            "stage": "vulkan-symbols",
+            "built": false,
+            "reason": "symbols",
+            "undefined": undefined,
+            "link": link,
+            "compiled": compiled,
+            "headers": roots.json(),
+        }));
+    }
+    let size = fs::metadata(&library).map(|meta| meta.len()).unwrap_or(0);
+    compiled["library"] = json!(library.to_string_lossy());
+    Ok(json!({
+        "stage": "vulkan",
+        "built": true,
+        "library": library.to_string_lossy(),
+        "size": size,
+        "sources": sources(root)?.len(),
+        "objects": objects.len(),
+        "headers": roots.json(),
+        "compiled": compiled,
+        "link": link,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let folder =
+            std::env::temp_dir().join(format!("hookshot-rust-vk-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, b"// fixture\n").unwrap();
+    }
+
+    fn roots(folder: &Path) -> Roots {
+        Roots {
+            vulkan: folder.join("vulkan"),
+            spirv: folder.join("spirv"),
+            vma: folder.join("vma"),
+        }
+    }
+
+    /// A repository-shaped root with the back end's sources and nothing else.
+    fn sources_root(base: &Path) {
+        for name in [
+            "gpu/vk/vk_main.cpp",
+            "gpu/vk/vk_shader.cpp",
+            "gpu/vk/vk_ngx_msvc_rt.cpp",
+            "gpu/vk/vk_internal.h",
+            "gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.cpp",
+            "gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.cpp",
+            "gpu/vk/sirit/src/instructions.cpp",
+            "gpu/vk/sirit/src/core.cpp",
+            "gpu/third_party/suyu/video_core/textures/decoders.cpp",
+            "gpu/third_party/suyu/video_core/textures/astc.cpp",
+            "gpu/third_party/suyu/video_core/textures/texture.h",
+            "gpu/third_party/suyu/video_core/buffer_cache.cpp",
+        ] {
+            touch(&base.join(name));
+        }
+    }
+
+    #[test]
+    fn sources_are_build_py_vk_sources() {
+        let base = temp("sources");
+        sources_root(&base);
+        let found: Vec<String> = sources(&base)
+            .unwrap()
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "gpu/third_party/suyu/video_core/textures/astc.cpp",
+                "gpu/third_party/suyu/video_core/textures/decoders.cpp",
+                "gpu/vk/eden/shader_recompiler/backend/spirv/emit_spirv.cpp",
+                "gpu/vk/eden/shader_recompiler/frontend/ampere/lower_to_maxwell.cpp",
+                "gpu/vk/sirit/src/core.cpp",
+                "gpu/vk/sirit/src/instructions.cpp",
+                "gpu/vk/vk_main.cpp",
+                "gpu/vk/vk_shader.cpp",
+            ]
+        );
+        // (the NGX shim and suyu's other video_core sources are not the back end)
+        assert!(
+            !found
+                .iter()
+                .any(|name| name.ends_with("vk_ngx_msvc_rt.cpp"))
+        );
+        assert!(!found.iter().any(|name| name.ends_with("buffer_cache.cpp")));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn object_names_keep_build_pys_layout() {
+        assert_eq!(
+            object_name(Path::new(
+                "eden/shader_recompiler/frontend/ampere/lower_to_maxwell.cpp"
+            )),
+            "vk_eden_shader_recompiler_frontend_ampere_lower_to_maxwell.o"
+        );
+        assert_eq!(object_name(Path::new("vk_main.cpp")), "vk_vk_main.o");
+        // (suyu's texture decoders are outside gpu/vk: build.py's relpath
+        // leaves the steps up out of it in the name)
+        assert_eq!(
+            object_name(Path::new(
+                "../third_party/suyu/video_core/textures/astc.cpp"
+            )),
+            "vk_.._third_party_suyu_video_core_textures_astc.o"
+        );
+        assert_eq!(
+            relative_to(
+                Path::new("/repo/gpu/vk/eden/a.cpp"),
+                Path::new("/repo/gpu/vk")
+            ),
+            Path::new("eden/a.cpp")
+        );
+        assert_eq!(
+            relative_to(
+                Path::new("/repo/gpu/third_party/suyu/textures/astc.cpp"),
+                Path::new("/repo/gpu/vk")
+            ),
+            Path::new("../third_party/suyu/textures/astc.cpp")
+        );
+    }
+
+    #[test]
+    fn flags_carry_build_pys_defines_and_include_order() {
+        // (the include folders are compared as POSIX paths, as build.py writes
+        // them; the port itself only builds the Linux shared object)
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let base = temp("flags");
+        let vk = base.join("gpu/vk");
+        let posix = base.join("host/posix");
+        let suyu = base.join("gpu/third_party/suyu");
+        let headers = roots(&base);
+        let generated = base.join("work/sa/build/gen");
+        for path in [
+            vk.join("compat"),
+            base.join("gpu/compat"),
+            vk.join("eden"),
+            suyu,
+            vk.join("sirit/include"),
+            vk.join("sirit/src"),
+            headers.spirv.join("include"),
+            headers.spirv.join("include/spirv/unified1"),
+            headers.vulkan.join("include"),
+            headers.vma.join("include"),
+            vk.clone(),
+            generated.clone(),
+        ] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let flags = vk_flags(&base, &generated, &headers, false);
+        for wanted in [
+            "-std=c++20",
+            "-O2",
+            "-DNDEBUG",
+            "-Wno-everything",
+            "-DVK_NO_PROTOTYPES",
+            "-DMKWVK_BUILDING",
+            "-DMKWVK_INCLUDES=2",
+            "-fPIC",
+            "-D_GNU_SOURCE",
+            "-include",
+            "vector",
+        ] {
+            assert!(flags.iter().any(|flag| flag == wanted), "{wanted}");
+        }
+        assert!(!flags.iter().any(|flag| flag == "-DHOOKSHOT_RELEASE"));
+        assert!(
+            vk_flags(&base, &generated, &headers, true)
+                .iter()
+                .any(|flag| flag == "-DHOOKSHOT_RELEASE")
+        );
+        // (Eden's recompiler before suyu's root, and the four header roots
+        // after sirit, exactly as build.py orders them: -DMKWVK_INCLUDES=2
+        // says so with the include folders left out of object keys)
+        let includes: Vec<&str> = flags
+            .iter()
+            .filter(|flag| flag.starts_with("-I"))
+            .map(String::as_str)
+            .collect();
+        let find = |suffix: &str| {
+            includes
+                .iter()
+                .position(|path| path.ends_with(suffix))
+                .unwrap_or_else(|| panic!("{suffix} is missing from {includes:?}"))
+        };
+        assert_eq!(find("host/posix"), 0);
+        let compat = find("gpu/vk/compat");
+        assert_eq!(find("gpu/compat"), compat + 1);
+        assert_eq!(find("gpu/vk/eden"), compat + 2);
+        assert_eq!(find("gpu/third_party/suyu"), compat + 3);
+        assert_eq!(find("gpu/vk/sirit/include"), compat + 4);
+        assert_eq!(find("gpu/vk/sirit/src"), compat + 5);
+        assert!(find("spirv/include") < find("spirv/include/spirv/unified1"));
+        assert!(find("spirv/include/spirv/unified1") < find("vulkan/include"));
+        assert!(find("vulkan/include") < find("vma/include"));
+        assert!(find("work/sa/build/gen") > find("gpu/vk"));
+        // (the tests' header roots are not this repository's)
+        let _ = posix;
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_shader_stamp_ignores_line_endings_and_follows_the_translator() {
+        let base = temp("stamp");
+        let vk = base.join("gpu/vk");
+        touch(&vk.join("eden/a.cpp"));
+        touch(&vk.join("sirit/b.cpp"));
+        touch(&vk.join("compat/c.h"));
+        for name in ["vk_shader.cpp", "vk_bank.cpp", "vk_state.h", "vk_api.h"] {
+            touch(&vk.join(name));
+        }
+        let first = shader_stamp(&base).unwrap();
+        assert_eq!(first.len(), 16);
+        assert_eq!(shader_stamp(&base).unwrap(), first);
+        fs::write(vk.join("eden/a.cpp"), b"// one\r\n// two\r\n").unwrap();
+        let crlf = shader_stamp(&base).unwrap();
+        fs::write(vk.join("eden/a.cpp"), b"// one\n// two\n").unwrap();
+        assert_eq!(shader_stamp(&base).unwrap(), crlf);
+        fs::write(vk.join("eden/a.cpp"), b"// changed\n").unwrap();
+        assert_ne!(shader_stamp(&base).unwrap(), crlf);
+        assert_eq!(
+            shader_stamp_define(&first),
+            format!("-DHOOKSHOT_SHADER_STAMP=0x{first}ull")
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn object_keys_are_stable_and_follow_the_shader_stamp() {
+        let base = temp("keys");
+        let source = base.join("vk_shader.cpp");
+        fs::write(&source, b"int hookshot_vk_key(void) { return 1; }\n").unwrap();
+        let headers = roots(&base);
+        let generated = base.join("gen");
+        let flags = vk_flags(&base, &generated, &headers, false);
+        let first = crate::compile::object_key(&source, &flags, b"headers", &base).unwrap();
+        assert_eq!(
+            crate::compile::object_key(&source, &flags, b"headers", &base).unwrap(),
+            first
+        );
+        let mut stamped = flags.clone();
+        stamped.push(shader_stamp_define("0123456789abcdef"));
+        let one = crate::compile::object_key(&source, &stamped, b"headers", &base).unwrap();
+        assert_eq!(
+            crate::compile::object_key(&source, &stamped, b"headers", &base).unwrap(),
+            one
+        );
+        assert_ne!(one, first);
+        let mut other = stamped.clone();
+        *other.last_mut().unwrap() = shader_stamp_define("fedcba9876543210");
+        assert_ne!(
+            crate::compile::object_key(&source, &other, b"headers", &base).unwrap(),
+            one
+        );
+        assert_ne!(
+            crate::compile::object_key(&source, &stamped, b"other headers", &base).unwrap(),
+            one
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn header_roots_prefer_the_environment_then_the_system() {
+        let base = temp("headers");
+        let system = base.join("system");
+        let env = base.join("env/include");
+        touch(&system.join("include/vulkan/vulkan.h"));
+        touch(&system.join("include/spirv/unified1/spirv.h"));
+        touch(&system.join("include/vk_mem_alloc.h"));
+        touch(&env.join("vulkan/vulkan.h"));
+        let search = HeaderSearch {
+            system: vec![system.clone()],
+            cpm: vec![],
+        };
+        let found = Headers::find(
+            &search,
+            &HeaderEnv {
+                vulkan: Some(env.clone()),
+                ..HeaderEnv::default()
+            },
+        );
+        // (the environment names the include folder itself)
+        assert_eq!(found.vulkan, Some(base.join("env")));
+        assert_eq!(found.spirv, Some(system.clone()));
+        assert_eq!(found.vma, Some(system));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn missing_headers_are_reported_with_build_pys_guidance() {
+        let search = HeaderSearch {
+            system: vec![],
+            cpm: vec![],
+        };
+        let found = Headers::find(&search, &HeaderEnv::default());
+        assert_eq!(found.missing(), ["Vulkan", "SPIR-V", "VMA"]);
+        assert!(found.roots().is_none());
+        let answer = skipped(&found.missing());
+        assert_eq!(answer["built"], false);
+        assert_eq!(answer["reason"], "headers");
+        let message = answer["message"].as_str().unwrap();
+        let library = format!("no headers for {}", Platform::current().vulkan_library());
+        assert!(message.contains(&library), "{library} in {message}");
+        for wanted in [
+            "RX_CPM",
+            "HOOKSHOT_VULKAN_HEADERS",
+            "HOOKSHOT_SPIRV_HEADERS",
+            "HOOKSHOT_VMA_HEADERS",
+            "vulkan-headers + spirv-headers + vulkan-memory-allocator",
+            "HOOKSHOT_VK_PREBUILT",
+        ] {
+            assert!(message.contains(wanted), "{wanted} in {message}");
+        }
+    }
+
+    #[test]
+    fn a_build_without_headers_skips_instead_of_failing() {
+        if Platform::current() != Platform::Linux {
+            return;
+        }
+        let base = temp("skip");
+        let work = base.join("work");
+        let answer = build_at_with(
+            &base,
+            &work,
+            &HeaderSearch {
+                system: vec![],
+                cpm: vec![],
+            },
+            &HeaderEnv::default(),
+        )
+        .unwrap();
+        assert_eq!(answer["stage"], "vulkan");
+        assert_eq!(answer["built"], false);
+        assert_eq!(answer["reason"], "headers");
+        assert!(!work.join("sa/build/hookshot_vk.so").exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn header_search_finds_a_cpm_cache_last() {
+        let base = temp("cpm");
+        let cache = base.join("cpm");
+        let package = cache.join("vulkanheaders/v1.4.0");
+        touch(&package.join("include/vulkan/vulkan.h"));
+        let search = HeaderSearch {
+            system: vec![],
+            cpm: vec![cache],
+        };
+        let found = header_package(&search, "vulkanheaders", "vulkan/vulkan.h", None);
+        assert_eq!(found, Some(package));
+        let _ = fs::remove_dir_all(base);
+    }
+}

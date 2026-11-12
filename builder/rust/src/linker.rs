@@ -105,11 +105,26 @@ pub fn link_json(request: &Value) -> Result<Value, String> {
                 .collect()
         })
         .unwrap_or_default();
+    // (libraries after the objects, as build.py's link lines order them: a
+    // shared object's libraries still resolve, but a linker's diagnostics and
+    // --as-needed read the same order the Python builder used)
+    let libs: Vec<String> = request
+        .get("libs")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     let rsp = PathBuf::from(format!("{out}.rsp"));
     write_rsp(&rsp, &objects)?;
     let output = Command::new(cc)
         .args(&args)
         .arg(format!("@{}", rsp.display()))
+        .args(&libs)
         .output()
         .map_err(|e| format!("{cc}: {e}"))?;
     let text = format!(

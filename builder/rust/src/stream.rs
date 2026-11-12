@@ -14,6 +14,7 @@ fn stage_floor(id: &str) -> f64 {
         "read" => 0.0,
         "lift" => 0.05,
         "compile" => 0.25,
+        "vulkan" => 0.90,
         "finish" => 0.95,
         _ => 0.0,
     }
@@ -130,6 +131,9 @@ fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
     );
     match result {
         Ok(value) if value["stage"] == "packaged" => {
+            if let Some(message) = value["vk"]["message"].as_str() {
+                let _ = protocol.say(message);
+            }
             let _ = protocol.done(&folder);
             0
         }
@@ -219,12 +223,39 @@ fn failure_message(value: &Value) -> String {
     {
         return compile_message(failed, "host");
     }
+    if let Some(failed) = value["vk"]["compiled"]["failed"]
+        .as_array()
+        .filter(|failed| !failed.is_empty())
+    {
+        return compile_message(failed, "Vulkan back end");
+    }
     match value["stage"].as_str() {
         Some("host-link") => {
             let output = value["host"]["link"]["output"]
                 .as_str()
                 .unwrap_or("the linker said nothing");
             format!("The host did not link: {output}")
+        }
+        Some("vulkan-link") => {
+            let output = value["vk"]["link"]["output"]
+                .as_str()
+                .unwrap_or("the linker said nothing");
+            format!("The Vulkan back end did not link: {output}")
+        }
+        Some("vulkan-symbols") => {
+            let count = value["vk"]["undefined"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or(0);
+            let first = value["vk"]["undefined"][0]
+                .as_str()
+                .unwrap_or("an unnamed symbol");
+            format!(
+                "The Vulkan back end has {count} unresolved symbol(s), so it would not load; the first: {first}"
+            )
+        }
+        Some("vulkan-compile") => {
+            "The build did not compile the Vulkan back end; no game folder was made.".into()
         }
         Some("lift") => {
             "The build stopped before translating the game to PC code; no game folder was made."
@@ -348,6 +379,36 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "@@error The build did not compile 2 game files; the first: code_001.c:3: error: expected ';' int x\n"
+        );
+    }
+
+    #[test]
+    fn a_failed_vulkan_backend_says_which_file_or_symbol() {
+        let compile = json!({
+            "stage": "vulkan-compile",
+            "vk": {"compiled": {"failed": [
+                {"error": "vk_replay.cpp:9: error: nope"}
+            ]}}
+        });
+        assert_eq!(
+            failure_message(&compile),
+            "The build did not compile the Vulkan back end: vk_replay.cpp:9: error: nope"
+        );
+        let link = json!({
+            "stage": "vulkan-link",
+            "vk": {"link": {"ok": false, "output": "undefined symbol: mkwvk_missing"}}
+        });
+        assert_eq!(
+            failure_message(&link),
+            "The Vulkan back end did not link: undefined symbol: mkwvk_missing"
+        );
+        let symbols = json!({
+            "stage": "vulkan-symbols",
+            "vk": {"undefined": ["mkwvk_missing"]}
+        });
+        assert_eq!(
+            failure_message(&symbols),
+            "The Vulkan back end has 1 unresolved symbol(s), so it would not load; the first: mkwvk_missing"
         );
     }
 
