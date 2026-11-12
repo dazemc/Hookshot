@@ -626,8 +626,9 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
         );
         return;
       }
-      // NVIDIA's DLSS SDK download is still make_game.py's; it continues from
-      // the files the engine extracted.
+      // Only NVIDIA's DLSS build stage still needs Python; its SDK files are
+      // fetched by the Rust engine first.
+      if (s.dlss && !await _fetchNgx(emit)) return;
       _startProcess(
         emit,
         [
@@ -643,7 +644,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
             dlss: s.dlss,
           ),
         ],
-        env: (s.dlss || Platform.environment.containsKey('HOOKSHOT_NGX_SDK')) ? _dlssEnv() : null,
+        env: s.dlss ? _dlssEnv() : null,
         title: 'Building your game',
       );
       return;
@@ -668,11 +669,11 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       );
       return;
     }
+    if (s.dlss && !await _fetchNgx(emit)) return;
     final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', ...src, '--out', out, '--language', code];
     if (jobs != null) cmd.addAll(['--jobs', jobs]);
     if (!s.prepare) cmd.add('--no-prepare-shaders');
-    if (s.dlss) cmd.addAll(['--fetch-ngx-sdk', '--accept-nvidia-license']);
-    final env = (s.dlss || Platform.environment.containsKey('HOOKSHOT_NGX_SDK')) ? _dlssEnv() : null;
+    final env = s.dlss ? _dlssEnv() : null;
     _startProcess(emit, cmd, env: env, title: 'Building your game');
   }
 
@@ -686,6 +687,23 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
   String _ngxSdkDir() {
     final home = Platform.environment['HOME'] ?? '~';
     return '$home/.local/share/hookshot/builder/ngx-sdk';
+  }
+
+  /// NVIDIA's SDK files are the Rust engine's now; the Python build stage
+  /// that follows only links them.
+  Future<bool> _fetchNgx(Emitter<BuilderState> emit) async {
+    final engine = RustEngine.open();
+    if (engine == null) {
+      emit(const BuildFailed('NVIDIA DLSS needs the Rust engine.'));
+      return false;
+    }
+    try {
+      engine.call({'command': 'build.ngx_fetch', 'sdk': _ngxSdkDir(), 'runtime': true});
+      return true;
+    } catch (error) {
+      emit(BuildFailed('NVIDIA DLSS: $error'));
+      return false;
+    }
   }
 
   Future<void> _onMakeUpdate(MakeUpdateRequested e, Emitter<BuilderState> emit) async {
@@ -715,10 +733,11 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       );
       return;
     }
-    // (only the NVIDIA DLSS SDK download still needs Python)
+    // (only NVIDIA's DLSS build stage still needs Python; its SDK is fetched
+    // by the Rust engine first)
+    if (dlss && !await _fetchNgx(emit)) return;
     final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', '--update', e.folder];
     if (!prepare) cmd.add('--no-prepare-shaders');
-    if (dlss) cmd.addAll(['--fetch-ngx-sdk', '--accept-nvidia-license']);
     _startProcess(emit, cmd, env: dlss ? _dlssEnv() : null, title: 'Updating your game');
   }
 
