@@ -212,6 +212,64 @@ fn the_docs_the_rust_tests_read_trigger_the_source_checks() {
 }
 
 #[test]
+fn a_manifest_is_not_uploaded_under_another_release() {
+    let upload = source("scripts/release_upload.sh");
+    let check = upload
+        .find("hookshot-setup.txt | hookshot-linux.txt")
+        .expect("release_upload.sh does not check a setup list's tag");
+    let upload_call = upload
+        .find("\"$files\" upload \"$tag\" \"$@\"")
+        .expect("release_upload.sh does not upload the files");
+    assert!(
+        check < upload_call && upload.contains("not 'tag $tag'"),
+        "release_upload.sh uploads a list without checking its tag:\n{upload}"
+    );
+
+    let parts = source("scripts/windows/release_parts.sh");
+    assert!(
+        parts.contains("safe_tag \"$tag\" || die \"not a version name: $tag\""),
+        "release_parts.sh makes a list from a tag it did not validate"
+    );
+    assert!(
+        parts.contains("[ \"$(head -n 1 \"$out/hookshot-setup.txt\")\" = \"tag $tag\" ]"),
+        "release_parts.sh writes a setup list without checking its first line"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn release_upload_refuses_a_manifest_for_another_tag() {
+    let dir = std::env::temp_dir().join(format!(
+        "hookshot-release-upload-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let list = dir.join("hookshot-setup.txt");
+    fs::write(
+        &list,
+        "tag v9.9.9\npart 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef 1 . https://e/a\ntree\n",
+    )
+    .unwrap();
+    let run = std::process::Command::new("bash")
+        .arg(root().join("scripts/release_upload.sh"))
+        .arg("v1.0.0")
+        .arg(&list)
+        .output()
+        .expect("run release_upload.sh");
+    assert!(!run.status.success(), "a stale list was accepted");
+    assert!(
+        String::from_utf8_lossy(&run.stderr).contains("not 'tag v1.0.0'"),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn the_release_workflow_finishes_before_it_publishes() {
     let workflow = source(".github/workflows/release.yml");
     let finish = workflow

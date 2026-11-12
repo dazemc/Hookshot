@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hookshot_builder/config.dart' as cfg;
+import 'package:hookshot_builder/updater/installer.dart';
 import 'package:hookshot_builder/updater/manifest.dart';
 
 const _sha = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
@@ -29,6 +32,25 @@ void main() {
       expect(() => parseList('tag ..\npart $_sha 1 d https://example.com/a\ntree\n'), throwsFormatException);
       expect(() => parseList('tag /tmp/x\npart $_sha 1 d https://example.com/a\ntree\n'), throwsFormatException);
       expect(() => parseList('tag v1\npart $_sha 1 /abs https://example.com/a\ntree\n'), throwsFormatException);
+      // (a Windows separator, a drive/stream colon, an empty part and a
+      // second tag: none may become a path or a concatenated list)
+      expect(() => parseList('tag v1\npart $_sha 1 ..\\out https://e.com/a\ntree\n'), throwsFormatException);
+      expect(() => parseList('tag v1\npart $_sha 1 C:/out https://e.com/a\ntree\n'), throwsFormatException);
+      expect(() => parseList('tag v1\npart $_sha 1 a//b https://e.com/a\ntree\n'), throwsFormatException);
+      expect(() => parseList('tag v1\npart $_sha 1 d https://e.com/a\nfile a\\\\b\n'), throwsFormatException);
+      expect(() => parseList('tag v1\ntag v2\npart $_sha 1 d https://e.com/a\ntree\n'), throwsFormatException);
+    });
+    test('rejects bad sizes and links that could leave the release', () {
+      expect(() => parseList('tag v1\npart $_sha -1 d https://e.com/a\ntree\n'), throwsFormatException);
+      expect(() => parseList('tag v1\npart $_sha 999999999999 d https://e.com/a\ntree\n'), throwsFormatException);
+      expect(() => listUrl('../outside'), throwsArgumentError);
+    });
+    test('a requested tag must be the list\'s tag', () async {
+      Future<List<int>> get(String url) async =>
+          utf8.encode('tag v2.2.0\npart $_sha 1 . https://example.com/a\ntree\n');
+      await expectLater(fetchManifest(get, tag: 'v2.1.0'), throwsStateError);
+      final manifest = await fetchManifest(get, tag: 'v2.2.0');
+      expect(manifest.tag, 'v2.2.0');
     });
     test('rejects bad checksums, links and escapes', () {
       expect(() => parseList('tag v1\npart xyz 1 d https://e.com/a\ntree\n'), throwsFormatException);

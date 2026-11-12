@@ -92,6 +92,24 @@ advance_nightly() {
     echo "::error::nightly: could not be moved to $sha" >&2
     exit 1
 }
+# (a stale or half-written list must not be published under another tag. The
+# nightly's list names its git-describe build, not "nightly", so only the
+# shape is checked there; a release's must name the release exactly.)
+for f in "$@"; do
+    case $(basename "$f") in
+        hookshot-setup.txt | hookshot-linux.txt) ;;
+        *) continue ;;
+    esac
+    first=$(head -n 1 "$f")
+    if [[ ! $first =~ ^tag\ [A-Za-z0-9._+-]{1,128}$ ]]; then
+        echo "release_upload.sh: $f has no safe tag line (got: $first)" >&2
+        exit 1
+    fi
+    if [[ $tag != nightly && $first != "tag $tag" ]]; then
+        echo "release_upload.sh: $f names '$first', not 'tag $tag'" >&2
+        exit 1
+    fi
+done
 if [[ $tag == nightly ]]; then
     sha=${GITHUB_SHA:?}
     advance_nightly "$sha" || exit 0

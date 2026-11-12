@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import time
 import urllib.error
 import urllib.request
@@ -117,6 +118,27 @@ def list_ok(tag, parts):
         and (p.frm == "-" or list_name_ok(p.frm)) and (p.to == "-" or list_name_ok(p.to)) for p in parts)
 
 
+def check_zip_members(zipped):
+    """A part's zip holds plain files and folders under its destination: no
+    root, drive or NTFS stream, no backslash, no "." or ".." part, no link or
+    device, and no more than 16 GiB uncompressed. (Python's extractall also
+    sanitizes names, but the boundary is checked here rather than inferred.)"""
+    total = 0
+    for info in zipped.infolist():
+        name = info.filename
+        if name.endswith("/"):
+            name = name[:-1]
+        if (not name or name.startswith("/") or "\\" in name or ":" in name
+                or any(part in ("", ".", "..") for part in name.split("/"))):
+            raise SetupError("The update's zip has a path outside its folder: %s" % info.filename)
+        if stat.S_ISLNK(info.external_attr >> 16):
+            raise SetupError("The update's zip has a link: %s" % info.filename)
+        total += info.file_size
+        if total > (16 << 30):
+            raise SetupError("The update's zip is larger than expected")
+    return True
+
+
 def manifest_url(tag=None):
     """(an update to a named release reads THAT release's list: the latest/download link can answer with the release before it for
     a while after a publish. HOOKSHOT_SETUP_LIST=<url>: another list, for testing a release before it is the latest)"""
@@ -215,9 +237,28 @@ def rmtree(p):
     shutil.rmtree(p, ignore_errors=True)
 
 
+def write_small_atomic(path, text):
+    """(a marker or list written beside itself and moved over: a setup stopped
+    while writing never leaves half of one that reads as a finished install)"""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".new"
+        if os.path.islink(tmp):
+            return
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        with open(tmp, "x", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def installed(tag):
     d = os.path.join(paths.versions(), tag)
-    return d if os.path.isfile(os.path.join(d, "installed.txt")) and os.path.isfile(
+    return d if paths.read_small(os.path.join(d, "installed.txt")) == tag and os.path.isfile(
         os.path.join(d, "HookshotBuilder", "tools", "nx2", "make_game.py")) else None
 
 
@@ -254,6 +295,7 @@ def install(status, progress=lambda f: None, tag=None, repair=False, cancel=None
             os.makedirs(dest, exist_ok=True)
             try:
                 with zipfile.ZipFile(zpath) as z:
+                    check_zip_members(z)
                     z.extractall(dest)
             except (OSError, zipfile.BadZipFile) as e:
                 raise SetupError("Unpacking part %d of %d failed: %s" % (i, n, e)) from None
@@ -271,7 +313,7 @@ def install(status, progress=lambda f: None, tag=None, repair=False, cancel=None
             os.replace(work, final)
         except OSError:
             raise SetupError("Could not finish installing into %s." % final) from None
-        paths.write_small(os.path.join(final, "installed.txt"), tag)
+        write_small_atomic(os.path.join(final, "installed.txt"), tag)
         write_parts(final, parts)
     elif not os.path.isfile(os.path.join(final, "parts.txt")):
         write_parts(final, parts)
@@ -333,7 +375,7 @@ def sha256_file(path):
 
 def write_parts(install_dir, parts):
     """The checksums of the parts this version holds in folders of their own (reuse_part reads them at the next update)"""
-    paths.write_small(os.path.join(install_dir, "parts.txt"), "".join(p.sha + "\n" for p in parts if part_folder(p)))
+    write_small_atomic(os.path.join(install_dir, "parts.txt"), "".join(p.sha + "\n" for p in parts if part_folder(p)))
 
 
 def prune(tag, parts):
@@ -343,8 +385,8 @@ def prune(tag, parts):
     was = paths.read_small(os.path.join(versions, "current.txt"))
     if was != tag:
         if was:
-            paths.write_small(os.path.join(versions, "previous.txt"), was)
-        paths.write_small(os.path.join(versions, "current.txt"), tag)
+            write_small_atomic(os.path.join(versions, "previous.txt"), was)
+        write_small_atomic(os.path.join(versions, "current.txt"), tag)
     for name in os.listdir(versions):
         p = os.path.join(versions, name)
         if not os.path.isdir(p) or name == tag:

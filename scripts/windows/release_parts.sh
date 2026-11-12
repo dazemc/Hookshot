@@ -50,6 +50,12 @@ LLVM_TAR_URL=https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/l
 say() { printf '%s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
 
+# (the tag becomes a folder under versions/ and a line of hookshot-setup.txt:
+# the same rule as builder/setup/setup.c's list_name_ok)
+safe_tag() {
+    [[ $1 =~ ^[A-Za-z0-9._+-]{1,128}$ ]] && [[ $1 != . && $1 != .. ]]
+}
+
 usage() {
     sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
@@ -396,6 +402,7 @@ package() {
     [ -n "$bundle" ] || die "package needs --bundle"
     [ -n "$engine" ] || die "package needs --engine"
     [ -n "$tag" ] || die "package needs --tag"
+    safe_tag "$tag" || die "not a version name: $tag"
 
     out=$(posix_path "$out")
     bundle=$(posix_path "$bundle")
@@ -490,6 +497,7 @@ parts() {
     done
     [ -f "$package/HookshotBuilder/HookshotBuilder.exe" ] || die "not a package folder: $package"
     [ -n "$base" ] || die "parts needs --base"
+    safe_tag "$tag" || die "not a version name: $tag"
     base=${base%/}
     mkdir -p "$out"
     rm -f "$out"/HookshotBuilder-app.zip "$out"/HookshotBuilder-app-*.zip \
@@ -547,6 +555,7 @@ parts() {
     lines+=("$line")
     lines+=("run HookshotBuilder/HookshotBuilder.exe")
     printf '%s\n' "${lines[@]}" >"$out/hookshot-setup.txt"
+    [ "$(head -n 1 "$out/hookshot-setup.txt")" = "tag $tag" ] || die "the setup list does not name $tag"
     say "app: $(find "$package" -type f | wc -l | tr -d ' ') files, $((size >> 20)) MB compressed, $sha"
     say "setup list: $out/hookshot-setup.txt"
 }

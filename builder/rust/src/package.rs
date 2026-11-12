@@ -998,4 +998,29 @@ mod tests {
         assert_eq!(fs::read(&launcher).unwrap(), b"#!/bin/sh\n");
         let _ = fs::remove_dir_all(base);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staged_tree_never_follows_a_link() {
+        use std::os::unix::fs::symlink;
+        let base = temp("link-tree-symlink");
+        let src = base.join("src");
+        let outside = base.join("outside");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(src.join("real.bin"), b"real").unwrap();
+        fs::write(outside.join("secret.bin"), b"secret").unwrap();
+        symlink(outside.join("secret.bin"), src.join("file-link")).unwrap();
+        symlink(&outside, src.join("dir-link")).unwrap();
+        let dst = base.join("dst");
+        let mut linked = 0;
+        link_tree(&src, &dst, &mut linked).unwrap();
+        assert_eq!(linked, 1);
+        assert_eq!(fs::read(dst.join("real.bin")).unwrap(), b"real");
+        // (the links are neither copied nor followed: nothing outside is staged)
+        assert!(!dst.join("file-link").exists());
+        assert!(!dst.join("dir-link").exists());
+        assert!(!dst.join("secret.bin").exists());
+        let _ = fs::remove_dir_all(base);
+    }
 }
