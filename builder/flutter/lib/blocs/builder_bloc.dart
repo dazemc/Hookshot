@@ -442,9 +442,11 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
   static bool _folderHasDlss(String folder) {
     if (folder.isEmpty) return false;
     try {
-      final hasRuntime =
-          Directory('$folder/ngx').listSync().any((e) => e.path.split('/').last.startsWith('libnvidia-ngx-dlss.so'));
-      final sdk = '${Platform.environment['HOME'] ?? '~'}/.local/share/hookshot/builder/ngx-sdk/LICENSE.txt';
+      final hasRuntime = Directory('$folder/ngx').listSync().any((e) {
+        final name = e.path.split(RegExp(r'[/\\]')).last;
+        return name.startsWith('libnvidia-ngx-dlss.so') || name == 'nvngx_dlss.dll';
+      });
+      final sdk = '${dlssSdkDir()}/LICENSE.txt';
       return hasRuntime && File(sdk).existsSync();
     } catch (_) {
       return false;
@@ -553,6 +555,12 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
   Future<void> _onBuild(BuildRequested e, Emitter<BuilderState> emit) async {
     final s = state;
     if (s is! BuilderForm) return;
+    try {
+      requireDlssSupported(dlss: s.dlss);
+    } on DlssBuildUnsupported catch (error) {
+      emit(BuildFailed(error.toString()));
+      return;
+    }
     // update-game / update-builder modes are handled by UpdateBloc via the UI.
     final out = _expand(s.out);
     late final List<String> src;
@@ -610,8 +618,9 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
         return;
       }
       // The engine already has the exefs and romfs it read: hand them straight
-      // to build.all so the lift, compile, link and package stay in Rust.
-      if (rustNupBuildApplies(prepare: s.prepare, dlss: s.dlss, cli: rust)) {
+      // to build.all so the lift, compile, link and package stay in Rust,
+      // NVIDIA DLSS included.
+      if (rustNupBuildApplies(cli: rust)) {
         _startProcess(
           emit,
           [rust, '--stream'],
@@ -620,39 +629,18 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
             work: work,
             language: code,
             prepare: s.prepare,
+            dlss: s.dlss,
+            ngx: s.dlss ? dlssSdkDir() : '',
             vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
           ),
           title: 'Building your game',
         );
         return;
       }
-      // Only NVIDIA's DLSS build stage still needs Python; its SDK files are
-      // fetched by the Rust engine first.
-      if (s.dlss && !await _fetchNgx(emit)) return;
-      _startProcess(
-        emit,
-        [
-          cfg.builderPython(),
-          '-I',
-          '${cfg.nxRoot()}/make_game.py',
-          ...rustNupPythonArgs(
-            out: out,
-            work: work,
-            language: code,
-            jobs: jobs,
-            prepare: s.prepare,
-            dlss: s.dlss,
-          ),
-        ],
-        env: s.dlss ? _dlssEnv() : null,
-        title: 'Building your game',
-      );
-      return;
     }
-    // An unpacked folder can go through the Rust build.all engine; only the
-    // NVIDIA DLSS SDK download still falls back to make_game.py.
+    // An unpacked folder can go through the Rust build.all engine, DLSS too.
     final rust = rustEngineCli();
-    if (rust != null && rustBuildApplies(kind: s.kind, prepare: s.prepare, dlss: s.dlss, cli: rust)) {
+    if (rust != null && rustBuildApplies(kind: s.kind, cli: rust)) {
       _startProcess(
         emit,
         [rust, '--stream'],
@@ -664,46 +652,28 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
           vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
           language: code,
           prepare: s.prepare,
+          dlss: s.dlss,
+          ngx: s.dlss ? dlssSdkDir() : '',
         ),
         title: 'Building your game',
       );
       return;
     }
-    if (s.dlss && !await _fetchNgx(emit)) return;
+    if (s.dlss) {
+      // The Python path has no DLSS route here anymore: stop with the typed
+      // error rather than building a folder without the DLSS the player asked
+      // for, or falling back to make_game.py.
+      const missing = RustEngineMissing(
+        'The Rust engine is missing: NVIDIA DLSS builds need it, and the builder no longer falls '
+        'back to make_game.py for them. Install Hookshot Builder again.',
+      );
+      emit(BuildFailed(missing.toString()));
+      return;
+    }
     final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', ...src, '--out', out, '--language', code];
     if (jobs != null) cmd.addAll(['--jobs', jobs]);
     if (!s.prepare) cmd.add('--no-prepare-shaders');
-    final env = s.dlss ? _dlssEnv() : null;
-    _startProcess(emit, cmd, env: env, title: 'Building your game');
-  }
-
-  Map<String, String> _dlssEnv() {
-    final env = Map<String, String>.from(Platform.environment);
-    env['HOOKSHOT_NGX_SDK'] = _ngxSdkDir();
-    env.remove('HOOKSHOT_VK_PREBUILT');
-    return env;
-  }
-
-  String _ngxSdkDir() {
-    final home = Platform.environment['HOME'] ?? '~';
-    return '$home/.local/share/hookshot/builder/ngx-sdk';
-  }
-
-  /// NVIDIA's SDK files are the Rust engine's now; the Python build stage
-  /// that follows only links them.
-  Future<bool> _fetchNgx(Emitter<BuilderState> emit) async {
-    final engine = RustEngine.open();
-    if (engine == null) {
-      emit(const BuildFailed('NVIDIA DLSS needs the Rust engine.'));
-      return false;
-    }
-    try {
-      engine.call({'command': 'build.ngx_fetch', 'sdk': _ngxSdkDir(), 'runtime': true});
-      return true;
-    } catch (error) {
-      emit(BuildFailed('NVIDIA DLSS: $error'));
-      return false;
-    }
+    _startProcess(emit, cmd, title: 'Building your game');
   }
 
   Future<void> _onMakeUpdate(MakeUpdateRequested e, Emitter<BuilderState> emit) async {
@@ -711,8 +681,14 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     final s = state;
     final prepare = s is BuilderForm ? s.prepare : true;
     final dlss = s is BuilderForm ? s.dlss : _folderHasDlss(e.folder);
+    try {
+      requireDlssSupported(dlss: dlss);
+    } on DlssBuildUnsupported catch (error) {
+      emit(BuildFailed(error.toString()));
+      return;
+    }
     final rust = rustEngineCli();
-    if (rust != null && !dlss) {
+    if (rust != null) {
       if (!rustUpdateReady(e.folder)) {
         emit(const BuildFailed(
             'This game folder has no copy of the game files to update from: it was built before updates came in. '
@@ -727,18 +703,25 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
           folder: e.folder,
           language: folderLanguage(e.folder),
           prepare: prepare,
+          dlss: dlss,
+          ngx: dlss ? dlssSdkDir() : '',
           vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
         ),
         title: 'Updating your game',
       );
       return;
     }
-    // (only NVIDIA's DLSS build stage still needs Python; its SDK is fetched
-    // by the Rust engine first)
-    if (dlss && !await _fetchNgx(emit)) return;
+    if (dlss) {
+      const missing = RustEngineMissing(
+        'The Rust engine is missing: updating a folder built with NVIDIA DLSS needs it, and the builder no '
+        'longer falls back to make_game.py for it. Install Hookshot Builder again.',
+      );
+      emit(BuildFailed(missing.toString()));
+      return;
+    }
     final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', '--update', e.folder];
     if (!prepare) cmd.add('--no-prepare-shaders');
-    _startProcess(emit, cmd, env: dlss ? _dlssEnv() : null, title: 'Updating your game');
+    _startProcess(emit, cmd, title: 'Updating your game');
   }
 
   void _emitRunning(Emitter<BuilderState> emit, String title, String stageText) {

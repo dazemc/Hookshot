@@ -38,6 +38,52 @@ String requireRustEngineCli({String? override, String? root, String? exeDir}) {
 /// NUP builds are read by the engine; folder builds keep their own route.
 bool rustNupApplies({required String kind}) => kind == 'nup';
 
+/// A DLSS build the Rust engine cannot make yet. The Windows Vulkan DLL's
+/// NGX link is still Python's, and this builder no longer falls back to it,
+/// so the build stops with this typed error instead.
+class DlssBuildUnsupported implements Exception {
+  final String message;
+  const DlssBuildUnsupported([
+    this.message = 'NVIDIA DLSS builds on Windows are not in the Rust engine yet: the Windows Vulkan '
+        'backend link is still Python\'s, and the builder no longer falls back to it. Build '
+        'without NVIDIA DLSS, or build with the Python path from a source checkout.',
+  ]);
+  @override
+  String toString() => message;
+}
+
+/// Throws [DlssBuildUnsupported] for a DLSS build on Windows. `windows`
+/// overrides the platform in tests.
+void requireDlssSupported({required bool dlss, bool? windows}) {
+  if (dlss && (windows ?? Platform.isWindows)) {
+    throw const DlssBuildUnsupported();
+  }
+}
+
+/// Where the builder keeps NVIDIA's DLSS SDK between builds: the same folder
+/// the Python path used (`%LOCALAPPDATA%\HookshotBuilder\ngx-sdk` on Windows,
+/// `$XDG_DATA_HOME/hookshot/builder/ngx-sdk` on Linux).
+String dlssSdkDir({
+  bool? windows,
+  String? localAppData,
+  String? xdgDataHome,
+  String? home,
+}) {
+  String read(String name) => Platform.environment[name] ?? '';
+  if (windows ?? Platform.isWindows) {
+    final local = localAppData ?? read('LOCALAPPDATA');
+    return p.join(
+      local.isNotEmpty ? local : cfg.toolsRoot(),
+      'HookshotBuilder',
+      'ngx-sdk',
+    );
+  }
+  final data = xdgDataHome ?? read('XDG_DATA_HOME');
+  final userHome = home ?? (read('HOME').isNotEmpty ? read('HOME') : '~');
+  final root = data.isNotEmpty ? data : p.join(userHome, '.local', 'share');
+  return p.join(root, 'hookshot', 'builder', 'ngx-sdk');
+}
+
 /// make_game.py's --work default: build files kept apart from the game folder.
 String rustBuildWork() {
   if (Platform.isWindows) {
@@ -55,24 +101,12 @@ String rustBuildWork() {
   );
 }
 
-/// build.all needs an unpacked exefs/romfs pair. Shader preparation is Rust's
-/// now; NVIDIA's DLSS SDK download is still make_game.py's.
-bool rustBuildApplies({
-  required String kind,
-  required bool prepare,
-  required bool dlss,
-  required String? cli,
-}) =>
-    kind != 'nup' && !dlss && cli != null;
+/// build.all needs an unpacked exefs/romfs pair. Shader preparation and the
+/// NVIDIA DLSS stage are Rust's now, so only the engine's presence decides.
+bool rustBuildApplies({required String kind, required String? cli}) => kind != 'nup' && cli != null;
 
-/// A NUP the engine has just read can continue in build.all; only the DLSS
-/// SDK download still needs make_game.py.
-bool rustNupBuildApplies({
-  required bool prepare,
-  required bool dlss,
-  required String? cli,
-}) =>
-    !dlss && cli != null;
+/// A NUP the engine has just read continues in build.all, DLSS included.
+bool rustNupBuildApplies({required String? cli}) => cli != null;
 
 /// A game folder keeps the exefs and romfs an update builds from again.
 bool rustUpdateReady(String folder) =>
@@ -94,6 +128,8 @@ String rustUpdateRequest({
   required String folder,
   required String language,
   required bool prepare,
+  bool dlss = false,
+  String ngx = '',
   String vk = '',
 }) =>
     rustBuildRequest(
@@ -103,6 +139,8 @@ String rustUpdateRequest({
       work: rustBuildWork(),
       language: language,
       prepare: prepare,
+      dlss: dlss,
+      ngx: ngx,
       vk: vk,
     );
 
@@ -112,6 +150,8 @@ String rustNupBuildRequest({
   required String work,
   required String language,
   required bool prepare,
+  bool dlss = false,
+  String ngx = '',
   String assets = '',
   String vk = '',
 }) =>
@@ -124,10 +164,12 @@ String rustNupBuildRequest({
       vk: vk,
       language: language,
       prepare: prepare,
+      dlss: dlss,
+      ngx: ngx,
     );
 
 /// The request `hookshot_engine --stream` takes to read a .nup into work/exefs
-/// and out/romfs for make_game.py's remaining stages.
+/// and out/romfs; build.all then builds from those two folders.
 String rustPrepareRequest({
   required String nup,
   required String out,
@@ -140,30 +182,9 @@ String rustPrepareRequest({
       'work': work,
     });
 
-/// make_game.py's arguments once the engine read the .nup: its read stage is
-/// skipped and the already extracted files are used.
-List<String> rustNupPythonArgs({
-  required String out,
-  required String work,
-  required String language,
-  String? jobs,
-  bool prepare = true,
-  bool dlss = false,
-}) =>
-    [
-      '--already-read',
-      '--out',
-      out,
-      '--work',
-      work,
-      '--language',
-      language,
-      if (jobs != null) ...['--jobs', jobs],
-      if (!prepare) '--no-prepare-shaders',
-      if (dlss) ...['--fetch-ngx-sdk', '--accept-nvidia-license'],
-    ];
-
-/// The request `hookshot_engine --stream` takes on stdin.
+/// The request `hookshot_engine --stream` takes on stdin. `dlss` builds the
+/// Vulkan backend with NVIDIA's SDK (`ngx`, the folder `build.all` fetches
+/// into when its library or runtime is missing).
 String rustBuildRequest({
   required String exefs,
   required String romfs,
@@ -171,6 +192,8 @@ String rustBuildRequest({
   required String work,
   required String language,
   bool prepare = false,
+  bool dlss = false,
+  String ngx = '',
   String assets = '',
   String vk = '',
 }) =>
@@ -184,4 +207,6 @@ String rustBuildRequest({
       'vk': vk,
       'language': language,
       'prepare': prepare,
+      'dlss': dlss,
+      'ngx': dlss ? ngx : '',
     });

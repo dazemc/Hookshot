@@ -65,52 +65,62 @@ void main() {
   });
 
   group('rustBuildApplies', () {
-    test('only an unpacked folder without shader preparation or DLSS', () {
+    test('an unpacked folder with the engine, DLSS included', () {
       expect(
-        rustBuildApplies(
-          kind: 'folders',
-          prepare: false,
-          dlss: false,
-          cli: '/engine',
-        ),
+        rustBuildApplies(kind: 'folders', cli: '/engine'),
         isTrue,
       );
       expect(
-        rustBuildApplies(
-          kind: 'nup',
-          prepare: false,
-          dlss: false,
-          cli: '/engine',
-        ),
+        rustBuildApplies(kind: 'nup', cli: '/engine'),
         isFalse,
       );
       expect(
-        rustBuildApplies(
-          kind: 'folders',
-          prepare: true,
-          dlss: false,
-          cli: '/engine',
-        ),
-        isTrue,
-      );
-      expect(
-        rustBuildApplies(
-          kind: 'folders',
-          prepare: false,
-          dlss: true,
-          cli: '/engine',
-        ),
+        rustBuildApplies(kind: 'folders', cli: null),
         isFalse,
       );
+    });
+  });
+
+  group('DLSS', () {
+    test('a Windows DLSS build is a typed error, not a Python fallback', () {
       expect(
-        rustBuildApplies(
-          kind: 'folders',
-          prepare: false,
-          dlss: false,
-          cli: null,
-        ),
-        isFalse,
+        () => requireDlssSupported(dlss: true, windows: true),
+        throwsA(isA<DlssBuildUnsupported>()),
       );
+      expect(
+        () => requireDlssSupported(dlss: true, windows: false),
+        returnsNormally,
+      );
+      expect(
+        () => requireDlssSupported(dlss: false, windows: true),
+        returnsNormally,
+      );
+    });
+
+    test('the SDK folder follows each platform', () {
+      expect(
+        dlssSdkDir(
+          windows: false,
+          home: '/home/z',
+          xdgDataHome: '',
+        ),
+        p.join('/home/z', '.local', 'share', 'hookshot', 'builder', 'ngx-sdk'),
+      );
+      expect(
+        dlssSdkDir(
+          windows: false,
+          home: '/home/z',
+          xdgDataHome: '/data',
+        ),
+        p.join('/data', 'hookshot', 'builder', 'ngx-sdk'),
+      );
+      final windows = dlssSdkDir(
+        windows: true,
+        localAppData: r'C:\Users\z\AppData\Local',
+        home: r'C:\Users\z',
+      );
+      expect(windows, contains('AppData'));
+      expect(windows, endsWith(p.join('HookshotBuilder', 'ngx-sdk')));
     });
   });
 
@@ -136,23 +146,9 @@ void main() {
       });
     });
 
-    test('a read NUP continues in build.all when no Python stage is needed', () {
-      expect(
-        rustNupBuildApplies(prepare: false, dlss: false, cli: '/engine'),
-        isTrue,
-      );
-      expect(
-        rustNupBuildApplies(prepare: true, dlss: false, cli: '/engine'),
-        isTrue,
-      );
-      expect(
-        rustNupBuildApplies(prepare: false, dlss: true, cli: '/engine'),
-        isFalse,
-      );
-      expect(
-        rustNupBuildApplies(prepare: false, dlss: false, cli: null),
-        isFalse,
-      );
+    test('a read NUP continues in build.all, DLSS included', () {
+      expect(rustNupBuildApplies(cli: '/engine'), isTrue);
+      expect(rustNupBuildApplies(cli: null), isFalse);
       final request = jsonDecode(
         rustNupBuildRequest(
           out: '/games/Hookshot',
@@ -171,50 +167,22 @@ void main() {
         'vk': '',
         'language': 'fr',
         'prepare': false,
+        'dlss': false,
+        'ngx': '',
       });
-    });
-
-    test('the Python stage after the read skips reading the .nup again', () {
-      expect(
-        rustNupPythonArgs(
+      final dlss = jsonDecode(
+        rustNupBuildRequest(
           out: '/games/Hookshot',
           work: '/cache/hookshot-builder',
           language: 'fr',
-        ),
-        [
-          '--already-read',
-          '--out',
-          '/games/Hookshot',
-          '--work',
-          '/cache/hookshot-builder',
-          '--language',
-          'fr',
-        ],
-      );
-      expect(
-        rustNupPythonArgs(
-          out: '/games/Hookshot',
-          work: '/cache/hookshot-builder',
-          language: 'fr',
-          jobs: '4',
-          prepare: false,
+          prepare: true,
           dlss: true,
+          ngx: '/home/z/.local/share/hookshot/builder/ngx-sdk',
         ),
-        [
-          '--already-read',
-          '--out',
-          '/games/Hookshot',
-          '--work',
-          '/cache/hookshot-builder',
-          '--language',
-          'fr',
-          '--jobs',
-          '4',
-          '--no-prepare-shaders',
-          '--fetch-ngx-sdk',
-          '--accept-nvidia-license',
-        ],
       );
+      expect(dlss['dlss'], isTrue);
+      expect(dlss['ngx'], '/home/z/.local/share/hookshot/builder/ngx-sdk');
+      expect(dlss['prepare'], isTrue);
     });
   });
 
@@ -237,6 +205,8 @@ void main() {
         'vk': '',
         'language': 'de',
         'prepare': true,
+        'dlss': false,
+        'ngx': '',
       });
     });
 
@@ -274,6 +244,24 @@ void main() {
       'vk': '',
       'language': 'fr',
       'prepare': false,
+      'dlss': false,
+      'ngx': '',
     });
+  });
+
+  test('a DLSS build names its SDK folder', () {
+    final request = jsonDecode(
+      rustBuildRequest(
+        exefs: '/games/exefs',
+        romfs: '/games/romfs',
+        out: '/games/Hookshot',
+        work: '/cache/hookshot-builder',
+        language: 'fr',
+        dlss: true,
+        ngx: '/home/z/.local/share/hookshot/builder/ngx-sdk',
+      ),
+    );
+    expect(request['dlss'], isTrue);
+    expect(request['ngx'], '/home/z/.local/share/hookshot/builder/ngx-sdk');
   });
 }
