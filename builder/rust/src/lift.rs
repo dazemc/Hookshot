@@ -1228,6 +1228,106 @@ pub fn fpx_json(dir: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"files": files, "helpers": used.len(), "header": path.to_string_lossy()}))
 }
 
+fn load_chunk_boundaries(dir: &std::path::Path) -> Vec<u64> {
+    let Ok(text) = std::fs::read_to_string(dir.join("chunks.txt")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Ok(value) = u64::from_str_radix(line, 16) {
+            out.push(value);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Boundaries from a size-chunked lift made before chunks.txt existed: the
+/// first function defined in each code_NNN.c after the first.
+fn seed_chunk_boundaries(dir: &std::path::Path) -> Vec<u64> {
+    let head = regex::Regex::new(r"^void f_([0-9a-f]{8})\(Ctx \*__restrict A64_NOESC c\) \{")
+        .expect("chunk head regex");
+    let mut out = Vec::new();
+    for number in 1usize.. {
+        let path = dir.join(format!("code_{number:03}.c"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            break;
+        };
+        if let Some(caps) = text.lines().find_map(|line| head.captures(line)) {
+            if let Ok(value) = u64::from_str_radix(&caps[1], 16) {
+                out.push(value);
+            }
+        }
+    }
+    out
+}
+
+fn save_chunk_boundaries(dir: &std::path::Path, starts: &[u64]) -> Result<(), String> {
+    let mut text = String::from("# first guest address of each lifted C chunk after the first\n");
+    for start in starts.iter().skip(1) {
+        text.push_str(&format!("{start:08x}\n"));
+    }
+    std::fs::write(dir.join("chunks.txt"), text)
+        .map_err(|e| format!("{}: {e}", dir.join("chunks.txt").display()))
+}
+
+fn chunk_header(decls: &std::collections::BTreeSet<u64>) -> String {
+    let mut text = String::from("#include \"a64.h\"\n");
+    for entry in decls {
+        text.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
+    }
+    text
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_chunk(
+    dir: &std::path::Path,
+    file: &mut usize,
+    chunk: &mut String,
+    decls: &mut std::collections::BTreeSet<u64>,
+    files: &mut Vec<String>,
+    starts: &mut Vec<u64>,
+    chunk_start: &mut Option<u64>,
+    _reference: &regex::Regex,
+) -> Result<(), String> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+    if let Some(start) = chunk_start.take() {
+        starts.push(start);
+    }
+    let path = dir.join(format!("code_{:03}.c", *file));
+    let body = format!("{}{}", chunk_header(decls), chunk);
+    std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
+    files.push(path.to_string_lossy().into_owned());
+    *file += 1;
+    chunk.clear();
+    decls.clear();
+    Ok(())
+}
+
+fn remove_stale_chunks(dir: &std::path::Path, keep: usize) -> Result<(), String> {
+    let pattern = regex::Regex::new(r"^code_(\d{3})\.c$").expect("chunk name regex");
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(caps) = pattern.captures(&name) {
+            if let Ok(number) = caps[1].parse::<usize>() {
+                if number >= keep {
+                    std::fs::remove_file(entry.path())
+                        .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn write_json(
     exefs: &str,
     out: &str,
@@ -1241,7 +1341,8 @@ pub fn write_json(
     } else {
         Vec::new()
     };
-    let image = crate::image::Image::build(path, 0, false, &hle, &[])?;
+    let mut image = crate::image::Image::build(path, 0, false, &hle, &[])?;
+    let (adr_refs, adr_new, adr_spans) = image.add_adr_entries(4);
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.hooks = image.hooks.clone();
     lift.entries.extend(lift.hooks.keys().copied());
@@ -1332,19 +1433,41 @@ pub fn write_json(
     written_entries.sort_unstable();
     written_entries.dedup();
     let reference = regex::Regex::new(r"\bf_([0-9a-f]{8})\b").unwrap();
-    let header = |decls: &std::collections::BTreeSet<u64>| {
-        let mut text = String::from("#include \"a64.h\"\n");
-        for entry in decls {
-            text.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
+    let boundaries = {
+        let saved = load_chunk_boundaries(out);
+        if saved.is_empty() {
+            seed_chunk_boundaries(out)
+        } else {
+            saved
         }
-        text
     };
     let mut chunk = String::new();
     let mut decls = std::collections::BTreeSet::new();
+    let mut chunk_start: Option<u64> = None;
     let mut size = 0usize;
     let mut file = 0usize;
     let mut files = Vec::new();
-    for (_, text) in emitted {
+    let mut starts = Vec::new();
+    let mut next_boundary = 0usize;
+    for (index, text) in emitted {
+        let entry = entries[index];
+        while next_boundary < boundaries.len() && entry >= boundaries[next_boundary] {
+            write_chunk(
+                out,
+                &mut file,
+                &mut chunk,
+                &mut decls,
+                &mut files,
+                &mut starts,
+                &mut chunk_start,
+                &reference,
+            )?;
+            next_boundary += 1;
+            size = 0;
+        }
+        if chunk_start.is_none() {
+            chunk_start = Some(entry);
+        }
         for caps in reference.captures_iter(&text) {
             if let Ok(entry) = u64::from_str_radix(&caps[1], 16) {
                 decls.insert(entry);
@@ -1352,23 +1475,32 @@ pub fn write_json(
         }
         chunk.push_str(&text);
         size += text.len();
-        if size >= chunk_bytes {
-            let path = out.join(format!("code_{file:03}.c"));
-            let body = format!("{}{}", header(&decls), chunk);
-            std::fs::write(&path, &body).map_err(|e| format!("{}: {e}", path.display()))?;
-            files.push(path.to_string_lossy().into_owned());
-            file += 1;
-            chunk.clear();
-            decls.clear();
+        if boundaries.is_empty() && size >= chunk_bytes {
+            write_chunk(
+                out,
+                &mut file,
+                &mut chunk,
+                &mut decls,
+                &mut files,
+                &mut starts,
+                &mut chunk_start,
+                &reference,
+            )?;
             size = 0;
         }
     }
-    if !chunk.is_empty() {
-        let path = out.join(format!("code_{file:03}.c"));
-        let body = format!("{}{}", header(&decls), chunk);
-        std::fs::write(&path, &body).map_err(|e| format!("{}: {e}", path.display()))?;
-        files.push(path.to_string_lossy().into_owned());
-    }
+    write_chunk(
+        out,
+        &mut file,
+        &mut chunk,
+        &mut decls,
+        &mut files,
+        &mut starts,
+        &mut chunk_start,
+        &reference,
+    )?;
+    save_chunk_boundaries(out, &starts)?;
+    remove_stale_chunks(out, files.len())?;
     let mut table = String::from("#include \"a64.h\"\n");
     for entry in &written_entries {
         table.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
@@ -1401,7 +1533,15 @@ pub fn write_json(
         ));
     }
     std::fs::write(out.join("a64_hooks.c"), hooks_c).map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({"files": files, "functions": written, "hooks": lift.hooks.len()}))
+    Ok(serde_json::json!({
+        "files": files,
+        "functions": written,
+        "hooks": lift.hooks.len(),
+        "adr_refs": adr_refs,
+        "adr_new": adr_new,
+        "adr_spans": adr_spans,
+        "boundaries": starts.len(),
+    }))
 }
 pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;

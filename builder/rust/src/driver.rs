@@ -194,6 +194,29 @@ pub fn plan_json(
     let mut compiled = Value::Null;
     if compile && chunks > 0 {
         let cc = crate::toolchain::find("clang", false);
+        let game_deps = work.join("build").join("game_deps.bin");
+        if let Some(parent) = game_deps.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        let mut deps = Vec::new();
+        for folder in [&rt64, &gen_dir, &game_gen] {
+            let mut stack = vec![folder.clone()];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().and_then(|ext| ext.to_str()) == Some("h") {
+                        deps.extend(fs::read(&path).unwrap_or_default());
+                        deps.push(0);
+                    }
+                }
+            }
+        }
+        fs::write(&game_deps, deps).map_err(|e| format!("{}: {e}", game_deps.display()))?;
         let code_flags = vec![
             "-O1".to_owned(),
             "-g0".to_owned(),
@@ -227,7 +250,7 @@ pub fn plan_json(
                             "obj": obj.to_string_lossy(),
                             "cache": work.join("objcache").to_string_lossy(),
                             "flags": code_flags,
-                            "deps_file": "",
+                            "deps_file": game_deps,
                         })
                     })
                     .collect()
@@ -253,7 +276,7 @@ pub fn plan_json(
                 "obj": obj.to_string_lossy(),
                 "cache": work.join("objcache").to_string_lossy(),
                 "flags": code_flags,
-                "deps_file": "",
+                "deps_file": game_deps,
             }));
         }
         compiled = crate::compile::many_json(
