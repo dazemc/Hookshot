@@ -1773,6 +1773,15 @@ mod tests {
     }
 
     #[test]
+    fn image_pool_blocks_are_made_at_the_start() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let vma = fs::read_to_string(root.join("gpu/vk/vk_vma.cpp")).unwrap();
+        assert!(vma.contains("RX_VK_IMAGE_PREALLOC"));
+        assert!(vma.contains("pi.minBlockCount = (size_t)n;"));
+        assert!(vma.contains("heap / 100 * 15 / kImageBlock"));
+    }
+
+    #[test]
     fn gpu_written_mirrors_are_not_given_back_empty() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mem = fs::read_to_string(root.join("gpu/vk/vk_memory.cpp")).unwrap();
