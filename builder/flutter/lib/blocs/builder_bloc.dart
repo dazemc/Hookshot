@@ -9,6 +9,7 @@ import 'package:equatable/equatable.dart';
 
 import '../backend/build_events.dart';
 import '../backend/process.dart';
+import '../backend/rust_build.dart';
 import '../config.dart' as cfg;
 import '../engine.dart';
 import '../gamescope.dart';
@@ -599,6 +600,26 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     _cfg['prepare'] = s.prepare ? '1' : '0';
     _cfg['dlss'] = s.dlss ? '1' : '0';
     cfg.saveConfig(_cfg);
+    // An unpacked folder can go through the Rust build.all engine. NUP
+    // extraction, shader preparation and NVIDIA's DLSS SDK stay in
+    // make_game.py until they are ported, so everything else falls back.
+    final rust = rustEngineCli();
+    if (rust != null && rustBuildApplies(kind: s.kind, prepare: s.prepare, dlss: s.dlss, cli: rust)) {
+      _startProcess(
+        emit,
+        [rust, '--stream'],
+        stdinText: rustBuildRequest(
+          exefs: s.exefs,
+          romfs: s.romfs,
+          out: out,
+          work: rustBuildWork(),
+          vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
+          language: code,
+        ),
+        title: 'Building your game',
+      );
+      return;
+    }
     final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', ...src, '--out', out, '--language', code];
     if (jobs != null) cmd.addAll(['--jobs', jobs]);
     if (!s.prepare) cmd.add('--no-prepare-shaders');
@@ -631,7 +652,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
   }
 
   Future<void> _startProcess(Emitter<BuilderState> emit, List<String> cmd,
-      {Map<String, String>? env, required String title}) async {
+      {Map<String, String>? env, required String title, String? stdinText}) async {
     _cancelling = false;
     await _lines?.cancel();
     if (_proc != null) {
@@ -661,7 +682,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     ));
     try {
       final merged = Map<String, String>.from(env ?? Platform.environment)..addAll(_toolEnv());
-      _proc = await BuildProcess.start(cmd, cwd: cfg.toolsRoot(), env: merged);
+      _proc = await BuildProcess.start(cmd, cwd: cfg.toolsRoot(), env: merged, stdinText: stdinText);
     } catch (err) {
       emit(BuildFailed('$err'));
       return;

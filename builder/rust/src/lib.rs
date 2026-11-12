@@ -3,7 +3,8 @@
 //! One JSON entry point keeps the FFI surface tiny:
 //! `hookshot_engine_call(request_json)` returns a malloc'd JSON response,
 //! released by `hookshot_engine_free`. The same commands are available from
-//! the CLI for tests and for development without Flutter.
+//! the CLI for tests and for development without Flutter; `--stream` turns a
+//! build request into the builder's `@@` progress lines.
 
 mod a64;
 mod chunks;
@@ -37,6 +38,7 @@ mod shader;
 mod split_hot;
 mod stage;
 mod standalone;
+mod stream;
 mod text;
 mod toolchain;
 mod ui_fonts;
@@ -49,6 +51,8 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
 use serde_json::{Value, json};
+
+pub use stream::run as run_stream;
 
 /// # Safety
 /// `request` must be a valid, NUL-terminated UTF-8 C string. The returned

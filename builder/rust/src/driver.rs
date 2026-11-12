@@ -54,6 +54,33 @@ pub fn plan_json(
     standalone: bool,
     compile: bool,
 ) -> Result<Value, String> {
+    plan_json_with(
+        exefs,
+        romfs,
+        out,
+        work,
+        lift_limit,
+        lift_all,
+        standalone,
+        compile,
+        &mut |_, _| Ok(()),
+    )
+}
+
+/// The same build, saying which stage begins as it goes (the builder's
+/// `--stream` CLI shows those lines while the build runs).
+#[allow(clippy::too_many_arguments)]
+pub fn plan_json_with(
+    exefs: &str,
+    romfs: &str,
+    out: &str,
+    work: &str,
+    lift_limit: usize,
+    lift_all: bool,
+    standalone: bool,
+    compile: bool,
+    say_stage: &mut dyn FnMut(&str, &str) -> Result<(), String>,
+) -> Result<Value, String> {
     let exefs = Path::new(exefs);
     let romfs = Path::new(romfs);
     let out = Path::new(out);
@@ -72,6 +99,7 @@ pub fn plan_json(
             nso::SUPPORTED_BUILD
         ));
     }
+    say_stage("read", "Reading your game files")?;
     let rt64 = work.join("rt64");
     rtgen::write(&rt64, &kit::kit())?;
     let gen_dir = work.join("build").join("gen");
@@ -109,6 +137,7 @@ pub fn plan_json(
         }
     }
     if lift_needed {
+        say_stage("lift", "Translating the game to PC code")?;
         let limit = if lift_all { 0 } else { lift_limit };
         crate::lift::write_json(
             exefs.to_str().unwrap_or_default(),
@@ -193,6 +222,7 @@ pub fn plan_json(
     let mut stage = if chunks == 0 { "lift" } else { "compile" };
     let mut compiled = Value::Null;
     if compile && chunks > 0 {
+        say_stage("compile", "Compiling")?;
         let cc = crate::toolchain::find("clang", false);
         let game_deps = work.join("build").join("game_deps.bin");
         if let Some(parent) = game_deps.parent() {

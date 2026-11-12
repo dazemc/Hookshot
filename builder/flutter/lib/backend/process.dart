@@ -1,4 +1,5 @@
-// Subprocess runner for make_game.py: lines streamed, whole group killed on cancel.
+// Subprocess runner for make_game.py and the Rust engine: lines streamed,
+// optional stdin request, whole group killed on cancel.
 // Tk starts the build in its own session (start_new_session) and kills the group
 // (os.killpg); here the command runs under setsid on POSIX so the group can be
 // signalled, and taskkill /T on Windows.
@@ -15,7 +16,8 @@ class BuildProcess {
   int get pid => _proc.pid;
   Future<int> get exitCode => _proc.exitCode;
 
-  static Future<BuildProcess> start(List<String> command, {required String cwd, Map<String, String>? env}) async {
+  static Future<BuildProcess> start(List<String> command,
+      {required String cwd, Map<String, String>? env, String? stdinText}) async {
     final List<String> cmd;
     if (Platform.isWindows) {
       cmd = command;
@@ -36,6 +38,15 @@ class BuildProcess {
 
     pump(proc.stdout);
     pump(proc.stderr);
+    if (stdinText != null) {
+      try {
+        proc.stdin.add(utf8.encode(stdinText));
+        await proc.stdin.close();
+      } catch (_) {
+        // The process can stop before it reads its request; its exit code and
+        // output say why.
+      }
+    }
     return BuildProcess._(proc, controller.stream);
   }
 
