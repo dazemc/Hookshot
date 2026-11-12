@@ -67,6 +67,8 @@ on:
       - 'scripts/release_promote.sh'
       - 'scripts/release_rc.sh'
       - 'scripts/release_upload.sh'
+      - 'scripts/ci_failure_hook.sh'
+      - 'tests/ci_failure_hook_test.sh'
       - 'scripts/linux/appimage.sh'
       - 'tests/dav1d_av1/**'
       - 'tests/dav1d_av1_test.c'
@@ -135,6 +137,8 @@ on:
       - 'scripts/release_promote.sh'
       - 'scripts/release_rc.sh'
       - 'scripts/release_upload.sh'
+      - 'scripts/ci_failure_hook.sh'
+      - 'tests/ci_failure_hook_test.sh'
       - 'scripts/linux/appimage.sh'
       - 'tests/dav1d_av1/**'
       - 'tests/dav1d_av1_test.c'
@@ -394,6 +398,19 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror tests/video_uv_interleave_test.c -o "$RUNNER_TEMP/video-uv"
           "$RUNNER_TEMP/video-uv"
+
+  ci-failure-hook:
+    name: CI failure hook (local)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # (fake gh and opencode binaries on PATH: no GitHub credentials, no OpenCode server and no network are needed)
+      - name: Test the local hook
+        run: bash tests/ci_failure_hook_test.sh
 
   actionlint:
     name: Workflow lint (actionlint)
