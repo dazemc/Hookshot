@@ -378,6 +378,35 @@ fn write_image_c(
     Ok(hooks)
 }
 
+/// Write the standalone relocated image (`image.bin` and `image.json`) with
+/// the HLE and stub hooks the host build expects.
+pub fn image_json(exefs: &str, out: &str, host: &str) -> Result<Value, String> {
+    let exefs = Path::new(exefs);
+    let host = if host.is_empty() {
+        crate::kit::root().join("host")
+    } else {
+        Path::new(host).to_path_buf()
+    };
+    let implemented = implemented(&host)?;
+    let modules = crate::nso_image::load_exefs(exefs)?;
+    let nvn = nvn_exports(&modules, &implemented);
+    let (mut hle, stubbed) = hle_set(&modules, &implemented);
+    hle.extend(nvn.iter().cloned());
+    let mut all: Vec<String> = hle.into_iter().collect();
+    all.extend(stubbed.iter().cloned());
+    all.sort();
+    let image = Image::build(exefs, 0, false, &all, &[])?;
+    let meta = image.write(Path::new(out))?;
+    Ok(json!({
+        "hooks": meta["hooks"].as_array().map(Vec::len).unwrap_or(0),
+        "hle": all.len(),
+        "entries": image.entry_count(),
+        "trampolines": image.tramp.len(),
+        "unresolved": image.unresolved.len(),
+        "image": Path::new(out).join("image.bin").to_string_lossy(),
+    }))
+}
+
 /// Write the three standalone lift files into `gen`; `host` defaults to the
 /// repository's host folder.
 pub fn write_json(exefs: &str, out: &str, host: &str) -> Result<Value, String> {

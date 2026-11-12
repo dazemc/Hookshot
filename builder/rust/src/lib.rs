@@ -381,6 +381,11 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.kit" => kit::json(),
         "build.ui_fonts" => ui_fonts::write_json(&string(&request, "out").unwrap_or_default()),
+        "build.image" => standalone::image_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+            &string(&request, "host").unwrap_or_default(),
+        ),
         "build.standalone" => standalone::write_json(
             &string(&request, "exefs").unwrap_or_default(),
             &string(&request, "gen").unwrap_or_default(),
