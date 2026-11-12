@@ -934,7 +934,8 @@ impl<'a, C: Code> Lifter<'a, C> {
         if frame {
             text = crate::text::frame_stores(&text);
         }
-        let text = crate::text::localize_regs(&text, crate::text::local_count(), (&dirty.0, &dirty.1));
+        let text =
+            crate::text::localize_regs(&text, crate::text::local_count(), (&dirty.0, &dirty.1));
         crate::text::mark_groups(&text)
     }
 

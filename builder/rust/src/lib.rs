@@ -10,6 +10,7 @@ mod chunks;
 mod compile;
 mod diagnostics;
 mod disk;
+mod driver;
 mod emitter;
 mod gamescope;
 mod host;
@@ -261,6 +262,12 @@ pub fn dispatch(text: &str) -> String {
         "build.shaders" => shader::census_json(
             &string(&request, "romfs").unwrap_or_default(),
             string(&request, "out").as_deref(),
+        ),
+        "build.driver" => driver::plan_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "romfs").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+            &string(&request, "work").unwrap_or_default(),
         ),
         "build.check" => stage::check_json(
             string(&request, "nup").as_deref(),
