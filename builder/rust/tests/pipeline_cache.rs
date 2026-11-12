@@ -82,7 +82,11 @@ fn compile(
 ) -> Option<PathBuf> {
     let cxx = compiler("CXX", &["c++", "g++", "clang++"])?;
     let dir = scratch(name);
-    let exe = dir.join(if cfg!(windows) { "fixture.exe" } else { "fixture" });
+    let exe = dir.join(if cfg!(windows) {
+        "fixture.exe"
+    } else {
+        "fixture"
+    });
     let mut build = Command::new(&cxx);
     build.args(["-std=c++20", "-Wall", "-Wextra", "-Werror"]);
     for include in includes {
@@ -127,14 +131,7 @@ fn compile_and_run(
 fn run_fixture(name: &str, relative: &str) -> Option<Output> {
     let repo = root();
     let dir = scratch(&format!("{name}-dir"));
-    let output = compile_and_run(
-        name,
-        &repo.join(relative),
-        &[],
-        &[],
-        &[],
-        Some(&dir),
-    );
+    let output = compile_and_run(name, &repo.join(relative), &[], &[], &[], Some(&dir));
     let _ = fs::remove_dir_all(&dir);
     Some(output?)
 }
@@ -261,7 +258,10 @@ fn a_translating_shader_wait_can_be_bounded() {
         "the bounded wait must not run the queued job on the waiting thread"
     );
     let draw = read("gpu/vk/vk_draw.cpp");
-    let draw_fn = function(&draw, "void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d)");
+    let draw_fn = function(
+        &draw,
+        "void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d)",
+    );
     assert!(draw_fn.contains("RX_VK_TRANSLATE_WAIT_MS"));
     assert!(draw_fn.contains("translate_wait::parse("));
     assert!(draw_fn.contains("jobs_wait_for(cp->ready, budget_left)"));
@@ -300,7 +300,11 @@ fn the_program_cache_compresses_records_with_zstd_and_can_be_switched_off() {
         "{cc}: {}",
         String::from_utf8_lossy(&built.stderr)
     );
-    let exe = dir.join(if cfg!(windows) { "fixture.exe" } else { "fixture" });
+    let exe = dir.join(if cfg!(windows) {
+        "fixture.exe"
+    } else {
+        "fixture"
+    });
     let mut build = Command::new(&cxx);
     build
         .args(["-std=c++20", "-Wall", "-Wextra", "-Werror"])

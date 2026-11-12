@@ -62,8 +62,13 @@ fn the_integrated_gpu_budget_follows_the_system_ram_tiers() {
         .arg(&exe)
         .status()
         .expect("run the C++ compiler");
-    assert!(build.success(), "{cxx} failed on tests/test_igpu_budget.cpp");
-    let run = Command::new(&exe).output().expect("run the iGPU budget fixture");
+    assert!(
+        build.success(),
+        "{cxx} failed on tests/test_igpu_budget.cpp"
+    );
+    let run = Command::new(&exe)
+        .output()
+        .expect("run the iGPU budget fixture");
     let _ = fs::remove_dir_all(dir);
     assert!(
         run.status.success(),
@@ -81,7 +86,8 @@ fn the_integrated_gpu_budget_follows_the_system_ram_tiers() {
 #[test]
 fn the_renderer_keeps_the_vram_override_and_discrete_budgets() {
     let repo = root();
-    let source = fs::read_to_string(repo.join("gpu/vk/vk_texture.cpp")).expect("gpu/vk/vk_texture.cpp");
+    let source =
+        fs::read_to_string(repo.join("gpu/vk/vk_texture.cpp")).expect("gpu/vk/vk_texture.cpp");
     let start = source
         .find("static uint64_t own = 0;")
         .expect("texture_frame's budget");
@@ -102,7 +108,9 @@ fn the_renderer_keeps_the_vram_override_and_discrete_budgets() {
     );
     // The tiers run only for an integrated GPU and only when the override is unset.
     assert!(
-        budget.contains("if (!vram_env && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)"),
+        budget.contains(
+            "if (!vram_env && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)"
+        ),
         "the system RAM tiers are not kept to an integrated GPU without RX_VK_VRAM_MB"
     );
     assert!(
@@ -118,15 +126,31 @@ fn the_renderer_keeps_the_vram_override_and_discrete_budgets() {
     let read = source
         .find("static uint64_t system_ram_bytes()")
         .expect("system_ram_bytes");
-    let read_end = source[read..].find("\n}\n").map(|at| read + at).expect("system_ram_bytes' end");
+    let read_end = source[read..]
+        .find("\n}\n")
+        .map(|at| read + at)
+        .expect("system_ram_bytes' end");
     let read = &source[read..read_end];
-    assert!(read.contains("GlobalMemoryStatusEx"), "Windows' RAM read is missing");
-    assert!(read.contains("/proc/meminfo"), "Linux's RAM read is missing");
+    assert!(
+        read.contains("GlobalMemoryStatusEx"),
+        "Windows' RAM read is missing"
+    );
+    assert!(
+        read.contains("/proc/meminfo"),
+        "Linux's RAM read is missing"
+    );
     assert!(read.contains("MemTotal:"), "Linux's MemTotal is not read");
 
     // The header is pure: no Vulkan, no Windows, no environment.
-    let header = fs::read_to_string(repo.join("gpu/vk/igpu_budget.h")).expect("gpu/vk/igpu_budget.h");
-    for forbidden in ["<windows.h>", "<vulkan", "getenv(", "GlobalMemoryStatusEx", "/proc/meminfo"] {
+    let header =
+        fs::read_to_string(repo.join("gpu/vk/igpu_budget.h")).expect("gpu/vk/igpu_budget.h");
+    for forbidden in [
+        "<windows.h>",
+        "<vulkan",
+        "getenv(",
+        "GlobalMemoryStatusEx",
+        "/proc/meminfo",
+    ] {
         assert!(
             !header.contains(forbidden),
             "igpu_budget.h should stay pure, but has {forbidden}"

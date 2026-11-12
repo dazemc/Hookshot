@@ -62,8 +62,8 @@ fn the_replay_keeps_the_last_performance_core() {
         .find("static uint64_t parse_cpu_list(")
         .map(|_| block(&source, "static uint64_t parse_cpu_list("))
         .expect("parse_cpu_list");
-    let mut fixture =
-        fs::read_to_string(repo.join("tests/reserved_core_test.c")).expect("tests/reserved_core_test.c");
+    let mut fixture = fs::read_to_string(repo.join("tests/reserved_core_test.c"))
+        .expect("tests/reserved_core_test.c");
     fixture = fixture.replace("/* PICK_RESERVED_CORE */", &pick);
     fixture = fixture.replace("/* PARSE_CPU_LIST */", &parse);
 
@@ -117,7 +117,9 @@ fn the_replay_keeps_the_last_performance_core() {
         .expect("the invalid-mask log");
     let after = &reserved[ignored..];
     assert!(
-        after.contains("if (getenv(\"HOS_RESERVE_CORE\") && !atoi(getenv(\"HOS_RESERVE_CORE\"))) return mask;"),
+        after.contains(
+            "if (getenv(\"HOS_RESERVE_CORE\") && !atoi(getenv(\"HOS_RESERVE_CORE\"))) return mask;"
+        ),
         "an invalid HOS_RESERVE_CORE_MASK disables the reservation instead of being ignored"
     );
 
@@ -149,7 +151,9 @@ fn the_replay_keeps_the_last_performance_core() {
         .status()
         .expect("run the C compiler");
     assert!(build.success(), "{cc} failed on {}", src.display());
-    let run = Command::new(&exe).output().expect("run the reserved core fixture");
+    let run = Command::new(&exe)
+        .output()
+        .expect("run the reserved core fixture");
     let _ = fs::remove_dir_all(dir);
     assert!(
         run.status.success(),
