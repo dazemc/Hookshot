@@ -276,7 +276,13 @@ fn the_summaries_are_stable_and_carry_no_path_or_date() {
             "\"when\": \"2026-11-12 12:00:00\"",
             &format!("\"when\": \"{marker}\""),
         )
-        .replace("\"kind\": \"build\"", &format!("\"kind\": \"{marker}\""));
+        .replace("\"kind\": \"build\"", &format!("\"kind\": \"{marker}\""))
+        // (a newer record may add a label this tool does not know: its seconds
+        // go into "other", its name never reaches the summary)
+        .replace(
+            "\"driver.read\": 50.5,",
+            &format!("\"driver.read\": 50.5, \"{marker}\": 1.0,"),
+        );
     let times = match tool::parse(&text).unwrap() {
         tool::Parsed::Times(times) => times,
         tool::Parsed::Baseline(_) => panic!("the run is a baseline"),
