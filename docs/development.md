@@ -188,6 +188,7 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_NAN_GUARD=0` | No NaN guard on float colour outputs (on by default on every card: one NaN texel spreads through bloom into glowing blocks) |
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
+| `HOS_RESERVE_CORE_MASK=<hex>` | The replay's core by mask (for example `0x80`), over the choice of the last performance core; a value that is not hex is logged and ignored |
 
 ### Building
 
