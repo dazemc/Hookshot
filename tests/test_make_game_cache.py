@@ -74,8 +74,11 @@ class NupCacheTests(unittest.TestCase):
                 for path in self.out.rglob("*") if path.is_file() and ".game" not in path.parts}
 
     def run_to_lift(self, nup, failure=None, supported=True, include_romfs=True, update=False, folders=None,
-                    romfs_files=None):
+                    romfs_files=None, already_read=False):
         self.assert_owned_fixture()
+        if already_read:
+            (self.work / "exefs").mkdir(exist_ok=True)
+            (self.work / "exefs" / "main").write_bytes(module_bytes(supported=supported))
 
         def run(cmd, env=None, on_line=None):
             if "nx2/nup.py" in cmd:
@@ -106,6 +109,8 @@ class NupCacheTests(unittest.TestCase):
             argv += ["--update", str(self.out)]
         elif folders:
             argv += ["--romfs", str(folders[0]), "--exefs", str(folders[1]), "--out", str(self.out)]
+        elif already_read:
+            argv += ["--already-read", "--out", str(self.out)]
         else:
             argv += ["--nup", str(nup), "--out", str(self.out)]
         # The only external operation exercised is authored extraction above; no compiler, SDK,
@@ -196,6 +201,17 @@ class NupCacheTests(unittest.TestCase):
         self.assertEqual(self.marker.read_text(), self.stamp(self.new_nup) + "\n")
         self.assertEqual((self.out / "user/save/sentinel.txt").read_bytes(), b"authored save sentinel")
         self.assertEqual((self.out / "hookshot_options.ini").read_bytes(), b"authored options sentinel")
+
+    def test_already_read_uses_the_engine_files_without_reading_the_nup_again(self):
+        before = self.cache()
+        with self.assertRaises(Prepared):
+            self.run_to_lift(None, already_read=True)
+        self.assertEqual(self.extractions, [])
+        self.assertIn("@@stage read Reading your game files", self.output)
+        self.assertEqual((self.work / "exefs/main").read_bytes(), module_bytes())
+        after = self.cache()
+        # (the Rust read stage wrote the cache before make_game.py started)
+        self.assertEqual(after, before)
 
     def test_same_source_reuses_the_cache(self):
         before = self.cache()

@@ -659,21 +659,32 @@ impl Nup {
         }))
     }
 
-    pub fn extract(
+    /// Extract the package, saying how many members of all of them are done.
+    /// The heads file of a romfs is written once the whole romfs was walked.
+    pub fn extract_with_progress(
         &mut self,
         out: &Path,
         only: Option<&str>,
         want: Option<&str>,
+        progress: &mut dyn FnMut(usize, usize),
     ) -> Result<(usize, u64), String> {
         let title = self.title(want)?;
-        let mut count = 0usize;
-        let mut bytes = 0u64;
+        let mut parts = Vec::new();
+        let mut total = 0usize;
         for (part, dir) in [("exefs", title.exefs), ("romfs", title.romfs)] {
             if only.is_some_and(|only| only != part) || dir == u32::MAX {
                 continue;
             }
+            let entries = self.walk(dir)?;
+            total += entries.len();
+            parts.push((part, entries));
+        }
+        let mut count = 0usize;
+        let mut bytes = 0u64;
+        let mut done = 0usize;
+        for (part, entries) in parts {
             let mut damaged = Vec::new();
-            for (rel, record) in self.walk(dir)? {
+            for (rel, record) in entries {
                 let relative = safe_relative(&rel)?;
                 let path = out.join(part).join(relative);
                 let checked = part == "romfs" && rel.ends_with(".zs");
@@ -693,6 +704,8 @@ impl Nup {
                             damaged.push(rel.clone());
                         }
                     }
+                    done += 1;
+                    progress(done, total);
                     continue;
                 }
                 if let Some(parent) = path.parent() {
@@ -713,6 +726,8 @@ impl Nup {
                 fs::rename(&temporary, &path).map_err(|e| format!("{}: {e}", path.display()))?;
                 count += 1;
                 bytes += data.len() as u64;
+                done += 1;
+                progress(done, total);
             }
             if part == "romfs" {
                 let heads = out.join(HEADS_NAME);
@@ -1040,8 +1055,18 @@ pub fn extract_json(
     only: Option<&str>,
     title: Option<&str>,
 ) -> Result<Value, String> {
+    extract_json_with_progress(path, out, only, title, &mut |_, _| {})
+}
+
+pub fn extract_json_with_progress(
+    path: &str,
+    out: &str,
+    only: Option<&str>,
+    title: Option<&str>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Value, String> {
     let mut nup = Nup::open(path)?;
-    let (files, bytes) = nup.extract(Path::new(out), only, title)?;
+    let (files, bytes) = nup.extract_with_progress(Path::new(out), only, title, progress)?;
     Ok(json!({"files": files, "bytes": bytes, "titles": nup.titles_json()}))
 }
 
@@ -1131,14 +1156,17 @@ mod tests {
         let out =
             std::env::temp_dir().join(format!("hookshot-rust-nup-out-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out);
-        let result = extract_json(
+        let mut progress = Vec::new();
+        let result = extract_json_with_progress(
             path.to_str().unwrap(),
             out.to_str().unwrap(),
             Some("romfs"),
             None,
+            &mut |done, total| progress.push((done, total)),
         )
         .unwrap();
         assert_eq!(result["files"], 2);
+        assert_eq!(progress.last(), Some(&(2, 2)));
         assert_eq!(
             fs::read(out.join("romfs/member.bin")).unwrap(),
             b"raw file contents"

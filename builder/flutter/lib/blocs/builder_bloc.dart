@@ -600,9 +600,55 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     _cfg['prepare'] = s.prepare ? '1' : '0';
     _cfg['dlss'] = s.dlss ? '1' : '0';
     cfg.saveConfig(_cfg);
-    // An unpacked folder can go through the Rust build.all engine. NUP
-    // extraction, shader preparation and NVIDIA's DLSS SDK stay in
-    // make_game.py until they are ported, so everything else falls back.
+    if (rustNupApplies(kind: s.kind)) {
+      final work = rustBuildWork();
+      try {
+        final rust = requireRustEngineCli();
+        final exitCode = await _runPrepare(
+          emit,
+          [rust, '--stream'],
+          rustPrepareRequest(nup: s.nup, out: out, work: work),
+          title: 'Building your game',
+        );
+        if (exitCode < 0) return;
+        if (exitCode != 0) {
+          _failPrepare(emit);
+          return;
+        }
+      } on RustEngineMissing catch (error) {
+        emit(BuildFailed(error.toString()));
+        return;
+      }
+      if (_cancelling) {
+        _cancelling = false;
+        emit(const BuildFailed('Build cancelled. Your game folder was not replaced.', cancelled: true));
+        return;
+      }
+      // Shader preparation, the button prompts and NVIDIA's DLSS SDK are still
+      // make_game.py's; it continues from the files the engine extracted.
+      _startProcess(
+        emit,
+        [
+          cfg.builderPython(),
+          '-I',
+          '${cfg.nxRoot()}/make_game.py',
+          ...rustNupPythonArgs(
+            out: out,
+            work: work,
+            language: code,
+            jobs: jobs,
+            prepare: s.prepare,
+            dlss: s.dlss,
+          ),
+        ],
+        env: (s.dlss || Platform.environment.containsKey('HOOKSHOT_NGX_SDK')) ? _dlssEnv() : null,
+        title: 'Building your game',
+      );
+      return;
+    }
+    // An unpacked folder can go through the Rust build.all engine. Shader
+    // preparation and NVIDIA's DLSS SDK stay in make_game.py until they are
+    // ported, so those builds fall back.
     final rust = rustEngineCli();
     if (rust != null && rustBuildApplies(kind: s.kind, prepare: s.prepare, dlss: s.dlss, cli: rust)) {
       _startProcess(
@@ -651,19 +697,10 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     _startProcess(emit, cmd, env: dlss ? _dlssEnv() : null, title: 'Updating your game');
   }
 
-  Future<void> _startProcess(Emitter<BuilderState> emit, List<String> cmd,
-      {Map<String, String>? env, required String title, String? stdinText}) async {
-    _cancelling = false;
-    await _lines?.cancel();
-    if (_proc != null) {
-      try {
-        await _proc!.killGroup();
-      } catch (_) {}
-      _proc = null;
-    }
+  void _emitRunning(Emitter<BuilderState> emit, String title, String stageText) {
     emit(BuildRunning(
       title: title,
-      stageText: 'Starting',
+      stageText: stageText,
       fraction: null,
       eta: null,
       log: const [],
@@ -680,6 +717,19 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       error: null,
       built: null,
     ));
+  }
+
+  Future<void> _startProcess(Emitter<BuilderState> emit, List<String> cmd,
+      {Map<String, String>? env, required String title, String? stdinText}) async {
+    _cancelling = false;
+    await _lines?.cancel();
+    if (_proc != null) {
+      try {
+        await _proc!.killGroup();
+      } catch (_) {}
+      _proc = null;
+    }
+    _emitRunning(emit, title, 'Starting');
     try {
       final merged = Map<String, String>.from(env ?? Platform.environment)..addAll(_toolEnv());
       _proc = await BuildProcess.start(cmd, cwd: cfg.toolsRoot(), env: merged, stdinText: stdinText);
@@ -691,6 +741,56 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
         .listen((line) => add(_LineReceived(line)), onDone: () async => add(_ProcessExited(await _proc!.exitCode)));
   }
 
+  /// The NUP read stage: run the engine's `build.prepare` to completion while
+  /// its `@@` lines keep the progress page alive. Returns its exit code, or -1
+  /// when the process could not start (the failure state was already emitted).
+  Future<int> _runPrepare(Emitter<BuilderState> emit, List<String> cmd, String request, {required String title}) async {
+    _cancelling = false;
+    await _lines?.cancel();
+    if (_proc != null) {
+      try {
+        await _proc!.killGroup();
+      } catch (_) {}
+      _proc = null;
+    }
+    _emitRunning(emit, title, 'Reading your game files');
+    final BuildProcess process;
+    try {
+      final merged = Map<String, String>.from(Platform.environment)..addAll(_toolEnv());
+      process = await BuildProcess.start(cmd, cwd: cfg.toolsRoot(), env: merged, stdinText: request);
+      _proc = process;
+    } catch (err) {
+      emit(BuildFailed('$err'));
+      return -1;
+    }
+    final done = Completer<int>();
+    _lines = process.lines.listen((line) => _applyLine(line, emit), onDone: () async {
+      if (!done.isCompleted) done.complete(await process.exitCode);
+    });
+    final code = await done.future;
+    _proc = null;
+    return code;
+  }
+
+  void _failPrepare(Emitter<BuilderState> emit) {
+    final s = state;
+    final log = s is BuildRunning ? s.log : const <String>[];
+    if (_cancelling) {
+      _cancelling = false;
+      emit(BuildFailed('Build cancelled. Your game folder was not replaced.', log: log, cancelled: true));
+      return;
+    }
+    final last = log.isEmpty ? null : log.last.trim();
+    final error = s is BuildRunning ? s.error : null;
+    emit(BuildFailed(
+      error ??
+          (last != null && last.isNotEmpty
+              ? last
+              : 'The Rust engine could not read your game files. See the log for details.'),
+      log: log,
+    ));
+  }
+
   static const _stages = {
     'read': 'Reading your game files',
     'lift': 'Translating the game to PC code',
@@ -699,10 +799,12 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     'shaders': 'Preparing shaders'
   };
 
-  void _onLine(_LineReceived e, Emitter<BuilderState> emit) {
+  void _onLine(_LineReceived e, Emitter<BuilderState> emit) => _applyLine(e.line, emit);
+
+  void _applyLine(String line, Emitter<BuilderState> emit) {
     final s = state;
     if (s is! BuildRunning) return;
-    final event = parseBuilderLine(e.line);
+    final event = parseBuilderLine(line);
     final log = [...s.log];
     if (event is LogEvent) log.add(event.line);
     String stageText = s.stageText;

@@ -289,9 +289,29 @@ pub fn prepare_dump_json(exefs: &str, romfs: &str, out: &str, work: &str) -> Res
     }))
 }
 
-/// The read stage for `--nup`: extract into the output folder once, keep its/// The read stage for `--nup`: extract into the output folder once, keep its
+/// The message a missing .nup gets, shared by the reader and the streaming
+/// command that starts it.
+pub fn missing_package(path: &Path) -> String {
+    format!(
+        "Could not access your .nup file {}: it is not there. Check that the file is still there, reconnect its drive if needed, or choose the file again in Hookshot Builder.",
+        path.display()
+    )
+}
+
+/// The read stage for `--nup`: extract into the output folder once, keep its
 /// exefs for updates, and reuse both when the same package is built again.
 pub fn prepare_json(nup_path: &str, out: &str, work: &str) -> Result<Value, String> {
+    prepare_json_with_progress(nup_path, out, work, &mut |_, _| {})
+}
+
+/// The same read, reporting how many package members of all of them are
+/// written. A build that reuses the package's earlier extraction reports none.
+pub fn prepare_json_with_progress(
+    nup_path: &str,
+    out: &str,
+    work: &str,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Value, String> {
     let nup_path = Path::new(nup_path);
     let out = Path::new(out);
     let work = if work.is_empty() {
@@ -306,10 +326,7 @@ pub fn prepare_json(nup_path: &str, out: &str, work: &str) -> Result<Value, Stri
     let kept = out.join(".hookshot_exefs");
     let romfs = out.join("romfs");
     if !nup_path.is_file() {
-        return Err(format!(
-            "Could not access your .nup file {}: it is not there. Check that the file is still there, reconnect its drive if needed, or choose the file again in Hookshot Builder.",
-            nup_path.display()
-        ));
+        return Err(missing_package(nup_path));
     }
     fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let size = fs::metadata(nup_path)
@@ -329,11 +346,12 @@ pub fn prepare_json(nup_path: &str, out: &str, work: &str) -> Result<Value, Stri
         copy_tree(&kept, &exefs)?;
     } else {
         remove(&game);
-        let extraction = nup::extract_json(
+        let extraction = nup::extract_json_with_progress(
             nup_path.to_str().unwrap_or_default(),
             game.to_str().unwrap_or_default(),
             None,
             None,
+            progress,
         );
         let extracted = match extraction {
             Ok(value) => value,

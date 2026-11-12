@@ -1679,6 +1679,8 @@ def parse_args():
     p.add_argument("--game", help="your copy: a .nup file, or a folder with romfs and exefs in it (the same as --nup, or --romfs and --exefs)")
     p.add_argument("--prepare", action="store_true", help="for RecompLauncher: no window, progress lines, --out ~/Games/Hookshot unless given")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
+    p.add_argument("--already-read", action="store_true",
+                   help="the Rust engine read the game already: work/exefs and out/romfs hold it (used by the Flutter builder)")
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
@@ -1705,6 +1707,8 @@ def parse_args():
             a.nup = a.game
         else:
             fail("Your copy of the game was not found: %s" % a.game)
+    if a.already_read and (a.nup or a.romfs or a.exefs or a.update):
+        p.error("--already-read cannot be combined with --nup, --romfs/--exefs or --update")
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
     return a
 
@@ -1810,7 +1814,7 @@ def main(a=None):
     if a.update:
         a.out = a.update
         a.language = folder_language(a.update) or a.language
-    if not a.out or not (a.update or a.nup or (a.romfs and a.exefs)):
+    if not a.out or not (a.update or a.nup or a.already_read or (a.romfs and a.exefs)):
         fail("needs --out, and --nup or --romfs with --exefs")
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
@@ -1845,9 +1849,9 @@ def main(a=None):
     romfs = os.path.join(out, "romfs")
 
     say("stage", "read", "Reading your game files")
-    clear_folder(exefs)
     kept = os.path.join(out, ".hookshot_exefs")   # (the game's code as read, kept in the folder: what an update builds from again)
     if a.update:
+        clear_folder(exefs)
         if not os.path.isdir(kept) or not os.path.isdir(romfs):
             fail("This game folder has no copy of the game files to update from: it was built before updates came in. Choose your game files "
                  "in Hookshot Builder and build into the same folder once; updates after that work by themselves.")
@@ -1856,6 +1860,7 @@ def main(a=None):
         check_modules(exefs)
         stand_in_damaged_files(out, romfs)   # (a folder unpacked by an earlier builder from a 23.3 GB dump)
     elif a.nup:
+        clear_folder(exefs)
         # (what an earlier build left is not kept without a reason to trust it: builders before the compressed .nup fix wrote those files as
         # they lay, so a folder they left held broken game data, and the game crashed at start over its empty dictionaries)
         game = os.path.join(out, ".game")
@@ -1907,7 +1912,14 @@ def main(a=None):
         check_modules(exefs)
         # (also when the .nup was read before: a folder built from a 23.3 GB dump by an earlier builder gets them too)
         stand_in_damaged_files(out, romfs)
+    elif a.already_read:
+        # (the Flutter builder's Rust engine read the .nup: stage::prepare_json
+        # wrote work/exefs, out/romfs and the .hookshot_* cache already)
+        if not os.path.isdir(exefs) or not os.path.isdir(romfs) or not os.path.isdir(kept):
+            fail("The Rust engine did not leave the game files it read: work/exefs, out/romfs and out/.hookshot_exefs are "
+                 "needed. Build again from the .nup.")
     else:
+        clear_folder(exefs)
         check_cache_paths(out, (kept, romfs))
         refuse_dump_links(a.exefs)
         refuse_dump_links(a.romfs)

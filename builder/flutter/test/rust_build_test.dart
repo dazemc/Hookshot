@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hookshot_builder/backend/rust_build.dart';
+import 'package:hookshot_builder/engine.dart';
 import 'package:path/path.dart' as p;
 
 void main() {
@@ -26,6 +27,16 @@ void main() {
       },
     );
 
+    test('finds the CLI bundled beside the app libraries', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-rust-lib-');
+      addTearDown(() => tmp.delete(recursive: true));
+      final name = Platform.isWindows ? 'hookshot_engine.exe' : 'hookshot_engine';
+      final cli = File(p.join(tmp.path, 'lib', name));
+      cli.createSync(recursive: true);
+
+      expect(rustEngineCli(override: '', root: tmp.path, exeDir: tmp.path), cli.path);
+    });
+
     test('a missing CLI keeps the Python build', () async {
       final tmp = await Directory.systemTemp.createTemp(
         'hookshot-no-rust-cli-',
@@ -34,6 +45,21 @@ void main() {
       expect(
         rustEngineCli(override: '', root: tmp.path, exeDir: tmp.path),
         isNull,
+      );
+    });
+
+    test('a missing CLI is a typed error for a NUP build', () async {
+      final tmp = await Directory.systemTemp.createTemp(
+        'hookshot-no-rust-nup-',
+      );
+      addTearDown(() => tmp.delete(recursive: true));
+      expect(
+        () => requireRustEngineCli(
+          override: '',
+          root: tmp.path,
+          exeDir: tmp.path,
+        ),
+        throwsA(isA<RustEngineMissing>()),
       );
     });
   });
@@ -84,6 +110,72 @@ void main() {
           cli: null,
         ),
         isFalse,
+      );
+    });
+  });
+
+  group('NUP routing', () {
+    test('only a NUP input is read by the engine first', () {
+      expect(rustNupApplies(kind: 'nup'), isTrue);
+      expect(rustNupApplies(kind: 'folders'), isFalse);
+    });
+
+    test('the prepare request names build.prepare and its folders', () {
+      final request = jsonDecode(
+        rustPrepareRequest(
+          nup: '/games/My Game.nup',
+          out: '/games/Hookshot',
+          work: '/cache/hookshot-builder',
+        ),
+      );
+      expect(request, {
+        'command': 'build.prepare',
+        'nup': '/games/My Game.nup',
+        'out': '/games/Hookshot',
+        'work': '/cache/hookshot-builder',
+      });
+    });
+
+    test('the Python stage after the read skips reading the .nup again', () {
+      expect(
+        rustNupPythonArgs(
+          out: '/games/Hookshot',
+          work: '/cache/hookshot-builder',
+          language: 'fr',
+        ),
+        [
+          '--already-read',
+          '--out',
+          '/games/Hookshot',
+          '--work',
+          '/cache/hookshot-builder',
+          '--language',
+          'fr',
+        ],
+      );
+      expect(
+        rustNupPythonArgs(
+          out: '/games/Hookshot',
+          work: '/cache/hookshot-builder',
+          language: 'fr',
+          jobs: '4',
+          prepare: false,
+          dlss: true,
+        ),
+        [
+          '--already-read',
+          '--out',
+          '/games/Hookshot',
+          '--work',
+          '/cache/hookshot-builder',
+          '--language',
+          'fr',
+          '--jobs',
+          '4',
+          '--no-prepare-shaders',
+          '--fetch-ngx-sdk',
+          '--accept-nvidia-license',
+        ],
       );
     });
   });
