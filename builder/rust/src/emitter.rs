@@ -179,6 +179,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_load_into_xzr_has_empty_text() {
+        let Ok((texts, flags)) = translate(&[(0x1000, 0xF940_3A7F)]) else {
+            return; // the shared translator is not built
+        };
+        assert_eq!(texts[0], "");
+        assert_eq!(flags[0], 0);
+    }
+
+    #[test]
     fn translates_a_nop_and_an_add() {
         let Ok((texts, flags)) = translate(&[(0x1000, 0xD503_201F), (0x1004, 0x9100_0000)]) else {
             return; // the shared translator is not built
