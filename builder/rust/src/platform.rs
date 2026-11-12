@@ -53,12 +53,9 @@ impl Platform {
     }
 
     /// Where the builder's own standalone build leaves the Vulkan back end
-    /// when the caller did not name one.
-    pub fn built_vulkan(self, root: &Path, work: &Path) -> PathBuf {
-        match self {
-            Self::Linux => root.join("build-linux/vk-work/sa/build/hookshot_vk.so"),
-            Self::Windows => work.join("sa/build/hookshot_vk.dll"),
-        }
+    /// when the caller did not name one: nx2/build.py's `work/sa/build`.
+    pub fn built_vulkan(self, _root: &Path, work: &Path) -> PathBuf {
+        work.join("sa/build").join(self.vulkan_library())
     }
 }
 
@@ -88,7 +85,7 @@ mod tests {
         let work = Path::new("/repo/work");
         assert_eq!(
             Platform::Linux.built_vulkan(root, work),
-            root.join("build-linux/vk-work/sa/build/hookshot_vk.so")
+            work.join("sa/build/hookshot_vk.so")
         );
         assert_eq!(
             Platform::Windows.built_vulkan(root, work),

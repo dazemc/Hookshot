@@ -414,6 +414,35 @@ mod tests {
     }
 
     #[test]
+    fn a_linux_package_takes_the_built_vulkan_backend_from_the_work_folder() {
+        let base = temp("linux-built-vulkan");
+        let work = base.join("work");
+        let out = base.join("out");
+        fs::create_dir_all(work.join("sa/image")).unwrap();
+        fs::write(work.join("sa/image/image.bin"), b"image").unwrap();
+        fs::create_dir_all(work.join("sa/build")).unwrap();
+        fs::write(work.join("sa/build/hookshot_vk.so"), b"vk").unwrap();
+        fs::create_dir_all(out.join("bin")).unwrap();
+        fs::write(out.join("bin/hookshot"), b"exe").unwrap();
+        let answer = package_json_on(
+            Platform::Linux,
+            work.to_str().unwrap(),
+            out.to_str().unwrap(),
+            "",
+            "",
+            "",
+            "en-US",
+        )
+        .unwrap();
+        assert_eq!(answer["vk"], true);
+        assert_eq!(
+            fs::read(out.join("bin/hookshot_vk.so")).unwrap(),
+            b"vk".to_vec()
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn linux_package_keeps_the_appimage_layout() {
         let base = temp("linux-package");
         let work = base.join("work");
