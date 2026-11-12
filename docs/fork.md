@@ -129,6 +129,13 @@ commits, not upstream ancestors. Ported recently:
 - **Graphics tab sections (#2177)**: the Graphics rows are grouped under Resolution and upscaling, Frame generation
   and latency, Screen, HDR, Detail, and GPU and memory, with the section titles skipped by selection. A game-free
   source check pins the order and grouping.
+- **Native HDR tone mapper (#2481, upstream `ddb156df`)**: the HDR section's Tone mapper row (Vanilla, PsychoV35),
+  saved as `hdr_tone_mapper`, shown only with HDR set to Native. PsychoV35 is RenoDX's scene tone map (MIT, provenance
+  and licence in `gpu/PROVENANCE.md` and `gpu/vk/eden/shader_recompiler/ir_opt/LICENSE-renodx.md`), emitted as IR by
+  `ir_opt/scene_tonemap_pass.h` over the game's own exposure and peak reads. With the row on, `HOS_OPT_HDR_TONEMAP`
+  (47) makes `host/nn_vi.c` set `hos_scene_rgba16f`, and `builder/rust/src/oot_patches.rs` makes the game's scene
+  buffer RGBA16F; the program key gets a PsychoV35 variant and only those programs retranslate. `tests/scene_tonemap_ir.cpp`
+  checks the pass on synthetic programs, and Rust source checks cover the menu, host, patch injection and idempotency.
 - **A native 5120x2160 widescreen picture (#2120)**: a 21:9 screen at the 4K output gets its native shape instead of
   a stretched 4416x1864 one; the pixel cap is 5120x2160's, `HOS_WIDE_MAX_PX` lowers it, and a 32:9 screen stays
   capped. `tests/wide_size_test.c` checks the shapes in CI.
@@ -186,7 +193,8 @@ commits, not upstream ancestors. Ported recently:
   terrain/writeback/heap fixes, NUP/Python builder fixes.
 
 Remaining large areas are FSR 3.1's HDR colour (it still takes the chain's LDR pair; upstream lists that as a
-follow-up), Native HDR, the guide lines and hand-drawn controller bodies, AV1/dav1d edge cases, aspect-ratio and
+follow-up), Native HDR's upscalers (DLSS/FSR/TAAU still take only the B10G11R11 scene, so PsychoV35 runs the game's
+own upscale), the guide lines and hand-drawn controller bodies, AV1/dav1d edge cases, aspect-ratio and
 translated-menu features, hardware-specific Vulkan fixes, Flutter equivalents of the Tk/WPF UI commits, docs and
 game-derived pipeline assets.
 Do not port game-derived pipeline lists or generated game data.
