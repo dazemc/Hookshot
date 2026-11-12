@@ -795,6 +795,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             "void f_{entry:08x}(Ctx *__restrict A64_NOESC c) {{"
         )];
         let pcs: Vec<u64> = body.keys().copied().collect();
+        let dead = self.dead_flags(entry, body, &pcs, texts);
         for (index, pc) in pcs.iter().copied().enumerate() {
             let kind = body[&pc];
             let word = self.code.word(pc).unwrap_or(0);
@@ -809,6 +810,10 @@ impl<'a, C: Code> Lifter<'a, C> {
                         out.push(format!("a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"));
                         falls = false;
                     } else {
+                        let text = dead
+                            .get(&pc)
+                            .map(|mask| crate::text::drop_flag_stores(text, *mask))
+                            .unwrap_or_else(|| text.to_owned());
                         out.push(text.trim_end_matches('\n').to_owned());
                     }
                 }
@@ -886,6 +891,113 @@ impl<'a, C: Code> Lifter<'a, C> {
         }
         out.push("}".to_owned());
         out.join("\n") + "\n"
+    }
+
+    fn dead_flags(
+        &self,
+        entry: u64,
+        body: &BTreeMap<u64, Kind>,
+        pcs: &[u64],
+        texts: &[String],
+    ) -> BTreeMap<u64, u8> {
+        const COND_READS: [u8; 16] = [4, 4, 2, 2, 8, 8, 1, 1, 6, 6, 9, 9, 13, 13, 0, 0];
+        let n = pcs.len();
+        let at: std::collections::HashMap<u64, usize> =
+            pcs.iter().enumerate().map(|(i, pc)| (*pc, i)).collect();
+        let mut reads = vec![0u8; n];
+        let mut kills = vec![0u8; n];
+        let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut exits = vec![0u8; n];
+        for (i, pc) in pcs.iter().copied().enumerate() {
+            let kind = body[&pc];
+            let mut targets = Vec::new();
+            let mut falls = true;
+            match kind {
+                Kind::Op => {
+                    let text = texts.get(i).map(String::as_str).unwrap_or("");
+                    let (r, w) = crate::text::flag_masks(text);
+                    reads[i] = r;
+                    kills[i] = w;
+                }
+                Kind::B(target) => {
+                    targets.push(target);
+                    falls = false;
+                }
+                Kind::BCond(target, cond) => {
+                    reads[i] = COND_READS[cond as usize];
+                    targets.push(target);
+                }
+                Kind::Cbz(target, _, _, _) | Kind::Tbz(target, _, _, _) => targets.push(target),
+                Kind::Bl(target) => {
+                    if !self.entries.contains(&target) {
+                        reads[i] = 15;
+                        falls = false;
+                    } else {
+                        kills[i] = 15;
+                    }
+                }
+                Kind::Blr(_) => kills[i] = 15,
+                Kind::Ret(_) => falls = false,
+                Kind::Br(_) => {
+                    targets.extend(self.jt.get(&pc).into_iter().flatten().copied());
+                    falls = false;
+                    exits[i] = 15;
+                }
+                Kind::Svc(_) => reads[i] = 15,
+                Kind::Trap => {
+                    reads[i] = 15;
+                    falls = false;
+                }
+                _ => {}
+            }
+            if falls {
+                targets.push(pc + 4);
+            }
+            for target in targets {
+                if target != entry && body.contains_key(&target) || target == entry {
+                    if let Some(j) = at.get(&target) {
+                        succ[i].push(*j);
+                    } else {
+                        exits[i] = 15;
+                    }
+                } else {
+                    exits[i] = 15;
+                }
+            }
+        }
+        let mut live = vec![0u8; n];
+        loop {
+            let mut changed = false;
+            for i in (0..n).rev() {
+                let mut out = exits[i];
+                for j in &succ[i] {
+                    out |= live[*j];
+                }
+                let value = reads[i] | (out & !kills[i]);
+                if value != live[i] {
+                    live[i] = value;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut dead = BTreeMap::new();
+        for (i, pc) in pcs.iter().copied().enumerate() {
+            if kills[i] == 0 {
+                continue;
+            }
+            let mut out = exits[i];
+            for j in &succ[i] {
+                out |= live[*j];
+            }
+            let mask = kills[i] & !out;
+            if mask != 0 {
+                dead.insert(pc, mask);
+            }
+        }
+        dead
     }
 
     fn transfer(&self, pc: u64, target: u64, body: &BTreeMap<u64, Kind>) -> String {
@@ -1021,6 +1133,20 @@ mod tests {
                 unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast::<u8>().add(at), size) };
             Some(bytes)
         }
+    }
+
+    #[test]
+    fn dead_flags_after_a_return_are_dropped() {
+        let mock = Mock(vec![0x9100_0000, 0xD65F_03C0]);
+        let lift = Lifter::new(&mock, [0]);
+        let mut body = BTreeMap::new();
+        body.insert(0, Kind::Op);
+        body.insert(4, Kind::Ret(30));
+        let pcs = vec![0, 4];
+        let texts = vec!["c->n=1; c->z=2;".to_owned(), "return;".to_owned()];
+        let dead = lift.dead_flags(0, &body, &pcs, &texts);
+        assert_eq!(dead.get(&0), Some(&12));
+        assert_eq!(crate::text::drop_flag_stores(&texts[0], 12), " ");
     }
 
     #[test]
