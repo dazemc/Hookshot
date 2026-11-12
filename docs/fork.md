@@ -121,6 +121,11 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **Adjustable field of view #2357**: Gameplay's **Field of view** row scales camera zero's vertical angle from 50% to
+  150% before projection and culling, saving `field_of_view`; 100% is the game's own view, and cutscenes, other views
+  and scripted events keep their angles. The Python patch's site check is a Rust after-site with all three original
+  words, and `host/oot_fov.c` applies the live choice. Game-free fixtures cover the hook, the host helper's bounds and
+  camera ownership, the menu row and option IDs; the Vulkan backend builds with the change.
 - **2 DLSS/V-Sync fixes**: V-Sync Auto follows the Frame Gen runtime's real frame limit (#2701); a failed DLSS
   feature is retried when a menu setting changes, not for the rest of the run (#2550).
 - **4 Vulkan memory/perf fixes**: GPU-written mirrors are kept instead of remade empty (cyan after a pause or reload,
@@ -155,7 +160,7 @@ commits, not upstream ancestors. Ported recently:
 - Earlier: teleport minimap repair, save-folder links, FPS sound/solver/water/time-of-day, AMD/Intel shader fixes,
   terrain/writeback/heap fixes, NUP/Python builder fixes.
 
-Remaining large areas are FSR 3.1, Native HDR, Reflex, AV1/dav1d, keyboard prompts, FOV, aspect-ratio/menu features,
+Remaining large areas are FSR 3.1, Native HDR, Reflex, AV1/dav1d, keyboard prompts, aspect-ratio/menu features,
 hardware-specific Vulkan fixes, Flutter equivalents of the Tk/WPF UI commits, docs and game-derived pipeline assets.
 Do not port game-derived pipeline lists or generated game data.
 

@@ -284,6 +284,7 @@ number is not the obvious one:
 | `mouse_sensitivity` | hundredths: 100 is 1.00 |
 | `robust_buffers` | 0 Auto (on), 1 Off, 2 On |
 | `game_speed` | 0 Per frame, 1 Real time |
+| `field_of_view` | 50 to 150 percent of the current vertical gameplay FOV; 100 is the original. Applies immediately, before projection and culling. The resulting vertical angle stays within 5 to 140 degrees |
 | `text_speed` | 0 Normal, 1 2x, 2 4x, 3 Instant |
 | `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
 | `mouse_camera` | 0 As the stick, 1 Native |
