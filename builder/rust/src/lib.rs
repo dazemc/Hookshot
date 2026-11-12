@@ -31,6 +31,7 @@ mod rtgen;
 mod shader;
 mod split_hot;
 mod stage;
+mod standalone;
 mod text;
 mod toolchain;
 mod ui_fonts;
@@ -370,6 +371,11 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.kit" => kit::json(),
         "build.ui_fonts" => ui_fonts::write_json(&string(&request, "out").unwrap_or_default()),
+        "build.standalone" => standalone::write_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "gen").unwrap_or_default(),
+            &string(&request, "host").unwrap_or_default(),
+        ),
         "build.win_manifest" => {
             win_manifest::write_json(&string(&request, "out").unwrap_or_default())
         }
