@@ -422,7 +422,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         if (r.value) rec_value::finished_in(value_rec, r.value, seq);
         rec_open_values.clear();
         while (value_rec.size() > 8192) value_rec.erase(value_rec.begin());
-        if (r.part) part_rec.emplace_hint(part_rec.end(), r.part, seq);
+        if (r.part) rec_value::part_finished_in(part_rec, r.part, seq);
         while (part_rec.size() > 8192) part_rec.erase(part_rec.begin());
         rec_map_cv.notify_all();
     };
@@ -2263,14 +2263,9 @@ bool wait_recorded_part(uint64_t part, uint64_t timeout_ns, int* ok) {
     uint64_t seq = 0;
     {
         std::unique_lock mk(rec_map_mu);
-        const auto known = [&] {
-            auto it = part_rec.find(part);
-            if (it == part_rec.end()) return false;
-            seq = it->second;
-            return true;
-        };
+        const auto known = [&] { return rec_value::part_known(part_rec, part, &seq); };
         if (!known()) {
-            if (!part_rec.empty() && part_rec.rbegin()->first > part) return false;   // (a newer part is in: this one will not come)
+            if (rec_value::part_impossible(part_rec, part)) return false;   // (a newer part is in: this one will not come)
             if (!rec_map_cv.wait_for(mk, std::chrono::milliseconds(250), known)) return false;
         }
     }

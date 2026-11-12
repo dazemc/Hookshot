@@ -40,6 +40,23 @@ int main() {
     expect(seq_of(value_rec, 12) == 9, "the latest recording wins whatever order the parts are noted in");
     expect(value_rec.size() == 3, "each value one entry");
 
+    // (a recording's part -> the seq that submitted it: parts are submitted in order, and a wait for an older part
+    // must not mistake a newer one for it)
+    std::map<uint64_t, uint64_t> part_rec;
+    rec_value::part_finished_in(part_rec, 1, 10);
+    rec_value::part_finished_in(part_rec, 2, 11);
+    rec_value::part_finished_in(part_rec, 3, 12);
+    uint64_t seq = 0;
+    expect(rec_value::part_known(part_rec, 2, &seq) && seq == 11, "a part names the recording that submitted it");
+    expect(!rec_value::part_known(part_rec, 4, &seq), "a part not submitted yet is not known");
+    expect(!rec_value::part_impossible(part_rec, 4), "a newer part may still come");
+    expect(rec_value::part_impossible(part_rec, 0), "a part older than the newest in the map will not come");
+    rec_value::part_finished_in(part_rec, 2, 13);   // (noted again: the newest seq stays, as a fence wait needs)
+    expect(rec_value::part_known(part_rec, 2, &seq) && seq == 13, "a part noted twice keeps the newest recording");
+    rec_value::part_finished_in(part_rec, 2, 9);
+    expect(rec_value::part_known(part_rec, 2, &seq) && seq == 13, "an older note does not take a part back");
+    expect(part_rec.size() == 3, "parts leave one entry each");
+
     if (failures) {
         std::printf("FAILED: %d\n", failures);
         return 1;
