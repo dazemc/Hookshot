@@ -473,8 +473,18 @@ fn the_menu_rows_and_the_language_file_are_wired() {
         "the row does not start at language.txt's"
     );
     assert!(
-        menu.contains("r.value == &opts.game_lang"),
+        menu.contains("} else if (r.value && r.value != &opts.game_lang) {"),
         "the options file takes the game's language"
+    );
+    assert!(
+        menu.contains(
+            "if (!r.value || r.value == &opts.game_lang || strcmp(line, ini_key(r))) continue;"
+        ),
+        "the options file loads the game's language instead of language.txt's"
+    );
+    assert!(
+        menu.contains("k[n++] = *p == ' ' ? '_' : (char)tolower(*p);"),
+        "the menu's language is not saved as menu_language by its row name"
     );
     assert!(
         menu.contains("void game_lang_tick()"),
