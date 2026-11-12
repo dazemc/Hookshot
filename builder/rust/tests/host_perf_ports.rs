@@ -1,6 +1,6 @@
 // Game-free checks of the host/runtime performance ports: the short-sleep poller cap and the spin before a wait sleeps
 // (upstream NotRexed/Hookshot 376d0681), the native zstd stream decode (a2766f9c), the short command buffer's skipped
-// dry pass (685133b3), the segment-heap preparation (upstream PR 2895) and the HOS_CHAIN recorder (57ed3aa8). The C and
+// dry pass (685133b3) and the HOS_CHAIN recorder (57ed3aa8). The C and
 // C++ fixtures are cut out of the sources as they are and compiled with the host compiler; a machine with no compiler
 // skips them, as CI's Rust job may have none on Windows.
 
@@ -71,15 +71,9 @@ fn scratch(name: &str) -> PathBuf {
 
 fn compile(name: &str, source_text: &str, ext: &str, flags: &[&str]) -> Option<(PathBuf, PathBuf)> {
     let (cc, std) = if ext == "c" {
-        (
-            compiler("CC", &["cc", "gcc", "clang"]),
-            "-std=c11",
-        )
+        (compiler("CC", &["cc", "gcc", "clang"]), "-std=c11")
     } else {
-        (
-            compiler("CXX", &["c++", "g++", "clang++"]),
-            "-std=c++20",
-        )
+        (compiler("CXX", &["c++", "g++", "clang++"]), "-std=c++20")
     };
     let cc = cc?;
     let dir = scratch(name);
@@ -222,8 +216,15 @@ int main(void) {{
         sync.contains("hos_spin_ns()") && !sync.contains("static int64_t spin_ns(void)"),
         "nn_os_sync.c still has its own spin length"
     );
-    for switch in ["HOS_SHORT_SLEEP_POLLERS", "HOS_SPIN_OTHER_US", "HOS_SHORT_SLEEP_TIMER"] {
-        assert!(host.contains(switch), "hos_thread.c no longer reads {switch}");
+    for switch in [
+        "HOS_SHORT_SLEEP_POLLERS",
+        "HOS_SPIN_OTHER_US",
+        "HOS_SHORT_SLEEP_TIMER",
+    ] {
+        assert!(
+            host.contains(switch),
+            "hos_thread.c no longer reads {switch}"
+        );
     }
 }
 
@@ -280,7 +281,10 @@ int main(int argc, char **argv) {{
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().unwrap()
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<i64>()
+            .unwrap()
     };
     let case_other = |threads: &str, serial: &str, spin_us: &str, other_us: &str| {
         let out = run(&exe, &[threads, serial, spin_us, other_us]);
@@ -290,7 +294,10 @@ int main(int argc, char **argv) {{
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        String::from_utf8_lossy(&out.stdout).trim().parse::<i64>().unwrap()
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<i64>()
+            .unwrap()
     };
     // (16 processors: the serial threads keep 20 us, the others spin 5 us; 6 or fewer: one length for all)
     assert_eq!(case("16", "0", "-"), 5_000);
@@ -500,13 +507,28 @@ void hos_log(const char *fmt, ...);
     .map(|f| zstd.join(f))
     .collect();
     sources.push(dir.join("fixture.c"));
-    let exe = dir.join(if cfg!(windows) { "fixture.exe" } else { "fixture" });
+    let exe = dir.join(if cfg!(windows) {
+        "fixture.exe"
+    } else {
+        "fixture"
+    });
     let mut build = Command::new(&cc);
     build
-        .args(["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-DZSTD_DISABLE_ASM", "-D_GNU_SOURCE"])
+        .args([
+            "-std=c11",
+            "-O1",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-DZSTD_DISABLE_ASM",
+            "-D_GNU_SOURCE",
+        ])
         .arg(format!("-I{}", dir.display()))
         .arg(format!("-I{}", zstd.display()))
-        .arg(format!("-include{}", root().join("gpu/vk/compat/hookshot_env.h").display()))
+        .arg(format!(
+            "-include{}",
+            root().join("gpu/vk/compat/hookshot_env.h").display()
+        ))
         .args(&sources)
         .arg("-o")
         .arg(&exe);
@@ -516,7 +538,13 @@ void hos_log(const char *fmt, ...);
         "{cc}: {}",
         String::from_utf8_lossy(&built.stderr)
     );
-    for (mode, want) in [(0, "ok: off"), (1, "ok: mode 1"), (2, "ok: mode 2"), (3, "ok: unaligned"), (4, "ok: bad frame")] {
+    for (mode, want) in [
+        (0, "ok: off"),
+        (1, "ok: mode 1"),
+        (2, "ok: mode 2"),
+        (3, "ok: unaligned"),
+        (4, "ok: bad frame"),
+    ] {
         let out = run(&exe, &[&mode.to_string()]);
         assert!(
             out.status.success(),
@@ -546,7 +574,10 @@ fn a_short_command_buffer_skips_the_dry_pass() {
         + ops_at;
     let ops = &header[ops_at..ops_end];
     let work = definition(&replay, "bool op_is_work(uint32_t op) {");
-    let count = definition(&replay, "int64_t stream_work(const uint8_t* p, int64_t most) {");
+    let count = definition(
+        &replay,
+        "int64_t stream_work(const uint8_t* p, int64_t most) {",
+    );
     // (the dry pass counts with the same op test, and the short decision comes before it)
     let handle_at = replay
         .find("const uint8_t* replay_handle(")
@@ -563,7 +594,11 @@ fn a_short_command_buffer_skips_the_dry_pass() {
         "the dry pass still runs before the short command buffer is decided"
     );
     let short = &handle[short_at..dry_at];
-    for part in ["replay(cmd, state, h);", "split_off = true;", "split_off = was_split;"] {
+    for part in [
+        "replay(cmd, state, h);",
+        "split_off = true;",
+        "split_off = was_split;",
+    ] {
         assert!(
             short.contains(part),
             "the short command buffer's recording misses {part}"
@@ -578,9 +613,14 @@ fn a_short_command_buffer_skips_the_dry_pass() {
         split.contains("if (split_off ||"),
         "maybe_split no longer leaves a short command buffer whole"
     );
-    let dry = &replay[replay.find("if (op_is_work(h.op)) {").expect("the dry pass's op test is gone")..];
+    let dry = &replay[replay
+        .find("if (op_is_work(h.op)) {")
+        .expect("the dry pass's op test is gone")..];
     assert!(
-        dry[..dry.find("p += h.size;").expect("the dry pass's end is gone")].contains("++dry_work"),
+        dry[..dry
+            .find("p += h.size;")
+            .expect("the dry pass's end is gone")]
+            .contains("++dry_work"),
         "the dry pass no longer counts its work with op_is_work"
     );
 
@@ -617,7 +657,9 @@ int main() {{
 "#
     );
     let Some((dir, exe)) = compile("parallel-small-cb", &fixture, "cpp", &[]) else {
-        eprintln!("skipping the short command buffer fixture: no C++ compiler (CXX, c++, g++ or clang++)");
+        eprintln!(
+            "skipping the short command buffer fixture: no C++ compiler (CXX, c++, g++ or clang++)"
+        );
         return;
     };
     let out = run(&exe, &[]);
@@ -629,4 +671,269 @@ int main() {{
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: a short command buffer"));
+}
+#[test]
+fn the_chain_recorder_stays_off_until_asked_and_writes_its_records() {
+    if cfg!(windows) {
+        // (the fixture starts the recorder's thread with pthreads; the Windows recorder is plain Win32 and builds there)
+        return;
+    }
+    let fixture = r#"#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <windows.h>
+#include "hos.h"
+static Ctx ctx;
+static int64_t now;
+static int logs;
+HosThread *hos_self(void) { return (HosThread *)1; }
+Ctx *hos_ctx(void) { return &ctx; }
+const char *hos_thread_name(HosThread *t) { (void)t; return "MainThread"; }
+int64_t hos_now_ns(void) { return now += 1000; }
+void hos_log(const char *fmt, ...) { (void)fmt; logs++; }
+typedef struct { LPTHREAD_START_ROUTINE fn; void *arg; } Start;
+static void *start_run(void *p) {
+    Start *s = (Start *)p;
+    s->fn(s->arg);
+    free(s);
+    return NULL;
+}
+HANDLE CreateThread(void *attr, SIZE_T stack, LPTHREAD_START_ROUTINE fn, void *arg, DWORD flags, DWORD *id) {
+    (void)attr; (void)stack; (void)flags; (void)id;
+    Start *s = (Start *)malloc(sizeof *s);
+    s->fn = fn, s->arg = arg;
+    pthread_t t;
+    if (pthread_create(&t, NULL, start_run, s)) return NULL;
+    pthread_detach(t);
+    return (HANDLE)1;
+}
+void Sleep(DWORD ms) { usleep((useconds_t)ms * 1000); }
+#include "hos_chain.c"
+typedef struct { int64_t t; uint64_t key, lr; uint16_t thread; uint8_t kind; uint8_t pad[5]; } Rec;
+static int wait_for(int (*done)(const char *), const char *path) {
+    for (int i = 0; i < 200; i++) {
+        if (done(path)) return 1;
+        Sleep(10);
+    }
+    return 0;
+}
+static int on(const char *path) { (void)path; return hos_chain_on; }
+static int exists(const char *path) { return access(path, F_OK) == 0; }
+int main(int argc, char **argv) {
+    if (argc != 2) return 2;
+    char go[1024], bin[1024];
+    snprintf(go, sizeof go, "%s.go", argv[1]);
+    snprintf(bin, sizeof bin, "%s", argv[1]);
+    remove(go), remove(bin);
+    /* (off: a note does nothing) */
+    hos_chain_on = 0;
+    hos_chain_note(HOS_CHAIN_WAIT, 0xabc, 0);
+    if (nrecs != 0) return 10;
+    /* (the switch starts the recorder only while <file>.go exists) */
+    setenv("HOS_CHAIN", bin, 1);
+    FILE *g = fopen(go, "wb");
+    if (!g) return 11;
+    fclose(g);
+    hos_chain_start();
+    if (!wait_for(on, bin)) return 12;
+    ctx.x[30] = 0x1234;
+    hos_chain_note(HOS_CHAIN_WAIT, 0xabc, 0);
+    hos_chain_note(HOS_CHAIN_PRESENT, 7, 0x55);
+    if (nrecs != 2) return 13;
+    remove(go);
+    if (!wait_for(exists, bin)) return 14;
+    /* (the file's layout: header, threads, count, then 32-byte records) */
+    FILE *f = fopen(bin, "rb");
+    if (!f) return 15;
+    char line[256];
+    if (!fgets(line, sizeof line, f) || strcmp(line, "HOSCHAIN1\n")) return 16;
+    if (!fgets(line, sizeof line, f) || !strstr(line, "thread 0 MainThread")) return 17;
+    if (!fgets(line, sizeof line, f) || !strstr(line, "records 2")) return 18;
+    Rec r[2];
+    if (fread(r, sizeof r[0], 2, f) != 2) return 19;
+    fclose(f);
+    if (r[0].kind != HOS_CHAIN_WAIT || r[0].key != 0xabc || r[0].lr != 0x1234 || r[0].thread != 0) return 20;
+    if (r[1].kind != HOS_CHAIN_PRESENT || r[1].key != 7 || r[1].lr != 0x55) return 21;
+    if (r[1].t <= r[0].t) return 22;
+    /* (off again: no more records) */
+    hos_chain_on = 0;
+    hos_chain_note(HOS_CHAIN_SIGNAL, 9, 0);
+    if (nrecs != 2) return 23;
+    if (!logs) return 24;
+    puts("PASS: HOS_CHAIN records only while its .go file exists");
+    return 0;
+}
+"#;
+    let dir = scratch("chain");
+    fs::write(
+        dir.join("hos.h"),
+        r#"#pragma once
+#include <stdint.h>
+typedef struct HosThread HosThread;
+typedef struct { uint64_t x[32]; } Ctx;
+enum { HOS_CHAIN_WAIT = 1, HOS_CHAIN_WOKE, HOS_CHAIN_SIGNAL, HOS_CHAIN_SLEEP, HOS_CHAIN_AWAKE, HOS_CHAIN_PRESENT };
+extern volatile int hos_chain_on;
+void hos_chain_note(int kind, uint64_t key, uint64_t lr);
+HosThread *hos_self(void);
+Ctx *hos_ctx(void);
+const char *hos_thread_name(HosThread *t);
+int64_t hos_now_ns(void);
+void hos_log(const char *fmt, ...);
+"#,
+    )
+    .expect("write the chain stand-in hos.h");
+    fs::write(dir.join("fixture.c"), fixture).expect("write the chain fixture");
+    fs::copy(root().join("host/hos_chain.c"), dir.join("hos_chain.c")).expect("copy hos_chain.c");
+    let Some(cc) = compiler("CC", &["cc", "gcc", "clang"]) else {
+        eprintln!("skipping the HOS_CHAIN fixture: no C compiler (CC, cc, gcc or clang)");
+        let _ = fs::remove_dir_all(dir);
+        return;
+    };
+    let exe = dir.join(if cfg!(windows) {
+        "fixture.exe"
+    } else {
+        "fixture"
+    });
+    let build = Command::new(&cc)
+        .args([
+            "-std=c11",
+            "-O1",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-D_GNU_SOURCE",
+            "-pthread",
+        ])
+        .arg(format!("-I{}", dir.display()))
+        .arg(format!("-I{}", root().join("host/posix").display()))
+        .arg(dir.join("fixture.c"))
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("run the C compiler");
+    assert!(
+        build.status.success(),
+        "{cc}: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let path = dir.join("chain.bin");
+    let out = run(&exe, &[path.to_str().unwrap()]);
+    let _ = fs::remove_dir_all(dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: HOS_CHAIN"));
+
+    // (the recorder's notes are wired into the waits, signals, sleeps and presents, and the switch is in the allowed list)
+    let hos = source("host/hos.h");
+    assert!(
+        hos.contains("HOS_CHAIN_WAIT = 1, HOS_CHAIN_WOKE, HOS_CHAIN_SIGNAL, HOS_CHAIN_SLEEP, HOS_CHAIN_AWAKE, HOS_CHAIN_PRESENT"),
+        "the HOS_CHAIN kinds changed"
+    );
+    for (file, needles) in [
+        ("host/hos_main.c", vec!["HOS_CHAIN", "hos_chain_start"]),
+        (
+            "host/nn_os_sync.c",
+            vec!["HOS_CHAIN(HOS_CHAIN_WAIT", "HOS_CHAIN(HOS_CHAIN_SIGNAL"],
+        ),
+        (
+            "host/hos_thread.c",
+            vec![
+                "wake_chain_key",
+                "HOS_CHAIN(HOS_CHAIN_WAIT",
+                "HOS_CHAIN(HOS_CHAIN_SLEEP",
+            ],
+        ),
+        ("host/nvn_native.c", vec!["HOS_CHAIN(HOS_CHAIN_PRESENT"]),
+    ] {
+        let text = source(file);
+        for needle in needles {
+            assert!(text.contains(needle), "{file} misses {needle}");
+        }
+    }
+    assert!(
+        root().join("scripts/chain.py").is_file(),
+        "scripts/chain.py is missing"
+    );
+}
+
+#[test]
+fn the_presenter_queue_is_a_second_graphics_or_a_free_compute_queue() {
+    let Some(cc) = compiler("CXX", &["c++", "g++", "clang++"]) else {
+        eprintln!(
+            "skipping the presenter queue fixture: no C++ compiler (CXX, c++, g++ or clang++)"
+        );
+        return;
+    };
+    let dir = scratch("presenter-queue");
+    let exe = dir.join(if cfg!(windows) {
+        "fixture.exe"
+    } else {
+        "fixture"
+    });
+    let build = Command::new(&cc)
+        .args(["-std=c++17", "-Wall", "-Wextra", "-Werror"])
+        .arg(root().join("tests/presenter_queue_test.cpp"))
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("run the C++ compiler");
+    assert!(
+        build.status.success(),
+        "{cc}: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let out = run(&exe, &[]);
+    let _ = fs::remove_dir_all(dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: the presenter's queue"));
+
+    // (the thread is opt-in, and its queue is only made when the switch asks for it)
+    let main = source("gpu/vk/vk_main.cpp");
+    assert!(
+        main.contains("const bool presenter_wanted = pt_env && atoi(pt_env) != 0;"),
+        "RX_VK_PRESENT_THREAD is no longer off by default in create_device"
+    );
+    assert!(
+        main.contains("presenter_queue_pick(")
+            && main.contains("if (dev.presenter_supported) share(dev.presenter_family);"),
+        "the presenter's queue or the swapchain's sharing is gone"
+    );
+    let replay = source("gpu/vk/vk_replay.cpp");
+    let on = definition(&replay, "bool present_thread_on() {");
+    assert!(
+        on.contains("return e && atoi(e) != 0;"),
+        "RX_VK_PRESENT_THREAD is no longer opt-in in present_thread_on"
+    );
+    let loop_body = definition(&replay, "void presenter_loop() {");
+    assert!(
+        loop_body.contains("vkQueuePresentKHR(dev.presenter_queue, &pi)")
+            && loop_body.contains("presenter_wait_copy(done)")
+            && loop_body.contains("wait_for_present(dev.device, sc, id, 20000000ull)"),
+        "the presenter no longer waits for the copy and presents on its own queue with a limit"
+    );
+    let hand = definition(
+        &replay,
+        "void present_hand_off(uint32_t index, VkFence done) {",
+    );
+    assert!(
+        hand.find("presenter_wait_idle(lk);") < hand.find("presenter.busy = true"),
+        "a present is handed over before the one before is made"
+    );
+    let drain = definition(&replay, "void present_thread_drain() {");
+    assert!(
+        drain.contains("presenter_wait_idle(lk, 5000)"),
+        "present_thread_drain no longer waits with a limit"
+    );
 }
