@@ -76,6 +76,13 @@ pub fn check_symbols_json(shared_object: &str) -> Result<Value, String> {
     }))
 }
 
+fn link_argv(args: &[String], response: &Path, after: &[String]) -> Vec<String> {
+    let mut argv = args.to_vec();
+    argv.push(format!("@{}", response.display()));
+    argv.extend(after.iter().cloned());
+    argv
+}
+
 /// Run a linker command with an object response file.
 pub fn link_json(request: &Value) -> Result<Value, String> {
     let cc = request.get("cc").and_then(Value::as_str).unwrap_or("cc");
@@ -105,11 +112,24 @@ pub fn link_json(request: &Value) -> Result<Value, String> {
                 .collect()
         })
         .unwrap_or_default();
+    // Libraries after the objects: a static library named before them is not
+    // searched for what they need. nx2/build.py writes "@objs.rsp" between the
+    // output options and HOST_LIBS in the same way.
+    let after: Vec<String> = request
+        .get("after")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     let rsp = PathBuf::from(format!("{out}.rsp"));
     write_rsp(&rsp, &objects)?;
     let output = Command::new(cc)
-        .args(&args)
-        .arg(format!("@{}", rsp.display()))
+        .args(link_argv(&args, &rsp, &after))
         .output()
         .map_err(|e| format!("{cc}: {e}"))?;
     let text = format!(
@@ -144,7 +164,22 @@ mod tests {
             fs::read_to_string(&path).unwrap(),
             "\"C:/a b/x.o\"\n\"/tmp/y.o\""
         );
+        write_rsp(&path, &["/tmp/é 游戏/y.o".into()]).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "\"/tmp/é 游戏/y.o\"");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn objects_come_between_the_options_and_the_libraries() {
+        let argv = link_argv(
+            &["-o".to_owned(), "hookshot.exe".to_owned()],
+            Path::new("objs.rsp"),
+            &["-lwinhttp".to_owned(), "-lc++".to_owned()],
+        );
+        assert_eq!(
+            argv,
+            vec!["-o", "hookshot.exe", "@objs.rsp", "-lwinhttp", "-lc++"]
+        );
     }
 
     #[test]

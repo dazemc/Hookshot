@@ -64,6 +64,19 @@ fn which(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// A target-prefixed clang on PATH: a cross build's llvm-mingw that was not
+/// named by HOOKSHOT_MINGW. Its wrapper knows the MinGW sysroot.
+fn mingw_on_path() -> Option<PathBuf> {
+    if cfg!(windows) || !windows() {
+        return None;
+    }
+    which("x86_64-w64-mingw32-clang").or_else(|| which("x86_64-w64-mingw32-clang++"))
+}
+
+fn mingw_build(host: bool) -> bool {
+    mingw(host).is_some() || (!host && mingw_on_path().is_some())
+}
+
 pub fn find(tool: &str, host: bool) -> PathBuf {
     if let Some(mingw) = mingw(host) {
         if tool == "clang" || tool == "clang++" || tool == "lld" || tool.starts_with("llvm-") {
@@ -74,6 +87,20 @@ pub fn find(tool: &str, host: bool) -> PathBuf {
             if path.is_file() {
                 return path;
             }
+        }
+    }
+    // (a cross build on Linux whose llvm-mingw is on PATH rather than named by
+    // HOOKSHOT_MINGW: its wrapper knows the sysroot the target needs)
+    if !host && !cfg!(windows) && windows() {
+        let wrapper = match tool {
+            "clang" => Some("x86_64-w64-mingw32-clang"),
+            "clang++" => Some("x86_64-w64-mingw32-clang++"),
+            _ => None,
+        };
+        if let Some(wrapper) = wrapper
+            && let Some(path) = which(wrapper)
+        {
+            return path;
         }
     }
     let native = tool == "clang" || tool == "clang++" || tool == "lld" || tool.starts_with("llvm-");
@@ -114,7 +141,7 @@ pub fn need(path: &Path) -> Result<PathBuf, String> {
 
 /// `--target=...` and the Windows extensions the code takes for granted.
 pub fn native_target(host: bool) -> Vec<String> {
-    if mingw(host).is_some() {
+    if mingw_build(host) {
         return [
             "--target=x86_64-w64-mingw32",
             "-fms-extensions",
@@ -138,7 +165,7 @@ pub fn native_target(host: bool) -> Vec<String> {
 }
 
 pub fn native_link(host: bool) -> Vec<String> {
-    if mingw(host).is_some() {
+    if mingw_build(host) {
         return [
             "-fuse-ld=lld",
             "-static",
@@ -231,10 +258,14 @@ pub fn default_jobs(gb_per_job: f64) -> usize {
 
 pub fn json() -> Value {
     let clang = find("clang", false);
+    let mingw = mingw(false).or_else(|| {
+        let wrapper = mingw_on_path()?;
+        wrapper.parent()?.parent().map(Path::to_path_buf)
+    });
     json!({
         "windows": windows(),
         "linux": !windows(),
-        "mingw": mingw(false).map(|path| path.to_string_lossy().into_owned()),
+        "mingw": mingw.map(|path| path.to_string_lossy().into_owned()),
         "target": native_target(false),
         "link": native_link(false),
         "clang": clang.to_string_lossy(),

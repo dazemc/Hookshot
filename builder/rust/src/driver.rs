@@ -320,16 +320,26 @@ pub fn plan_json_with(
             path
         };
         let code_flags = {
-            let mut flags = vec![
-                "-O1".to_owned(),
-                "-g0".to_owned(),
-                "-fPIC".to_owned(),
+            let mut flags = vec!["-O1".to_owned(), "-g0".to_owned()];
+            if !crate::toolchain::windows() {
+                flags.push("-fPIC".to_owned());
+            }
+            flags.extend([
                 "-Wno-everything".to_owned(),
                 "-ffp-contract=off".to_owned(),
                 "-mcx16".to_owned(),
                 "-DA64_POLLING".to_owned(),
                 "-DA64_WRITE_TRACK".to_owned(),
-            ];
+            ]);
+            // (a Windows cross build makes COFF objects for the same
+            // host link: nx2/build.py's flags() starts with target())
+            let target = crate::toolchain::native_target(false);
+            if target.is_empty() && crate::toolchain::windows() {
+                // (discovered from PATH: no HOOKSHOT_MINGW to name the target)
+                flags.extend(crate::host_build::mingw_target_flags());
+            } else {
+                flags.extend(target);
+            }
             // (the level this PC runs, and a Steam Deck's Zen 2 tune: #2492)
             flags.extend(crate::host::cpu_flags());
             flags.extend([
