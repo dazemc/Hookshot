@@ -134,6 +134,9 @@ dotnet build builder/HookshotBuilder.sln
 
 You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
 
+For a Windows installation that keeps its own state on an external SSD, see
+[portable Builder setup and relocation](docs/windows-portable-builder.md).
+
 The Windows app's **Build workers** choice applies to builds started from that window. **Automatic** keeps the existing
 `HOOKSHOT_JOBS` override, or the build tools' free-memory policy when no override is set. A number overrides it for that
 build's child process only; more workers need more memory and are not always faster. This choice is not saved: a new

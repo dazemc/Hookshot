@@ -46,7 +46,8 @@ AppImage below. The AppImage is a development image, so building a game from it 
 Vulkan, SPIR-V and VMA headers; a source build needs nothing extra.
 
 - **Windows:** download `HookshotBuilder.exe` from [Releases](https://github.com/dazemc/Hookshot-rs/releases) or the
-  latest development build.
+  latest development build. For a portable install on an external SSD, run it with `--portable`; see
+  [Portable Hookshot Builder](docs/windows-portable-builder.md) for the folder, move and repair behavior.
 - **Linux:** download the AppImage, make it executable, and run it:
   ```sh
   chmod +x Hookshot*.AppImage

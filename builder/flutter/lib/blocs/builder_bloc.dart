@@ -340,7 +340,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     const languages = cfg.languages;
     final code = cfgMap['language'] ?? 'en-US';
     final name = languages.firstWhere((l) => l.$1 == code, orElse: () => languages.first).$2;
-    final out = cfgMap['out'] ?? '${Platform.environment['HOME'] ?? '~'}/Games/Hookshot';
+    final out = cfgMap['out'] ?? cfg.defaultGameFolder();
     return BuilderForm(
       kind: cfgMap['kind'] ?? 'nup',
       nup: cfgMap['nup'] ?? '',
@@ -371,11 +371,22 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
   /// build-linux/deps/cpm, a packaged builder in tools/cpm. The Tk builder and the
   /// AppImage's environment do the same; without it a source build stops at hookshot_vk.so.
   static Map<String, String> _toolEnv() {
+    final env = <String, String>{};
     final root = cfg.toolsRoot();
     for (final cpm in ['$root/cpm', '$root/build-linux/deps/cpm']) {
-      if (Directory(cpm).existsSync()) return {'RX_CPM': cpm};
+      if (Directory(cpm).existsSync()) {
+        env['RX_CPM'] = cpm;
+        break;
+      }
     }
-    return const {};
+    // The setup passes these to the app; a portable folder opened directly
+    // passes them on itself, so the Rust engine writes the game's relative
+    // Builder association and keeps its work files in the same home.
+    if (cfg.isPortable()) {
+      env['HOOKSHOT_SETUP_BASE'] = cfg.builderHome();
+      env['HOOKSHOT_BUILDER_PORTABLE'] = '1';
+    }
+    return env;
   }
 
   bool get switching {
@@ -444,9 +455,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     try {
       final hasRuntime = Directory('$folder/ngx').listSync().any((e) {
         final name = e.path.split(RegExp(r'[/\\]')).last;
-        return name.startsWith('libnvidia-ngx-dlss') ||
-            name == 'nvngx_dlss.dll' ||
-            name == 'nvngx_dlssg.dll';
+        return name.startsWith('libnvidia-ngx-dlss') || name == 'nvngx_dlss.dll' || name == 'nvngx_dlssg.dll';
       });
       final sdk = '${dlssSdkDir()}/LICENSE.txt';
       return hasRuntime && File(sdk).existsSync();
@@ -506,7 +515,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
         'command': 'build.check',
         'nup': s.kind == 'nup' ? s.nup : '',
         'exefs': s.kind == 'nup' ? '' : s.exefs,
-        'work': '${cfg.toolsRoot()}/work',
+        'work': rustBuildWork(),
       });
       add(_CheckReceived(answer['message'] as String? ?? 'The version could not be read.'));
     } catch (error) {

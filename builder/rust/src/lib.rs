@@ -36,6 +36,7 @@ mod orchestrate;
 mod package;
 mod platform;
 mod poll;
+mod portable;
 mod prepare;
 mod profiles;
 mod prompts;

@@ -47,6 +47,8 @@ String dlssSdkDir({
   String? xdgDataHome,
   String? home,
 }) {
+  // (a portable home keeps the SDK beside the Builder, so it moves with it)
+  if (cfg.isPortable()) return p.join(cfg.builderHome(), 'ngx-sdk');
   String read(String name) => Platform.environment[name] ?? '';
   if (windows ?? Platform.isWindows) {
     final local = localAppData ?? read('LOCALAPPDATA');
@@ -63,7 +65,10 @@ String dlssSdkDir({
 }
 
 /// make_game.py's --work default: build files kept apart from the game folder.
+/// A portable home keeps them in the home (the setup's `HOOKSHOT_SETUP_BASE`),
+/// so a moved folder takes its objects and translated code with it.
 String rustBuildWork() {
+  if (cfg.isPortable()) return cfg.builderHome();
   if (Platform.isWindows) {
     final local = Platform.environment['LOCALAPPDATA'];
     return p.join(
