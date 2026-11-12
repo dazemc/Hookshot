@@ -871,10 +871,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             "void f_{entry:08x}(Ctx *__restrict A64_NOESC c) {{"
         )];
         let pcs: Vec<u64> = body.keys().copied().collect();
-        let processed: Vec<String> = texts
-            .iter()
-            .map(|text| crate::text::op_text(text))
-            .collect();
+        let processed: &[String] = texts;
         let mut frame = true;
         for (index, pc) in pcs.iter().copied().enumerate() {
             if matches!(body[&pc], Kind::Op) {
@@ -884,8 +881,8 @@ impl<'a, C: Code> Lifter<'a, C> {
                 }
             }
         }
-        let dead = self.dead_flags(entry, body, &pcs, &processed);
-        let dirty = self.dirty_regs(entry, body, &pcs, &processed);
+        let dead = self.dead_flags(entry, body, &pcs, processed);
+        let dirty = self.dirty_regs(entry, body, &pcs, processed);
         for (index, pc) in pcs.iter().copied().enumerate() {
             let kind = body[&pc];
             let word = self.code.word(pc).unwrap_or(0);
@@ -1018,7 +1015,11 @@ impl<'a, C: Code> Lifter<'a, C> {
     }
 
     pub fn emit_function(&self, entry: u64, texts: &[String]) -> String {
-        crate::text::mark_groups(&self.emit_function_unmarked(entry, texts))
+        let processed: Vec<String> = texts
+            .iter()
+            .map(|text| crate::text::op_text(text))
+            .collect();
+        crate::text::mark_groups(&self.emit_function_unmarked(entry, &processed))
     }
 
     fn dirty_regs(
@@ -1519,23 +1520,145 @@ fn function_key(
     hash.finalize().into()
 }
 
-fn emit_entry<C: Code>(lift: &Lifter<C>, code: &C, entry: u64) -> Result<String, String> {
-    let body = lift
-        .funcs
-        .get(&entry)
-        .ok_or_else(|| format!("function {entry:08x} disappeared"))?;
-    let items: Vec<(u64, u32)> = body
-        .keys()
-        .filter_map(|pc| code.word(*pc).map(|word| (*pc, word)))
-        .collect();
-    let (translated, _) = crate::emitter::translate(&items)?;
-    let by_pc: std::collections::HashMap<u64, String> =
-        items.iter().map(|(pc, _)| *pc).zip(translated).collect();
-    let texts: Vec<String> = body
-        .keys()
-        .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
-        .collect();
-    Ok(lift.emit_function_unmarked(entry, &texts))
+/// The already transformed text of each distinct instruction: shared words
+/// by value, address-naming instructions by address.
+#[derive(Default)]
+struct OpTexts {
+    word: std::collections::HashMap<u32, String>,
+    at: std::collections::HashMap<(u64, u32), String>,
+}
+
+fn translate_in_batches(items: &[(u64, u32)]) -> Result<(Vec<String>, Vec<i32>), String> {
+    let mut texts = Vec::with_capacity(items.len());
+    let mut flags = Vec::with_capacity(items.len());
+    // (a batch of tens of thousands needs a few megabytes, not the 16 MB the
+    // shared translator used to allocate even for a three-instruction call)
+    for chunk in items.chunks(32 * 1024) {
+        let (part, part_flags) = crate::emitter::translate(chunk)?;
+        texts.extend(part);
+        flags.extend(part_flags);
+    }
+    Ok((texts, flags))
+}
+
+/// Translate every distinct instruction of the functions that missed the
+/// cache once, instead of calling the shared translator once per function and
+/// running the text transforms per occurrence. An instruction's text may name
+/// its own address (branches, ADR/ADRP, unhandled words); those keep one entry
+/// per address. Every other word is shared across the whole image.
+fn shared_texts<C: Code>(
+    lift: &Lifter<C>,
+    image: &C,
+    missing: &[(usize, u64, [u8; 20])],
+) -> Result<OpTexts, String> {
+    use std::collections::{HashMap, HashSet};
+    let mut words: HashSet<u32> = HashSet::new();
+    let mut address_ops: HashSet<(u64, u32)> = HashSet::new();
+    for (_, entry, _) in missing {
+        let Some(body) = lift.funcs.get(entry) else {
+            continue;
+        };
+        for (pc, kind) in body {
+            if !matches!(kind, Kind::Op) {
+                continue;
+            }
+            let Some(word) = image.word(*pc) else {
+                continue;
+            };
+            if a64::pc_relative(word) {
+                address_ops.insert((*pc, word));
+            } else {
+                words.insert(word);
+            }
+        }
+    }
+    let at_zero: Vec<(u64, u32)> = words.iter().map(|word| (0, *word)).collect();
+    let at_four: Vec<(u64, u32)> = words.iter().map(|word| (4, *word)).collect();
+    let (zero, flags) = translate_in_batches(&at_zero)?;
+    let (four, _) = translate_in_batches(&at_four)?;
+    // (the shared translator's unhandled flag names the address; the second
+    // address catches any other text that follows it)
+    let mut address_sensitive: HashSet<u32> = HashSet::new();
+    for (index, word) in words.iter().copied().enumerate() {
+        if flags[index] & 1 != 0 || zero[index] != four[index] {
+            address_sensitive.insert(word);
+        }
+    }
+    if !address_sensitive.is_empty() {
+        for (_, entry, _) in missing {
+            let Some(body) = lift.funcs.get(entry) else {
+                continue;
+            };
+            for (pc, kind) in body {
+                if !matches!(kind, Kind::Op) {
+                    continue;
+                }
+                if let Some(word) = image.word(*pc) {
+                    if address_sensitive.contains(&word) {
+                        address_ops.insert((*pc, word));
+                    }
+                }
+            }
+        }
+    }
+    let mut addresses: Vec<(u64, u32)> = address_ops.into_iter().collect();
+    addresses.sort_unstable();
+    let (address_text, _) = translate_in_batches(&addresses)?;
+    let mut out = OpTexts::default();
+    let mut transformed: HashMap<String, String> = HashMap::new();
+    let text_of = |raw: &str, transformed: &mut HashMap<String, String>| {
+        transformed
+            .entry(raw.to_owned())
+            .or_insert_with(|| crate::text::op_text(raw))
+            .clone()
+    };
+    for ((pc, word), raw) in addresses.iter().zip(address_text) {
+        let text = text_of(&raw, &mut transformed);
+        out.at.insert((*pc, *word), text);
+    }
+    for (index, word) in words.iter().copied().enumerate() {
+        if address_sensitive.contains(&word) {
+            continue;
+        }
+        let text = text_of(&zero[index], &mut transformed);
+        out.word.insert(word, text);
+    }
+    Ok(out)
+}
+
+fn processed_texts<C: Code>(
+    lift: &Lifter<C>,
+    image: &C,
+    entry: u64,
+    texts: &OpTexts,
+) -> Vec<String> {
+    let Some(body) = lift.funcs.get(&entry) else {
+        return Vec::new();
+    };
+    body.iter()
+        .map(|(pc, kind)| {
+            if !matches!(kind, Kind::Op) {
+                return String::new();
+            }
+            let word = image.word(*pc).unwrap_or(0);
+            texts
+                .at
+                .get(&(*pc, word))
+                .or_else(|| texts.word.get(&word))
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn emit_entry<C: Code>(
+    lift: &Lifter<C>,
+    image: &C,
+    entry: u64,
+    texts: &OpTexts,
+) -> Result<String, String> {
+    let processed = processed_texts(lift, image, entry, texts);
+    Ok(lift.emit_function_unmarked(entry, &processed))
 }
 
 fn mark_chunk_files(dir: &std::path::Path) -> Result<(), String> {
@@ -1601,16 +1724,17 @@ pub fn write_json(
             misses.push((index, entry, key));
         }
     }
+    let texts = shared_texts(&lift, &image, &misses)?;
     let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(8)
+        .unwrap_or(16)
         .max(1)
         .min(misses.len().max(1));
     let results: Vec<(usize, [u8; 20], Result<String, String>)> = if workers <= 1 {
         let mut out = Vec::new();
         for &(index, entry, key) in &misses {
-            out.push((index, key, emit_entry(&lift, &image, entry)));
+            out.push((index, key, emit_entry(&lift, &image, entry, &texts)));
         }
         out
     } else {
@@ -1620,12 +1744,13 @@ pub fn write_json(
                     let lift = &lift;
                     let image = &image;
                     let misses = &misses;
+                    let texts = &texts;
                     scope.spawn(move || {
                         let mut out = Vec::new();
                         let mut at = worker;
                         while at < misses.len() {
                             let (index, entry, key) = misses[at];
-                            out.push((index, key, emit_entry(lift, image, entry)));
+                            out.push((index, key, emit_entry(lift, image, entry, &texts)));
                             at += workers;
                         }
                         out
@@ -1814,7 +1939,7 @@ pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
         items.iter().map(|(pc, _)| *pc).zip(translated).collect();
     let texts: Vec<String> = body
         .keys()
-        .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
+        .map(|pc| crate::text::op_text(&by_pc.get(pc).cloned().unwrap_or_default()))
         .collect();
     let frame_false: Vec<String> = body
         .keys()
@@ -2136,6 +2261,33 @@ mod tests {
         assert!(text.contains("/* nop/hint */"));
         assert!(text.contains("return;"));
         assert!(text.ends_with("}\n"));
+    }
+
+    #[test]
+    fn shared_texts_translate_each_word_once() {
+        let words = vec![
+            0xD503_201F,
+            0x9100_0000,
+            0xD65F_03C0,
+            0xD503_201F,
+            0x9100_0000,
+            0xD65F_03C0,
+        ];
+        let mock = Mock(words);
+        let mut lift = Lifter::new(&mock, [0, 12]);
+        lift.discover();
+        let missing: Vec<(usize, u64, [u8; 20])> = vec![(0, 0, [0; 20]), (1, 12, [0; 20])];
+        let Ok(texts) = shared_texts(&lift, &mock, &missing) else {
+            return; // (no vendored translator here)
+        };
+        let first = processed_texts(&lift, &mock, 0, &texts);
+        let second = processed_texts(&lift, &mock, 12, &texts);
+        assert_eq!(first.len(), 3);
+        assert_eq!(first, second);
+        assert!(first[0].contains("nop"));
+        assert!(first[1].contains("c->x[0]"));
+        assert!(texts.at.is_empty());
+        assert_eq!(texts.word.len(), 2);
     }
 
     #[test]

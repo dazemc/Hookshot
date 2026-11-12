@@ -100,7 +100,9 @@ pub fn translate(items: &[(u64, u32)]) -> Result<(Vec<String>, Vec<i32>), String
     }
     let pcs: Vec<u64> = items.iter().map(|(pc, _)| *pc).collect();
     let words: Vec<u32> = items.iter().map(|(_, word)| *word).collect();
-    let mut cap = 1usize << 24;
+    // (the caller may translate one instruction or the whole image's distinct
+    // words: size the buffer for this call, then grow only if it says so)
+    let mut cap = items.len().saturating_mul(256).clamp(1 << 12, 1 << 26);
     loop {
         let mut output = vec![0u8; cap];
         let mut offsets = vec![0i64; items.len() + 1];

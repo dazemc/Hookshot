@@ -3,7 +3,7 @@
 
 use regex::Regex;
 use serde_json::{Value, json};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 fn fp_write(text: &str) -> bool {
     if text.contains("&c->x[29]") {
@@ -22,18 +22,31 @@ fn fp_write(text: &str) -> bool {
     }
     false
 }
-fn fp_setup() -> Regex {
-    Regex::new(r"\{ uint64_t _a=c->x\[31\], _b=\d+ULL; uint64_t _r=_a\+_b; c->x\[29\]=_r; \}")
-        .unwrap()
+fn fp_setup() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\{ uint64_t _a=c->x\[31\], _b=\d+ULL; uint64_t _r=_a\+_b; c->x\[29\]=_r; \}")
+            .unwrap()
+    });
+    &RE
 }
-fn fp_restore() -> Regex {
-    Regex::new(r"\{ uint64_t _b=c->x\[31\]; int64_t _o=-?\d+; \{ uint64_t _p0,_p1; recomp_ldp64\(c,[^;]*; c->x\[29\]=_p0; c->x\[30\]=_p1; \}").unwrap()
+fn fp_restore() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\{ uint64_t _b=c->x\[31\]; int64_t _o=-?\d+; \{ uint64_t _p0,_p1; recomp_ldp64\(c,[^;]*; c->x\[29\]=_p0; c->x\[30\]=_p1; \}").unwrap()
+    });
+    &RE
 }
-fn fp_store_pre() -> Regex {
-    Regex::new(r"(\{ uint64_t _b=c->x\[29\]; int64_t _o=-?\d+; )recomp_(store8|store16|store32|store64|stp32|stp64)\(").unwrap()
+fn fp_store_pre() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(\{ uint64_t _b=c->x\[29\]; int64_t _o=-?\d+; )recomp_(store8|store16|store32|store64|stp32|stp64)\(").unwrap()
+    });
+    &RE
 }
-fn fp_store() -> Regex {
-    Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,(\(?)c->x\[29\]").unwrap()
+fn fp_store() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,(\(?)c->x\[29\]")
+            .unwrap()
+    });
+    &RE
 }
 
 /// An instruction's C writes x29 only as frame setup or restore.
@@ -47,11 +60,18 @@ pub fn fp_is_frame(text: &str) -> bool {
     !fp_write(&rest)
 }
 
-fn sp_store_pre() -> Regex {
-    Regex::new(r"(\{ uint64_t _b=c->x\[31\]; int64_t _o=-?\d+; )recomp_(store8|store16|store32|store64|stp32|stp64)\(").unwrap()
+fn sp_store_pre() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(\{ uint64_t _b=c->x\[31\]; int64_t _o=-?\d+; )recomp_(store8|store16|store32|store64|stp32|stp64)\(").unwrap()
+    });
+    &RE
 }
-fn sp_store() -> Regex {
-    Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,(\(?)c->x\[31\]").unwrap()
+fn sp_store() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,(\(?)c->x\[31\]")
+            .unwrap()
+    });
+    &RE
 }
 
 /// Give SP-based stores the stack variants.
@@ -80,7 +100,10 @@ pub fn vectorize_fcmp(text: &str) -> String {
         _ => 0,
     };
     // Scalar FCMP/FCMPE: one helper call guards the exact integer block.
-    let sfcmp = Regex::new(r"\{ uint64_t _a=0,_b=0; memcpy\(&_a,([^;]+?),(4|8)\);(?: memcpy\(&_b,([^;]+?),(4|8)\);)? [^\n]*? c->n=\(uint8_t\)_lt; c->z=\(uint8_t\)_eq; c->c=\(uint8_t\)!_lt; c->v=0; \} \}").unwrap();
+    static SFCMP: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\{ uint64_t _a=0,_b=0; memcpy\(&_a,([^;]+?),(4|8)\);(?: memcpy\(&_b,([^;]+?),(4|8)\);)? [^\n]*? c->n=\(uint8_t\)_lt; c->z=\(uint8_t\)_eq; c->c=\(uint8_t\)!_lt; c->v=0; \} \}").unwrap()
+    });
+    let sfcmp = &*SFCMP;
     let text = sfcmp
         .replace_all(&text, |c: &regex::Captures| {
             if let (Some(b), Some(size2)) = (c.get(3), c.get(4)) {
@@ -97,7 +120,10 @@ pub fn vectorize_fcmp(text: &str) -> String {
             )
         })
         .into_owned();
-    let vfcmp = Regex::new(r"(?s)\{ uint32_t _n\[4\],_m\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); memcpy\(_m,c->vreg\[(\d+)\],16\); for\(int _i=0;_i<([24]);_i\+\+\) \{ .*?if\((_eq\|\|_gt|_gt|_eq)\) _v=~\(uint64_t\)0; \} _r\[_i\]=\(uint32_t\)_v; \} memcpy\(c->vreg\[(\d+)\],_r,16\); \}").unwrap();
+    static VFCMP: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?s)\{ uint32_t _n\[4\],_m\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); memcpy\(_m,c->vreg\[(\d+)\],16\); for\(int _i=0;_i<([24]);_i\+\+\) \{ .*?if\((_eq\|\|_gt|_gt|_eq)\) _v=~\(uint64_t\)0; \} _r\[_i\]=\(uint32_t\)_v; \} memcpy\(c->vreg\[(\d+)\],_r,16\); \}").unwrap()
+    });
+    let vfcmp = &*VFCMP;
     let text = vfcmp
         .replace_all(&text, |c: &regex::Captures| {
             format!(
@@ -111,7 +137,10 @@ pub fn vectorize_fcmp(text: &str) -> String {
             )
         })
         .into_owned();
-    let vfcmpz = Regex::new(r"(?s)\{ uint32_t _n\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); for\(int _i=0;_i<([24]);_i\+\+\) \{ uint64_t (('_a=0,_b=_n\[_i\]|'_a=_n\[_i\],_b=0)),_v=0;.*?if\((_eq\|\|_gt|_gt|_eq)\) _v=~\(uint64_t\)0; \} _r\[_i\]=\(uint32_t\)_v; \} memcpy\(c->vreg\[(\d+)\],_r,16\); \}").unwrap();
+    static VFCMPZ: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?s)\{ uint32_t _n\[4\],_r\[4\]=\{0\}; memcpy\(_n,c->vreg\[(\d+)\],16\); for\(int _i=0;_i<([24]);_i\+\+\) \{ uint64_t (('_a=0,_b=_n\[_i\]|'_a=_n\[_i\],_b=0)),_v=0;.*?if\((_eq\|\|_gt|_gt|_eq)\) _v=~\(uint64_t\)0; \} _r\[_i\]=\(uint32_t\)_v; \} memcpy\(c->vreg\[(\d+)\],_r,16\); \}").unwrap()
+    });
+    let vfcmpz = &*VFCMPZ;
     vfcmpz
         .replace_all(&text, |c: &regex::Captures| {
             let src = format!("c->vreg[{}]", &c[1]);
@@ -161,21 +190,32 @@ pub fn mark_groups(text: &str) -> String {
     out
 }
 
-fn store_re() -> Regex {
-    Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,").unwrap()
+fn store_re() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,").unwrap()
+    });
+    &RE
 }
-fn local_re() -> Regex {
-    Regex::new(r"\bx\d+_ = c->x\[").unwrap()
+fn local_re() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bx\d+_ = c->x\[").unwrap());
+    &RE
 }
-fn own_mark() -> Regex {
-    Regex::new(r"    A64_MARK\(\(c->x\[\d+\] \+ \(uint64_t\)\(int64_t\)\(-?\d+\)\), \d+\);\Z")
-        .unwrap()
+fn own_mark() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"    A64_MARK\(\(c->x\[\d+\] \+ \(uint64_t\)\(int64_t\)\(-?\d+\)\), \d+\);\Z")
+            .unwrap()
+    });
+    &RE
 }
-fn bdef() -> Regex {
-    Regex::new(r"uint64_t _b=c->x\[(\d+)\]; int64_t _o=(-?\d+);").unwrap()
+fn bdef() -> &'static Regex {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"uint64_t _b=c->x\[(\d+)\]; int64_t _o=(-?\d+);").unwrap());
+    &RE
 }
-fn adef() -> Regex {
-    Regex::new(r"uint64_t _a=c->x\[(\d+)\];").unwrap()
+fn adef() -> &'static Regex {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"uint64_t _a=c->x\[(\d+)\];").unwrap());
+    &RE
 }
 
 fn sizes(kind: &str) -> u64 {
@@ -193,31 +233,33 @@ fn parse_store(line: &str, m: &regex::Match) -> Option<(u8, i64, u64)> {
     let rest = &line[m.end()..];
     let kind = &line[m.start()..m.end()];
     let size = sizes(&kind[7..kind.len() - 3]);
-    let x = Regex::new(r"c->x\[(\d+)\] \+ (-?\d+),").unwrap();
-    let xu = Regex::new(r"\(c->x\[(\d+)\]\+(\d+)ULL\),").unwrap();
-    if let Some(c) = x.captures(rest) {
+    static X: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"c->x\[(\d+)\] \+ (-?\d+),").unwrap());
+    static XU: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\(c->x\[(\d+)\]\+(\d+)ULL\),").unwrap());
+    static FORMS: LazyLock<[(Regex, &'static str); 5]> = LazyLock::new(|| {
+        [
+            (Regex::new(r"\(_b\+_o\)\+(\d+),").unwrap(), "bo+"),
+            (Regex::new(r"\(_b\+_o\),").unwrap(), "bo"),
+            (Regex::new(r"_b,").unwrap(), "b"),
+            (Regex::new(r"_a\+(\d+),").unwrap(), "a+"),
+            (Regex::new(r"_a,").unwrap(), "a"),
+        ]
+    });
+    if let Some(c) = X.captures(rest) {
         return Some((c[1].parse().ok()?, c[2].parse().ok()?, size));
     }
-    if let Some(c) = xu.captures(rest) {
+    if let Some(c) = XU.captures(rest) {
         return Some((c[1].parse().ok()?, c[2].parse().ok()?, size));
     }
-    let forms = [
-        (r"\(_b\+_o\)\+(\d+),", "bo+"),
-        (r"\(_b\+_o\),", "bo"),
-        (r"_b,", "b"),
-        (r"_a\+(\d+),", "a+"),
-        (r"_a,", "a"),
-    ];
-    for (pat, kind) in forms {
-        let Ok(rx) = Regex::new(pat) else { continue };
+    for (rx, kind) in FORMS.iter() {
         let Some(c) = rx.captures(rest) else { continue };
         let before = &line[..m.start()];
-        if kind.starts_with('b') || kind == "bo" || kind == "bo+" {
+        if kind.starts_with('b') || *kind == "bo" || *kind == "bo+" {
             let Some(d) = bdef().captures_iter(before).last() else {
                 return None;
             };
             let base: u8 = d[1].parse().ok()?;
-            let off = if kind == "b" {
+            let off = if *kind == "b" {
                 0
             } else {
                 d[2].parse::<i64>().ok()?
@@ -381,7 +423,10 @@ pub fn outline_fpx(text: &str) -> String {
     if !text.contains("RECOMP_FPX_OPEN") {
         return text.to_owned();
     }
-    let guard = Regex::new(r"\{if\(RECOMP_FPX_OPEN\(c\)&&RECOMP_LIKELY\(recomp_fpx_(\w+)\(([^;]*?),RECOMP_FPX_FZ\(c\),&(\w+)\)\)\)\{RECOMP_FPX_PROBE\(\d+\);\}else\{RECOMP_FPX_PROBE\(\d+\);(\w+)=recomp_fpe_(\w+)\(c,([^;]*?)\);\}\}").unwrap();
+    static GUARD: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\{if\(RECOMP_FPX_OPEN\(c\)&&RECOMP_LIKELY\(recomp_fpx_(\w+)\(([^;]*?),RECOMP_FPX_FZ\(c\),&(\w+)\)\)\)\{RECOMP_FPX_PROBE\(\d+\);\}else\{RECOMP_FPX_PROBE\(\d+\);(\w+)=recomp_fpe_(\w+)\(c,([^;]*?)\);\}\}").unwrap()
+    });
+    let guard = &*GUARD;
     guard
         .replace_all(text, |c: &regex::Captures| {
             let fast = &c[1];
@@ -429,7 +474,10 @@ pub fn widen_vstores(text: &str) -> String {
     if !text.contains("c->vreg[") || std::env::var_os("A64_NO_VSET").is_some() {
         return text.to_owned();
     }
-    let low = Regex::new(r"c->vreg\[(\d+)\]\[0\]=0; ?c->vreg\[(\d+)\]\[1\]=0; ?memcpy\(c->vreg\[(\d+)\],(&?\w+),([48])\);").unwrap();
+    static LOW: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"c->vreg\[(\d+)\]\[0\]=0; ?c->vreg\[(\d+)\]\[1\]=0; ?memcpy\(c->vreg\[(\d+)\],(&?\w+),([48])\);").unwrap()
+    });
+    let low = &*LOW;
     let text = low
         .replace_all(text, |c: &regex::Captures| {
             if c[1] != c[2] || c[1] != c[3] {
@@ -438,9 +486,11 @@ pub fn widen_vstores(text: &str) -> String {
             format!("a64_vset_lo(c->vreg[{}],{},{});", &c[1], &c[4], &c[5])
         })
         .into_owned();
-    let pair =
+    static PAIR: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"c->vreg\[(\d+)\]\[0\] ?= ?([^;]+); ?c->vreg\[(\d+)\]\[1\] ?= ?([^;]+);")
-            .unwrap();
+            .unwrap()
+    });
+    let pair = &*PAIR;
     let text = pair
         .replace_all(&text, |c: &regex::Captures| {
             if c[1] != c[3] {
@@ -458,7 +508,9 @@ pub fn widen_vstores(text: &str) -> String {
             format!("a64_vset128(c->vreg[{d}],{lo},{hi});")
         })
         .into_owned();
-    let full = Regex::new(r"memcpy\(c->vreg\[(\d+)\],(\w+),16\);").unwrap();
+    static FULL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"memcpy\(c->vreg\[(\d+)\],(\w+),16\);").unwrap());
+    let full = &*FULL;
     full.replace_all(&text, |c: &regex::Captures| {
         format!("a64_vst16(c->vreg[{}],{});", &c[1], &c[2])
     })
