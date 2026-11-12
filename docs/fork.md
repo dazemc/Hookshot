@@ -204,6 +204,13 @@ commits, not upstream ancestors. Ported recently:
 - **GCN #2343**: f16 is used only where the GPU reports f16 shaders (RADV gives Polaris none), and GCN runs with VRAM
   mirrors and batched submits off by default. The f16 programs carry a cache marker. A headless NVIDIA boot after the
   change ran 13,496 presents at 60 fps with no traps; the RX 580 measurements are upstream's.
+- **AMD/RADV VRAM imports (#2685, #2795, #2825, #2839)**: game memory is imported in 4 MB chunks where a pool's VRAM mirror
+  covers the padding (16 MB without mirrors, as before); a retired pool whose mirror was refused now gives its import back;
+  an import mostly outside every game pool is trimmed to its live parts while VRAM is over 80% (Castle Town's smaller pools
+  no longer keep Hyrule Field's mirror); and on Linux at a 12 GB+ system heap budget the idle live imports are capped at
+  4500 MB, the RADV/amdgpu fix measured at 44-48 -> 63-68 fps over a two-hour session. `RX_VK_IMPORT_CHUNK_MB`,
+  `RX_VK_IMPORT_CAP_MB` and `RX_VK_MIRROR_TRIM=0` still choose. Game-free fixtures cover the chunk default, the refused-mirror
+  condition, the cap rule and the trim rules (`builder/rust/tests/amd_vram.rs`); the RX 9070 XT numbers are upstream's.
 - **RADV/Navi #1965, #2215**: the AMD no-optimizer rule for task and mesh programs excludes Mesa's RADV (the unoptimized
   task program reset the GPU while the Great Deku Tree save loads), and the task+mesh fallback covers 0x73af (RX 6900
   XT XTXH) and 0x73a5 (RX 6950 XT).
