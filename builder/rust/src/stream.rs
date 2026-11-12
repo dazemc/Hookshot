@@ -112,6 +112,10 @@ fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
     let assets = text(request, "assets");
     let vk = text(request, "vk");
     let language = text(request, "language");
+    let prepare = request
+        .get("prepare")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mut protocol = Protocol { out, last: None };
     let result = crate::orchestrate::all_json_with(
         &exefs,
@@ -121,6 +125,7 @@ fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
         &assets,
         &vk,
         &language,
+        prepare,
         &mut |id, text| protocol.stage(id, text),
     );
     match result {

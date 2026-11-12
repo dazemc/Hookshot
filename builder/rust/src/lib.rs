@@ -35,6 +35,7 @@ mod orchestrate;
 mod package;
 mod platform;
 mod poll;
+mod prepare;
 mod profiles;
 mod rtgen;
 mod shader;
@@ -154,6 +155,10 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "assets").unwrap_or_default(),
             &string(&request, "vk").unwrap_or_default(),
             &string(&request, "language").unwrap_or_default(),
+            request
+                .get("prepare")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         ),
         "build.package" => package::package_json(
             &string(&request, "work").unwrap_or_default(),

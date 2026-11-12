@@ -11,6 +11,7 @@ pub fn all_json(
     assets: &str,
     vk: &str,
     language: &str,
+    prepare: bool,
 ) -> Result<Value, String> {
     all_json_with(
         exefs,
@@ -20,6 +21,7 @@ pub fn all_json(
         assets,
         vk,
         language,
+        prepare,
         &mut |_, _| Ok(()),
     )
 }
@@ -35,6 +37,7 @@ pub fn all_json_with(
     assets: &str,
     vk: &str,
     language: &str,
+    prepare: bool,
     say_stage: &mut dyn FnMut(&str, &str) -> Result<(), String>,
 ) -> Result<Value, String> {
     if exefs.is_empty() {
@@ -89,11 +92,24 @@ pub fn all_json_with(
         Ok(value) => value,
         Err(error) => json!({"error": error}),
     };
+    let finish = if prepare {
+        say_stage("prepare", "Preparing the game's shaders")?;
+        let exe = package["exe"].as_str().unwrap_or_default();
+        Some(crate::prepare::finish(
+            &crate::kit::root(),
+            std::path::Path::new(romfs),
+            std::path::Path::new(out),
+            std::path::Path::new(exe),
+        ))
+    } else {
+        None
+    };
     Ok(json!({
         "stage": "packaged",
         "driver": driver,
         "host": host,
         "package": package,
         "shaders": shaders,
+        "prepare": finish,
     }))
 }
