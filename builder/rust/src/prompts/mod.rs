@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+pub mod astc;
 pub mod bfotf;
 pub mod bntx;
 pub mod cache;

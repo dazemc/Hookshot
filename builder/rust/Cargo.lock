@@ -233,6 +233,7 @@ dependencies = [
 name = "hookshot_engine"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "chrono",
  "crc32fast",
  "curl",

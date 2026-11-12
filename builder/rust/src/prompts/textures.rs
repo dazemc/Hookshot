@@ -11,9 +11,20 @@ use std::path::Path;
 
 use ttf_parser::{Face, GlyphId};
 
+use super::astc;
 use super::bntx::{self, Texture};
 use super::raster::{self, Mask};
 use super::{faces, zs};
+
+/// The note textures, and the Switch button whose line they label.
+const NOTES: [(&str, u8); 6] = [
+    ("OcarinaButtonA_00", 0),
+    ("OcarinaButtonB_00", 1),
+    ("OcarinaButtonX_00", 2),
+    ("OcarinaButtonY_00", 3),
+    ("OcarinaButtonL_00", 6),
+    ("OcarinaButtonR_00", 7),
+];
 
 /// `KeyTexFontA_00`, ..., and the Switch button whose line they label.
 const LETTERS: [(&str, u8); 4] = [
@@ -73,13 +84,15 @@ fn encode_bc4(mask: &Mask) -> Vec<u8> {
     out
 }
 
-/// The blocks of `mask` in the file's order, as (offset, bytes), adjacent
-/// blocks joined into one run.
-fn runs(texture: &Texture, mask: &Mask) -> Vec<(u32, Vec<u8>)> {
-    let blocks = encode_bc4(mask);
+/// Encoded blocks in the file's order, as (offset, bytes), adjacent blocks
+/// joined into one run.
+fn runs_blocks(texture: &Texture, blocks: &[u8]) -> Vec<(u32, Vec<u8>)> {
     let (bw, bh) = texture.blocks();
     let pitch = texture.pitch();
     let size = texture.bytes_per_block();
+    if blocks.len() != (bw * bh) as usize * size {
+        return Vec::new();
+    }
     let mut pieces = Vec::new();
     for by in 0..bh {
         for bx in 0..bw {
@@ -105,6 +118,10 @@ fn runs(texture: &Texture, mask: &Mask) -> Vec<(u32, Vec<u8>)> {
         }
     }
     out
+}
+
+fn runs(texture: &Texture, mask: &Mask) -> Vec<(u32, Vec<u8>)> {
+    runs_blocks(texture, &encode_bc4(mask))
 }
 
 fn write_textures(path: &Path, entries: &[(u8, u8, Vec<(u32, Vec<u8>)>)]) -> Result<(), String> {
@@ -156,6 +173,49 @@ pub fn build(romfs: &Path, out: &Path, dictionary: &[u8], kenney: &Path) -> Resu
             Err(_) => continue,
         };
         let mut entries: Vec<(u8, u8, Vec<(u32, Vec<u8>)>)> = Vec::new();
+        for (name, button) in NOTES {
+            let Some(texture) = textures.get(name) else {
+                continue;
+            };
+            if !texture.is_astc() {
+                continue;
+            }
+            for (pad_index, pad) in faces::PADS.iter().enumerate() {
+                let Some(gid) = icon_glyph(&font, spec, pad) else {
+                    continue;
+                };
+                let size = ((texture.width.min(texture.height) as f64) * 0.9).round() as u32;
+                let icon = match raster::glyph(&font, gid, size.max(1)) {
+                    Ok(icon) if icon.any() => icon,
+                    _ => continue,
+                };
+                let holes = icon.holes();
+                let shape = icon.shape();
+                let shape = shape.place(texture.width, texture.height);
+                let holes = holes.place(texture.width, texture.height);
+                let mut rgba = vec![0u8; (texture.width * texture.height * 4) as usize];
+                for y in 0..texture.height {
+                    for x in 0..texture.width {
+                        let at = ((y * texture.width + x) * 4) as usize;
+                        if holes.at(x, y) > 127 {
+                            rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
+                        } else if shape.at(x, y) > 127 {
+                            rgba[at..at + 4].copy_from_slice(&[255, 255, 255, 255]);
+                        }
+                    }
+                }
+                let Ok(blocks) = astc::encode(
+                    &rgba,
+                    texture.width,
+                    texture.height,
+                    (texture.format & 0xff) == 6,
+                ) else {
+                    continue;
+                };
+                entries.push((button, pad_index as u8, runs_blocks(texture, &blocks)));
+                written += 1;
+            }
+        }
         for (name, button) in LETTERS {
             let Some(texture) = textures.get(name) else {
                 continue;

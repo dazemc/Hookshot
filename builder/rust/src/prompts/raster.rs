@@ -24,7 +24,7 @@ impl Mask {
         }
     }
 
-    fn at(&self, x: u32, y: u32) -> u8 {
+    pub fn at(&self, x: u32, y: u32) -> u8 {
         self.data[(y * self.width + x) as usize]
     }
 
