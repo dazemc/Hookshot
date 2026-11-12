@@ -50,6 +50,7 @@ pub fn plan_json(
     out: &str,
     work: &str,
     lift_limit: usize,
+    lift_all: bool,
     compile: bool,
 ) -> Result<Value, String> {
     let exefs = Path::new(exefs);
@@ -81,11 +82,12 @@ pub fn plan_json(
     )?;
     win_manifest::write(&gen_dir.join("hookshot_manifest.res"))?;
     let game_gen = work.join("sa").join("gen");
-    if lift_limit > 0 && !game_gen.join("code_000.c").is_file() {
+    if (lift_all || lift_limit > 0) && !game_gen.join("code_000.c").is_file() {
+        let limit = if lift_all { 0 } else { lift_limit };
         crate::lift::write_json(
             exefs.to_str().unwrap_or_default(),
             game_gen.to_str().unwrap_or_default(),
-            lift_limit,
+            limit,
             24 << 20,
         )?;
     }
@@ -274,6 +276,7 @@ mod tests {
             base.join("out").to_str().unwrap(),
             base.join("work").to_str().unwrap(),
             0,
+            false,
             false,
         )
         .unwrap();

@@ -282,6 +282,10 @@ pub fn dispatch(text: &str) -> String {
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize,
             request
+                .get("lift_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            request
                 .get("compile")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
