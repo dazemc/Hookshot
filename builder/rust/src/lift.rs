@@ -65,6 +65,9 @@ pub struct Lifter<'a, C: Code> {
     pub last_table_debug: Option<String>,
     pub names: BTreeMap<u64, String>,
     pub hooks: BTreeMap<u64, String>,
+    /// C appended after the plain instruction at a guest address
+    /// (nx2/oot_wide.py, nx2/oot_jitter.py, nx2/oot_occlusion.py).
+    pub after: BTreeMap<u64, String>,
     pub stats: BTreeMap<&'static str, usize>,
 }
 
@@ -85,6 +88,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             last_table_debug: None,
             names: BTreeMap::new(),
             hooks: BTreeMap::new(),
+            after: BTreeMap::new(),
             stats: BTreeMap::new(),
         }
     }
@@ -904,6 +908,9 @@ impl<'a, C: Code> Lifter<'a, C> {
                             .map(|mask| crate::text::drop_flag_stores(text, *mask))
                             .unwrap_or_else(|| text.to_owned());
                         out.push(text.trim_end_matches('\n').to_owned());
+                        if let Some(after) = self.after.get(&pc) {
+                            out.push(after.clone());
+                        }
                     }
                 }
                 Kind::B(target) => {
@@ -1375,6 +1382,7 @@ fn codegen_fingerprint() -> Vec<u8> {
         include_bytes!("insn.rs").as_slice(),
         include_bytes!("emitter.rs").as_slice(),
         include_bytes!("a64.rs").as_slice(),
+        include_bytes!("oot_after.rs").as_slice(),
         include_bytes!("lift.rs").as_slice(),
     ] {
         digest.update(source);
@@ -1702,6 +1710,9 @@ pub fn write_json(
     lift.eh_starts = image.eh_starts().to_vec();
     lift.names = image.names().clone();
     lift.discover();
+    if standalone {
+        lift.after = crate::oot_after::sites(&image);
+    }
     let out = std::path::Path::new(out);
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let entries: Vec<u64> = lift
@@ -1713,7 +1724,15 @@ pub fn write_json(
     let cache_dir = out.join("lift_cache");
     let mut cache = crate::lift_cache::Cache::open(&cache_dir)?;
     let codegen = codegen_fingerprint();
-    let env = env_fingerprint();
+    let mut env = env_fingerprint();
+    if !lift.after.is_empty() {
+        let mut after = Sha1::new();
+        for (pc, text) in &lift.after {
+            after.update(pc.to_le_bytes());
+            after.update(text.as_bytes());
+        }
+        env.extend(after.finalize());
+    }
     let mut emitted: Vec<Option<String>> = vec![None; entries.len()];
     let mut misses: Vec<(usize, u64, [u8; 20])> = Vec::new();
     for (index, entry) in entries.iter().copied().enumerate() {
@@ -1906,6 +1925,7 @@ pub fn write_json(
         "adr_new": adr_new,
         "adr_spans": adr_spans,
         "boundaries": starts.len(),
+        "after": lift.after.len(),
         "patches": patches,
     }))
 }

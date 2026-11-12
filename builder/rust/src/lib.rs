@@ -29,6 +29,7 @@ mod lz4;
 mod nso;
 mod nso_image;
 mod nup;
+mod oot_after;
 mod oot_patches;
 mod orchestrate;
 mod package;
@@ -199,6 +200,7 @@ pub fn dispatch(text: &str) -> String {
             )
         }
         "build.plan" => compile::plan_json(&request, &kit::root()),
+        "lift.after" => oot_after::sites_json(&request),
         "lift.translate" => emitter::translate_json(&request),
         "lift.tables" => lift::tables_json(&string(&request, "exefs").unwrap_or_default()),
         "lift.fpx_header" => lift::fpx_json(&string(&request, "dir").unwrap_or_default()),
