@@ -2,7 +2,7 @@
 //! zstd, then link every game object into the `hookshot` executable. Ported
 //! from nx2/build.py's standalone Linux and Windows (llvm-mingw) paths.
 //!
-//! Windows adds host/display.c, host/mf_av1.c, host/pad_sdl.c,
+//! Windows adds host/display.c, host/mf_av1.c, host/dav1d_av1.c (when the CPM cache has dav1d), host/pad_sdl.c,
 //! host/mingw_msvc_shims.c and the other sources build.py only compiles there,
 //! links Microsoft's Win32 libraries, and puts the manifest, the icon and the
 //! crash map beside the executable. The WebGPU renderer is compiled in when a
@@ -335,6 +335,7 @@ fn link_linux_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> 
             && name != "pgo_rt.c"
             && name != "display.c"
             && name != "mf_av1.c"
+            && name != "dav1d_av1.c"
             && name != "rx_nowgpu.c"
     })? {
         let obj = obj_dir.join(format!(
@@ -645,7 +646,12 @@ fn mingw_base_flags() -> Vec<String> {
     flags
 }
 
-fn windows_host_flags(root: &Path, work: &Path, ffmpeg: Option<&Path>) -> Vec<String> {
+fn windows_host_flags(
+    root: &Path,
+    work: &Path,
+    ffmpeg: Option<&Path>,
+    dav1d: Option<&Path>,
+) -> Vec<String> {
     let mut flags = mingw_base_flags();
     flags.extend([
         format!("-I{}", root.join("host").display()),
@@ -661,6 +667,10 @@ fn windows_host_flags(root: &Path, work: &Path, ffmpeg: Option<&Path>) -> Vec<St
     if let Some(ffmpeg) = ffmpeg {
         flags.push(format!("-I{}", ffmpeg.join("include").display()));
     }
+    if let Some(dav1d) = dav1d {
+        flags.push("-DHOOKSHOT_DAV1D".into());
+        flags.push(format!("-I{}", dav1d.join("include").display()));
+    }
     flags
 }
 
@@ -669,10 +679,14 @@ fn windows_host_sources(
     work: &Path,
     wgpu: bool,
     pgo_gen: bool,
+    dav1d: bool,
 ) -> Result<Vec<PathBuf>, String> {
     let host = root.join("host");
     let mut out = sources(&host, |name| {
-        name.ends_with(".c") && (name != "pgo_rt.c" || pgo_gen) && (name != "rx_nowgpu.c" || !wgpu)
+        name.ends_with(".c")
+            && (name != "pgo_rt.c" || pgo_gen)
+            && (name != "rx_nowgpu.c" || !wgpu)
+            && (name != "dav1d_av1.c" || dav1d)
     })?;
     for name in ["a64_stubs.c", "hos_image.c", "nvn2_exports.c"] {
         let path = work.join("sa/gen").join(name);
@@ -729,6 +743,36 @@ fn find_ffmpeg(root: &Path, work: &Path) -> Option<PathBuf> {
     find_ffmpeg_in(cpm_dirs(root, work))
 }
 
+/// dav1d in a CPM cache (scripts/windows/dav1d.sh): the Windows AV1
+/// decoder host/dav1d_av1.c links when the CPM FFmpeg has none.
+fn find_dav1d_in(caches: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    for cache in caches {
+        let folder = cache.join("dav1d");
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_dir())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        for name in names.into_iter().rev() {
+            let package = folder.join(name);
+            if package.join("lib/libdav1d.a").is_file()
+                && package.join("include/dav1d/dav1d.h").is_file()
+            {
+                return Some(package);
+            }
+        }
+    }
+    None
+}
+
+fn find_dav1d(root: &Path, work: &Path) -> Option<PathBuf> {
+    find_dav1d_in(cpm_dirs(root, work))
+}
+
 /// The FFmpeg headers an object was compiled against: codec numbers and
 /// struct layouts change between major versions.
 fn ffmpeg_version_key(ffmpeg: Option<&Path>) -> Vec<u8> {
@@ -763,7 +807,12 @@ fn top_headers(folder: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn windows_host_deps(root: &Path, work: &Path, ffmpeg: Option<&Path>) -> Result<Vec<u8>, String> {
+fn windows_host_deps(
+    root: &Path,
+    work: &Path,
+    ffmpeg: Option<&Path>,
+    dav1d: Option<&Path>,
+) -> Result<Vec<u8>, String> {
     let mut paths = Vec::new();
     for folder in [
         work.join("rt64"),
@@ -793,6 +842,12 @@ fn windows_host_deps(root: &Path, work: &Path, ffmpeg: Option<&Path>) -> Result<
         }
     }
     deps.extend(ffmpeg_version_key(ffmpeg));
+    if let Some(dav1d) = dav1d {
+        if let Ok(data) = fs::read(dav1d.join("include/dav1d/version.h")) {
+            deps.extend(data);
+            deps.push(0);
+        }
+    }
     Ok(deps)
 }
 
@@ -941,6 +996,7 @@ struct WindowsOptions {
     toolchain: Option<MingwToolchain>,
     toolchain_error: Option<String>,
     ffmpeg: Option<PathBuf>,
+    dav1d: Option<PathBuf>,
     wgpu: Option<PathBuf>,
     sdl: Option<PathBuf>,
     ngx: Option<PathBuf>,
@@ -962,6 +1018,7 @@ fn windows_options(root: &Path, work: &Path) -> WindowsOptions {
         toolchain,
         toolchain_error,
         ffmpeg: find_ffmpeg(root, work),
+        dav1d: find_dav1d(root, work),
         wgpu,
         sdl: Some(root.join("third_party/sdl2")),
         ngx: ngx_windows_library(),
@@ -1035,6 +1092,9 @@ fn windows_link_suffix(
                 .map(|lib| (*lib).to_owned()),
         );
     }
+    if let Some(dav1d) = &options.dav1d {
+        args.push(dav1d.join("lib/libdav1d.a").to_string_lossy().into_owned());
+    }
     // (llvm-mingw links the C++ runtime in: the WebGPU renderer and the
     // C++ parts of the static MSVC libraries need it)
     args.extend(["-lc++".to_owned(), "-lunwind".to_owned()]);
@@ -1048,6 +1108,10 @@ fn windows_inputs(options: &WindowsOptions) -> Value {
             "libraries": FFMPEG_LIBRARIES,
         })
     });
+    let dav1d = options
+        .dav1d
+        .as_ref()
+        .map(|folder| folder.to_string_lossy().into_owned());
     let sdl = options
         .sdl
         .as_ref()
@@ -1071,6 +1135,7 @@ fn windows_inputs(options: &WindowsOptions) -> Value {
     });
     json!({
         "ffmpeg": ffmpeg,
+        "dav1d": dav1d,
         "sdl": sdl,
         "wgpu": wgpu,
         "dlss": dlss,
@@ -1179,8 +1244,18 @@ fn link_windows_inner(
     fs::create_dir_all(&cache).map_err(|e| format!("{}: {e}", cache.display()))?;
     let cc = toolchain.clang.to_string_lossy().into_owned();
     let base = mingw_base_flags();
-    let host_flags = windows_host_flags(&root, work, options.ffmpeg.as_deref());
-    let deps = windows_host_deps(&root, work, options.ffmpeg.as_deref())?;
+    let host_flags = windows_host_flags(
+        &root,
+        work,
+        options.ffmpeg.as_deref(),
+        options.dav1d.as_deref(),
+    );
+    let deps = windows_host_deps(
+        &root,
+        work,
+        options.ffmpeg.as_deref(),
+        options.dav1d.as_deref(),
+    )?;
     let deps_file = work.join("build/host_deps.bin");
     write_blob(&deps_file, &deps)?;
     let mut prompts_deps = deps.clone();
@@ -1188,7 +1263,13 @@ fn link_windows_inner(
     let prompts_deps_file = work.join("build/host_prompts_deps.bin");
     write_blob(&prompts_deps_file, &prompts_deps)?;
     let mut jobs = Vec::new();
-    for src in windows_host_sources(&root, work, options.wgpu.is_some(), options.pgo_gen)? {
+    for src in windows_host_sources(
+        &root,
+        work,
+        options.wgpu.is_some(),
+        options.pgo_gen,
+        options.dav1d.is_some(),
+    )? {
         let stem = src.file_stem().and_then(|name| name.to_str()).unwrap_or("");
         let mut flags = host_flags.clone();
         flags.push(format!("-I{}", opus.join("include").display()));
@@ -1339,7 +1420,7 @@ mod tests {
         for name in ["a64_stubs.c", "hos_image.c", "nvn2_exports.c"] {
             fs::write(work.join("sa/gen").join(name), "").unwrap();
         }
-        let sources = windows_host_sources(&root, &work, false, false).unwrap();
+        let sources = windows_host_sources(&root, &work, false, false, false).unwrap();
         let names: Vec<String> = sources
             .iter()
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
@@ -1365,15 +1446,23 @@ mod tests {
             .flatten()
             .filter(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                name.ends_with(".c") && name != "pgo_rt.c" && name != "rx_nowgpu.c"
+                name.ends_with(".c")
+                    && name != "pgo_rt.c"
+                    && name != "rx_nowgpu.c"
+                    && name != "dav1d_av1.c"
             })
             .count();
         assert_eq!(sources.len(), expected + 4);
 
-        let with_wgpu = windows_host_sources(&root, &work, true, false).unwrap();
+        let with_wgpu = windows_host_sources(&root, &work, true, false, false).unwrap();
         assert!(!with_wgpu.iter().any(|path| path.ends_with("rx_nowgpu.c")));
-        let with_pgo = windows_host_sources(&root, &work, false, true).unwrap();
+        let with_pgo = windows_host_sources(&root, &work, false, true, false).unwrap();
         assert!(with_pgo.iter().any(|path| path.ends_with("pgo_rt.c")));
+        let with_dav1d = windows_host_sources(&root, &work, false, false, true).unwrap();
+        assert!(
+            with_dav1d.iter().any(|path| path.ends_with("dav1d_av1.c")),
+            "dav1d_av1.c is compiled only with a dav1d in the CPM cache"
+        );
         let _ = fs::remove_dir_all(work);
     }
 
@@ -1382,7 +1471,8 @@ mod tests {
         let root = crate::kit::root();
         let work = Path::new("/scratch/work");
         let ffmpeg = Path::new("/cache/ffmpeg/win64");
-        let flags = windows_host_flags(&root, work, Some(ffmpeg));
+        let dav1d = Path::new("/cache/dav1d/1.5.4");
+        let flags = windows_host_flags(&root, work, Some(ffmpeg), Some(dav1d));
         for wanted in [
             "--target=x86_64-w64-mingw32",
             "-fms-extensions",
@@ -1405,6 +1495,8 @@ mod tests {
         assert!(flags.contains(&format!("-I{}", work.join("rt64").display())));
         assert!(flags.contains(&format!("-I{}", work.join("sa/gen").display())));
         assert!(flags.contains(&format!("-I{}", ffmpeg.join("include").display())));
+        assert!(flags.iter().any(|flag| flag == "-DHOOKSHOT_DAV1D"));
+        assert!(flags.contains(&format!("-I{}", dav1d.join("include").display())));
         assert!(!flags.iter().any(|flag| flag == "-D_GNU_SOURCE"));
         assert!(!flags.iter().any(|flag| flag.contains("host/posix")));
     }
@@ -1415,6 +1507,11 @@ mod tests {
         for library in FFMPEG_LIBRARIES {
             fs::write(ffmpeg.join("lib").join(format!("{library}.lib")), b"lib").unwrap();
         }
+        let dav1d = base.join("dav1d/1.5.4");
+        fs::create_dir_all(dav1d.join("lib")).unwrap();
+        fs::write(dav1d.join("lib/libdav1d.a"), b"!<arch>\n").unwrap();
+        fs::create_dir_all(dav1d.join("include/dav1d")).unwrap();
+        fs::write(dav1d.join("include/dav1d/dav1d.h"), b"header").unwrap();
         let wgpu = base.join("wgpu-native");
         fs::create_dir_all(wgpu.join("lib")).unwrap();
         fs::write(wgpu.join("lib/wgpu_native.dll.lib"), b"lib").unwrap();
@@ -1428,6 +1525,7 @@ mod tests {
         fs::write(&hot, "f_001\n").unwrap();
         WindowsOptions {
             ffmpeg: Some(ffmpeg),
+            dav1d: Some(dav1d),
             wgpu: Some(wgpu),
             sdl: Some(base.join("third_party/sdl2")),
             ngx: Some(ngx),
@@ -1506,6 +1604,7 @@ mod tests {
                 .any(|arg| arg.contains("/nodefaultlib:clang_rt.profile.lib"))
         );
         assert!(suffix.iter().any(|arg| arg.ends_with("avcodec.lib")));
+        assert!(suffix.iter().any(|arg| arg.ends_with("libdav1d.a")));
         assert!(
             suffix
                 .iter()
@@ -1519,6 +1618,7 @@ mod tests {
         );
         let inputs = windows_inputs(&options);
         assert!(inputs["ffmpeg"]["dir"].as_str().unwrap().contains("ffmpeg"));
+        assert!(inputs["dav1d"].as_str().unwrap().contains("dav1d"));
         assert!(
             inputs["dlss"]["library"]
                 .as_str()
@@ -1587,6 +1687,20 @@ mod tests {
         assert_eq!(find_ffmpeg_in(vec![base.join("cpm")]), Some(win));
         fs::remove_dir_all(base.join("cpm/ffmpeg/win64")).unwrap();
         assert_eq!(find_ffmpeg_in(vec![base.join("cpm")]), None);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn dav1d_comes_from_a_cpm_cache_with_its_header_and_library() {
+        let base = temp("dav1d");
+        let package = base.join("cpm/dav1d/1.5.4");
+        fs::create_dir_all(package.join("lib")).unwrap();
+        fs::create_dir_all(package.join("include/dav1d")).unwrap();
+        fs::write(package.join("lib/libdav1d.a"), b"!<arch>\n").unwrap();
+        fs::write(package.join("include/dav1d/dav1d.h"), b"header").unwrap();
+        assert_eq!(find_dav1d_in(vec![base.join("cpm")]), Some(package.clone()));
+        fs::remove_file(package.join("lib/libdav1d.a")).unwrap();
+        assert_eq!(find_dav1d_in(vec![base.join("cpm")]), None);
         let _ = fs::remove_dir_all(base);
     }
 

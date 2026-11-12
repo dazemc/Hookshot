@@ -164,6 +164,15 @@ commits, not upstream ancestors. Ported recently:
 - **Video perf #2114**: planar YUV420P frames stay NV12 and defer RGBA to the pool, U/V interleaves 16 pairs at a time
   with SSE2, and decode threads go to 8 for AV1 and 4 for others. A headless boot played a 1920x1080 movie at 60 fps
   with no traps; `tests/video_uv_interleave_test.c` covers every pair count from 0 to 37 in CI.
+- **AV1 on dav1d for Windows (#2316, #2515) and the movie-end wait (#2682)**: the Windows CPM FFmpeg has no AV1
+  decoder, so the movies went to Media Foundation's software AV1 Video Extension and fell behind their sound. The
+  Windows build now links dav1d when the CPM cache has it (`scripts/windows/dav1d.sh`, `host/dav1d_av1.c`), tries it
+  before Media Foundation, and keeps Media Foundation as the fallback (and for a build without dav1d). The Windows
+  builder adds dav1d to the cpm part (`release_parts.sh package --cpm-add`). A movie also
+  logs its decoder and per-picture decode time when it stops. Separately, `AcquireXDecoderOutputBuffer` now waits
+  ~100 ms by the clock instead of 50 sleeps that took 4-5 ms each, and does not wait at all after a Stop or Flush:
+  the title-to-game load no longer joins the movie thread for ~250 ms. Game-free fixtures cover the fallback order,
+  the dav1d wrapper against a synthetic lossless AV1 clip, lazy RGBA/UV, queue lifetime and the acquire wait.
 - **GCN #2343**: f16 is used only where the GPU reports f16 shaders (RADV gives Polaris none), and GCN runs with VRAM
   mirrors and batched submits off by default. The f16 programs carry a cache marker. A headless NVIDIA boot after the
   change ran 13,496 presents at 60 fps with no traps; the RX 580 measurements are upstream's.
@@ -186,9 +195,9 @@ commits, not upstream ancestors. Ported recently:
   terrain/writeback/heap fixes, NUP/Python builder fixes.
 
 Remaining large areas are FSR 3.1's HDR colour (it still takes the chain's LDR pair; upstream lists that as a
-follow-up), Native HDR, the guide lines and hand-drawn controller bodies, AV1/dav1d edge cases, aspect-ratio and
-translated-menu features, hardware-specific Vulkan fixes, Flutter equivalents of the Tk/WPF UI commits, docs and
-game-derived pipeline assets.
+follow-up), Native HDR, the guide lines and hand-drawn controller bodies, 10-bit/4:4:4 AV1 conversion (OoT's movies are
+8-bit 4:2:0), aspect-ratio and translated-menu features, hardware-specific Vulkan fixes, Flutter equivalents of the
+Tk/WPF UI commits, docs and game-derived pipeline assets.
 Do not port game-derived pipeline lists or generated game data.
 
 ## CI and release
