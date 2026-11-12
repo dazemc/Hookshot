@@ -83,7 +83,32 @@ pub fn plan_json(
     )?;
     win_manifest::write(&gen_dir.join("hookshot_manifest.res"))?;
     let game_gen = work.join("sa").join("gen");
-    if (lift_all || lift_limit > 0) && !game_gen.join("code_000.c").is_file() {
+    let mut lift_needed = (lift_all || lift_limit > 0) && !game_gen.join("code_000.c").is_file();
+    if standalone && game_gen.join("code_000.c").is_file() {
+        let hooks = fs::read_to_string(game_gen.join("a64_hooks.c")).unwrap_or_default();
+        if !hooks.contains("TAILCALL(") {
+            if lift_all || lift_limit > 0 {
+                for entry in fs::read_dir(&game_gen)
+                    .map(|entries| entries.flatten().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if (name.starts_with("code_") && name.ends_with(".c"))
+                        || matches!(name.as_str(), "a64_table.c" | "a64_hooks.c" | "a64_fpx.h")
+                    {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+                lift_needed = true;
+            } else {
+                return Err(format!(
+                    "{} holds a lift made without the host hooks; remove its code_*.c files or use another work folder.",
+                    game_gen.display()
+                ));
+            }
+        }
+    }
+    if lift_needed {
         let limit = if lift_all { 0 } else { lift_limit };
         crate::lift::write_json(
             exefs.to_str().unwrap_or_default(),
