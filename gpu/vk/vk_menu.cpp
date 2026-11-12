@@ -4203,8 +4203,8 @@ void menu_tick() {
             fps_rate_now = opts.framegen >= 1 ? game : shown;   // (the game's own against its cap, with frame generation too)
             // (the game's own rate, "Base", and who makes the frames: DLSS FG, FSR 3.1 FG or Built-in FG)
             const char* who = framegen_maker_name();
-            if (opts.framegen >= 1 && who) snprintf(fps_sub, sizeof fps_sub, "Base %.0f, %s", game, who);
-            else if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "Base %.0f", game);
+            if (opts.framegen >= 1 && who) snprintf(fps_sub, sizeof fps_sub, "game %.0f, %s", game, who);
+            else if (opts.framegen >= 1) snprintf(fps_sub, sizeof fps_sub, "game %.0f", game);
             else fps_sub[0] = 0;
         }
         static int64_t texts_next = 0;   // (the lines past the number: four times a second, each over the last half second)
