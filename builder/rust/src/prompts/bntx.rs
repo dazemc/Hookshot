@@ -112,6 +112,23 @@ pub fn gob_offset(x: u64, y: u64, gobs: u64, pitch: u64) -> u64 {
         | (x & 15))
 }
 
+/// A texture's blocks in row-major block order, as ASTC/BC4 expects.
+pub fn blocks_linear(bytes: &[u8], texture: &Texture) -> Vec<u8> {
+    let (bw, bh) = texture.blocks();
+    let size = texture.bytes_per_block();
+    let mut out = Vec::with_capacity((bw * bh) as usize * size);
+    for y in 0..bh {
+        for x in 0..bw {
+            if let Some(block) = block(bytes, texture, x, y) {
+                out.extend_from_slice(block);
+            } else {
+                out.extend(std::iter::repeat_n(0, size));
+            }
+        }
+    }
+    out
+}
+
 /// The file's bytes at a texture's block (x, y), or None outside.
 pub fn block<'a>(bytes: &'a [u8], texture: &Texture, x: u32, y: u32) -> Option<&'a [u8]> {
     let size = texture.bytes_per_block();

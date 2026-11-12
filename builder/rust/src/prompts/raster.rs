@@ -16,7 +16,7 @@ pub struct Mask {
 }
 
 impl Mask {
-    fn new(width: u32, height: u32) -> Self {
+    pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
             height,
@@ -28,7 +28,7 @@ impl Mask {
         self.data[(y * self.width + x) as usize]
     }
 
-    fn set(&mut self, x: u32, y: u32, value: u8) {
+    pub fn set(&mut self, x: u32, y: u32, value: u8) {
         let at = (y * self.width + x) as usize;
         self.data[at] = value;
     }

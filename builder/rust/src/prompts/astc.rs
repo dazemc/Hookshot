@@ -11,6 +11,14 @@ unsafe extern "C" {
         out: *mut u8,
         out_size: u64,
     ) -> i32;
+    fn hookshot_astc_decompress(
+        blocks: *const u8,
+        width: i32,
+        height: i32,
+        srgb: i32,
+        rgba: *mut u8,
+        rgba_size: u64,
+    ) -> i32;
 }
 
 /// Compress an RGBA8 image as ASTC 4x4, LDR or LDR-sRGB.
@@ -41,6 +49,34 @@ pub fn encode(rgba: &[u8], width: u32, height: u32, srgb: bool) -> Result<Vec<u8
     Ok(out)
 }
 
+/// Decompress ASTC 4x4 blocks to RGBA8 (`width` x `height` pixels).
+pub fn decode(blocks: &[u8], width: u32, height: u32, srgb: bool) -> Result<Vec<u8>, String> {
+    let expected = width as usize * height as usize * 4;
+    if blocks.len() != (width as usize).div_ceil(4) * (height as usize).div_ceil(4) * 16 {
+        return Err(format!(
+            "astc: {} bytes for {}x{} blocks",
+            blocks.len(),
+            width,
+            height
+        ));
+    }
+    let mut out = vec![0u8; expected];
+    let code = unsafe {
+        hookshot_astc_decompress(
+            blocks.as_ptr(),
+            width as i32,
+            height as i32,
+            i32::from(srgb),
+            out.as_mut_ptr(),
+            out.len() as u64,
+        )
+    };
+    if code != 0 {
+        return Err(format!("astc: decoder returned {code}"));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,6 +89,8 @@ mod tests {
         assert!(out.iter().any(|byte| *byte != 0));
         let srgb = encode(&red, 4, 4, true).unwrap();
         assert_eq!(srgb.len(), 16);
+        let decoded = decode(&out, 4, 4, false).unwrap();
+        assert!(decoded[0] > 200 && decoded[1] < 60 && decoded[2] < 60 && decoded[3] > 200);
     }
 
     #[test]

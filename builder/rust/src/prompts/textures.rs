@@ -16,6 +16,16 @@ use super::bntx::{self, Texture};
 use super::raster::{self, Mask};
 use super::{faces, zs};
 
+/// The pause menu's controller picture and its tinted copy.
+const PICTURES: [&str; 2] = ["Controller_Pro", "Controller_Pro1"];
+/// The face buttons' centres and radius in the picture.
+const PICTURE_BUTTONS: [(&str, u32, u32, u32); 4] = [
+    ("east", 869, 227, 31),
+    ("south", 800, 286, 31),
+    ("north", 800, 168, 31),
+    ("west", 732, 227, 31),
+];
+
 /// The note textures, and the Switch button whose line they label.
 const NOTES: [(&str, u8); 6] = [
     ("OcarinaButtonA_00", 0),
@@ -122,6 +132,85 @@ fn runs_blocks(texture: &Texture, blocks: &[u8]) -> Vec<(u32, Vec<u8>)> {
 
 fn runs(texture: &Texture, mask: &Mask) -> Vec<(u32, Vec<u8>)> {
     runs_blocks(texture, &encode_bc4(mask))
+}
+
+fn draw_button(rgba: &mut [u8], width: u32, height: u32, cx: u32, cy: u32, r: u32, mark: &Mask) {
+    let sample_x = (cx + r).saturating_sub(6).min(width - 1);
+    let sample_y = cy.min(height - 1);
+    let at = ((sample_y * width + sample_x) * 4) as usize;
+    let fill = [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]];
+    for y in cy.saturating_sub(r)..=(cy + r).min(height - 1) {
+        for x in cx.saturating_sub(r)..=(cx + r).min(width - 1) {
+            let dx = x as i64 - cx as i64;
+            let dy = y as i64 - cy as i64;
+            if dx * dx + dy * dy <= (r * r) as i64 {
+                let at = ((y * width + x) * 4) as usize;
+                rgba[at..at + 4].copy_from_slice(&fill);
+            }
+        }
+    }
+    let x0 = cx.saturating_sub(mark.width / 2);
+    let y0 = cy.saturating_sub(mark.height / 2);
+    for y in 0..mark.height {
+        for x in 0..mark.width {
+            if mark.at(x, y) > 127 {
+                let px = x0 + x;
+                let py = y0 + y;
+                if px < width && py < height {
+                    let at = ((py * width + px) * 4) as usize;
+                    rgba[at..at + 4].copy_from_slice(&[205, 205, 205, 255]);
+                }
+            }
+        }
+    }
+}
+
+fn controller_layers(
+    bytes: &[u8],
+    textures: &BTreeMap<String, Texture>,
+    font: &Face,
+    spec: &faces::Face,
+) -> Vec<(u8, u8, Vec<(u32, Vec<u8>)>)> {
+    let mut entries = Vec::new();
+    for name in PICTURES {
+        let Some(texture) = textures.get(name) else {
+            continue;
+        };
+        if !texture.is_astc() {
+            continue;
+        }
+        let blocks = bntx::blocks_linear(bytes, texture);
+        let Ok(mut rgba) = astc::decode(
+            &blocks,
+            texture.width,
+            texture.height,
+            (texture.format & 0xff) == 6,
+        ) else {
+            continue;
+        };
+        for (pad, cx, cy, r) in PICTURE_BUTTONS {
+            let Some(gid) = icon_glyph(font, spec, pad) else {
+                continue;
+            };
+            let size = ((2 * r) as f64 * 0.92).round() as u32;
+            let Ok(icon) = raster::glyph(font, gid, size.max(1)) else {
+                continue;
+            };
+            let holes = icon.holes();
+            let mark = if holes.any() { holes } else { icon };
+            draw_button(&mut rgba, texture.width, texture.height, cx, cy, r, &mark);
+        }
+        let Ok(blocks) = astc::encode(
+            &rgba,
+            texture.width,
+            texture.height,
+            (texture.format & 0xff) == 6,
+        ) else {
+            continue;
+        };
+        entries.push((0xff, 0, runs_blocks(texture, &blocks)));
+    }
+    entries
 }
 
 fn write_textures(path: &Path, entries: &[(u8, u8, Vec<(u32, Vec<u8>)>)]) -> Result<(), String> {
@@ -239,6 +328,7 @@ pub fn build(romfs: &Path, out: &Path, dictionary: &[u8], kenney: &Path) -> Resu
                 written += 1;
             }
         }
+        entries.extend(controller_layers(&bytes, &textures, &font, spec));
         if entries.is_empty() {
             continue;
         }
@@ -267,6 +357,22 @@ mod tests {
             encode_bc4_block(&values),
             [15, 0, 201, 111, 183, 228, 38, 1]
         );
+    }
+
+    #[test]
+    fn a_button_gets_its_disc_and_label() {
+        let mut rgba = vec![10u8; 32 * 32 * 4];
+        let mut mark = Mask::new(8, 8);
+        for y in 2..6 {
+            for x in 2..6 {
+                mark.set(x, y, 255);
+            }
+        }
+        draw_button(&mut rgba, 32, 32, 16, 16, 8, &mark);
+        let at = (16 * 32 + 16) * 4;
+        assert_eq!(&rgba[at..at + 4], &[205, 205, 205, 255]);
+        let edge = (16 * 32 + 7) * 4; // (outside the radius)
+        assert_eq!(&rgba[edge..edge + 3], &[10, 10, 10]);
     }
 
     #[test]
