@@ -77,5 +77,19 @@ void main() {
       expect(chooseMode(null, 'v2.1.0', 'v2.1.0', false, false), 'build');
       expect(chooseMode('v2.1.0', 'v2.1.0', null, false, true), 'up-to-date');
     });
+    test('a newer game is not offered an older rebuild', () {
+      // (the launcher's latest release list can lag behind a game built from
+      // a nightly or a newer release: Play, not a downgrade)
+      expect(chooseMode('v2.2.0', 'v2.2.0', 'v2.1.0', false, true), 'up-to-date');
+      expect(chooseMode('v2.2.0-rc.1', 'v2.2.0-rc.1', 'v2.1.0', false, true), 'up-to-date');
+      expect(chooseMode('v2.2.0', 'v2.2.0', 'v2.1.0', false, true, switchTrack: true), 'update-game');
+      expect(chooseMode('v2.2.0-rc.1-3-gabc', 'v2.2.0-rc.1-3-gabc', 'v2.2.0', false, true), 'update-game');
+      expect(olderVersion('v2.1.0', 'v2.2.0'), isTrue);
+      expect(olderVersion('v2.2.0', 'v2.1.0'), isFalse);
+      expect(olderVersion('v2.2.0-rc.1', 'v2.2.0'), isTrue);
+      expect(olderVersion('v2.2.0', 'v2.2.0-rc.1'), isFalse);
+      expect(olderVersion('dev', 'v2.2.0'), isFalse);
+      expect(olderVersion('v2.2.0', 'dev'), isFalse);
+    });
   });
 }

@@ -13,6 +13,7 @@ import '../backend/rust_build.dart';
 import '../config.dart' as cfg;
 import '../engine.dart';
 import '../gamescope.dart';
+import '../play_scope.dart';
 import '../updater/installer.dart' show latestTag, fetchBytes;
 import '../updater/manifest.dart' as upd;
 
@@ -420,9 +421,14 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       }
     } else if (effectiveMode == 'up-to-date') {
       button = 'Play';
-      status = s.latest == null
-          ? 'Your game is $game, as this builder. GitHub did not answer, so newer versions could not be checked.'
-          : '$game is the latest version.';
+      if (target != null && game != null && upd.olderVersion(target, game)) {
+        status =
+            'Your game is $game, newer than this builder\'s update target $target. Play keeps this version; choose another update track to change versions.';
+      } else if (s.latest == null) {
+        status = 'Your game is $game, as this builder. GitHub did not answer, so newer versions could not be checked.';
+      } else {
+        status = '$game is the latest version.';
+      }
     } else if (effectiveMode == 'update-builder') {
       button = 'Update builder';
       final have = _toolsTag();
@@ -959,19 +965,28 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     if (forced != null) settings.enabled = forced != '0' && forced.isNotEmpty;
     if (gamescope != null) settings.enabled = gamescope;
     final gamescopeExe = settings.enabled ? _which('gamescope') : null;
+    final List<String> command;
     if (gamescopeExe != null) {
-      final command = settings.command(exe);
+      final scoped = settings.command(exe);
       final prefix = settings.gameMode ? _which('gamemoderun') : null;
-      await Process.start(
-        prefix ?? gamescopeExe,
-        prefix != null ? [gamescopeExe, ...command] : command,
+      command = prefix != null ? [prefix, gamescopeExe, ...scoped] : [gamescopeExe, ...scoped];
+    } else {
+      command = [exe];
+    }
+    // (a desktop launcher's systemd service would stop the game with it: a
+    // scope of its own, proven before the window closes. #2529, #2540, #2643)
+    await PlayLauncher().launch(
+      command,
+      cwd: folder,
+      env: env,
+      direct: () => Process.start(
+        command.first,
+        command.sublist(1),
         workingDirectory: folder,
         environment: env,
         mode: ProcessStartMode.detached,
-      );
-      return;
-    }
-    await Process.start(exe, [], workingDirectory: folder, environment: env, mode: ProcessStartMode.detached);
+      ),
+    );
   }
 
   /// The game already runs inside gamescope (Steam Deck game mode, or a
