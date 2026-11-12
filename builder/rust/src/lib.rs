@@ -47,6 +47,7 @@ mod stage;
 mod standalone;
 mod stream;
 mod text;
+mod timing;
 mod toolchain;
 mod ui_fonts;
 mod version;

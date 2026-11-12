@@ -1233,9 +1233,15 @@ impl<'a, C: Code> Lifter<'a, C> {
 
 type FpxUse = (String, String, usize, usize);
 
+fn fpx_call() -> &'static regex::Regex {
+    static CALL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    CALL.get_or_init(|| {
+        regex::Regex::new(r"a64_fpx_([a-z0-9]+)_([a-z0-9]+)\(c,([^)]*?)\)").expect("fpx call")
+    })
+}
+
 fn collect_fpx(text: &str, used: &mut std::collections::HashSet<FpxUse>) {
-    let call = regex::Regex::new(r"a64_fpx_([a-z0-9]+)_([a-z0-9]+)\(c,([^)]*?)\)").unwrap();
-    for caps in call.captures_iter(text) {
+    for caps in fpx_call().captures_iter(text) {
         let fast = caps[1].to_owned();
         let exact = caps[2].to_owned();
         let args = caps[3]
@@ -1669,22 +1675,50 @@ fn emit_entry<C: Code>(
     Ok(lift.emit_function_unmarked(entry, &processed))
 }
 
-fn mark_chunk_files(dir: &std::path::Path) -> Result<(), String> {
-    let pattern = regex::Regex::new(r"^code_\d{3}\.c$").expect("chunk name regex");
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !pattern.is_match(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        let text = std::fs::read_to_string(entry.path())
-            .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        let marked = crate::text::mark_groups(&text);
-        if marked != text {
-            std::fs::write(entry.path(), marked)
-                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        }
+fn mark_one(path: &std::path::Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let marked = crate::text::mark_groups(&text);
+    if marked != text {
+        std::fs::write(path, marked).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+fn mark_chunk_files(dir: &std::path::Path) -> Result<(), String> {
+    let pattern = regex::Regex::new(r"^code_\d{3}\.c$").expect("chunk name regex");
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if pattern.is_match(&entry.file_name().to_string_lossy()) {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort();
+    let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16)
+        .max(1)
+        .min(paths.len().max(1));
+    if workers <= 1 {
+        for path in &paths {
+            mark_one(path)?;
+        }
+        return Ok(());
+    }
+    let per = paths.len().div_ceil(workers);
+    std::thread::scope(|scope| -> Result<(), String> {
+        let handles: Vec<_> = paths
+            .chunks(per)
+            .map(|chunk| scope.spawn(move || chunk.iter().try_for_each(|path| mark_one(path))))
+            .collect();
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| "a mark worker stopped".to_string())??;
+        }
+        Ok(())
+    })
 }
 
 pub fn write_json(
@@ -1695,6 +1729,8 @@ pub fn write_json(
     standalone: bool,
 ) -> Result<serde_json::Value, String> {
     let path = std::path::Path::new(exefs);
+    let total = crate::timing::Stage::new("lift.total");
+    let read = crate::timing::Stage::new("lift.read");
     let hle = if standalone {
         crate::standalone::hle_symbols(exefs)?
     } else {
@@ -1702,6 +1738,8 @@ pub fn write_json(
     };
     let mut image = crate::image::Image::build(path, 0, false, &hle, &[])?;
     let (adr_refs, adr_new, adr_spans) = image.add_adr_entries(4);
+    read.done();
+    let discover = crate::timing::Stage::new("lift.discover");
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.hooks = image.hooks.clone();
     lift.entries.extend(lift.hooks.keys().copied());
@@ -1710,8 +1748,11 @@ pub fn write_json(
     lift.eh_starts = image.eh_starts().to_vec();
     lift.names = image.names().clone();
     lift.discover();
+    discover.done();
     if standalone {
+        let after = crate::timing::Stage::new("lift.after_sites");
         lift.after = crate::oot_after::sites(&image);
+        after.done();
     }
     let out = std::path::Path::new(out);
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -1722,7 +1763,9 @@ pub fn write_json(
         .take(if limit == 0 { usize::MAX } else { limit })
         .collect();
     let cache_dir = out.join("lift_cache");
+    let cache_open = crate::timing::Stage::new("lift.cache_open");
     let mut cache = crate::lift_cache::Cache::open(&cache_dir)?;
+    cache_open.done();
     let codegen = codegen_fingerprint();
     let mut env = env_fingerprint();
     if !lift.after.is_empty() {
@@ -1733,17 +1776,90 @@ pub fn write_json(
         }
         env.extend(after.finalize());
     }
+    let hash_keys = crate::timing::Stage::new("lift.hash_keys");
+    let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16)
+        .max(1)
+        .min(entries.len().max(1));
+    let keys: Vec<[u8; 20]> = if workers <= 1 {
+        entries
+            .iter()
+            .map(|entry| function_key(&lift, &image, *entry, &codegen, &env))
+            .collect()
+    } else {
+        let per = entries.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = entries
+                .chunks(per)
+                .map(|chunk| {
+                    let lift = &lift;
+                    let image = &image;
+                    let codegen = &codegen;
+                    let env = &env;
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|entry| function_key(lift, image, *entry, codegen, env))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut keys = Vec::with_capacity(entries.len());
+            for handle in handles {
+                keys.extend(handle.join().unwrap_or_default());
+            }
+            keys
+        })
+    };
+    hash_keys.done();
+    let lookup = crate::timing::Stage::new("lift.cache_lookup");
     let mut emitted: Vec<Option<String>> = vec![None; entries.len()];
     let mut misses: Vec<(usize, u64, [u8; 20])> = Vec::new();
-    for (index, entry) in entries.iter().copied().enumerate() {
-        let key = function_key(&lift, &image, entry, &codegen, &env);
-        if let Some(text) = cache.get(&key) {
+    let mut hits = 0usize;
+    let looked_up: Vec<(usize, Option<String>)> = if workers <= 1 {
+        keys.iter()
+            .enumerate()
+            .map(|(index, key)| (index, cache.get(key)))
+            .collect()
+    } else {
+        let per = keys.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = keys
+                .chunks(per)
+                .enumerate()
+                .map(|(part, chunk)| {
+                    let cache = &cache;
+                    let base = part * per;
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .enumerate()
+                            .map(|(index, key)| (base + index, cache.get(key)))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut out = Vec::with_capacity(keys.len());
+            for handle in handles {
+                out.extend(handle.join().unwrap_or_default());
+            }
+            out
+        })
+    };
+    for (index, text) in looked_up {
+        if let Some(text) = text {
             emitted[index] = Some(text);
+            hits += 1;
         } else {
-            misses.push((index, entry, key));
+            misses.push((index, entries[index], keys[index]));
         }
     }
-    let texts = shared_texts(&lift, &image, &misses)?;
+    lookup.mark(&format!("{hits} cache hits, {} misses", misses.len()));
+    lookup.done();
+    let texts = crate::timing::span("lift.shared_texts", || shared_texts(&lift, &image, &misses))?;
+    let emit = crate::timing::Stage::new("lift.emit");
     let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -1782,12 +1898,17 @@ pub fn write_json(
                 .collect()
         })
     };
+    emit.done();
+    let cache_store = crate::timing::Stage::new("lift.cache_store");
     for (index, key, result) in results {
         let text = result?;
         cache.put(key, &text)?;
         emitted[index] = Some(text);
     }
-    cache.save()?;
+    if !misses.is_empty() {
+        cache.save()?;
+    }
+    cache_store.done();
     if emitted.iter().any(Option::is_none) {
         return Err("the lift cache left some functions without C".into());
     }
@@ -1797,12 +1918,14 @@ pub fn write_json(
         .filter_map(|(index, text)| text.map(|text| (index, text)))
         .collect();
     emitted.sort_by_key(|(index, _)| *index);
+    let fpx = crate::timing::Stage::new("lift.fpx_collect");
     let mut used = std::collections::HashSet::new();
     for (_, text) in &emitted {
         collect_fpx(text, &mut used);
     }
     std::fs::write(out.join("a64_fpx.h"), crate::text::fpx_header(&used))
         .map_err(|e| e.to_string())?;
+    fpx.done();
     let written = entries.len();
     let mut written_entries = entries.clone();
     written_entries.extend(lift.hooks.keys().copied());
@@ -1817,6 +1940,7 @@ pub fn write_json(
             saved
         }
     };
+    let chunks = crate::timing::Stage::new("lift.chunks");
     let mut chunk = String::new();
     let mut decls = std::collections::BTreeSet::new();
     let mut chunk_start: Option<u64> = None;
@@ -1875,16 +1999,21 @@ pub fn write_json(
         &mut chunk_start,
         &reference,
     )?;
+    chunks.mark("assembled and written");
     save_chunk_boundaries(out, &starts)?;
     remove_stale_chunks(out, files.len())?;
+    chunks.done();
     let build = crate::nso::build_id(&path.join("main")).unwrap_or_default();
-    let patches = crate::oot_patches::apply_json(
-        out.to_str().unwrap_or_default(),
-        &build,
-        standalone,
-        limit == 0,
-    )?;
-    mark_chunk_files(out)?;
+    let patches = crate::timing::span("lift.patches", || {
+        crate::oot_patches::apply_json(
+            out.to_str().unwrap_or_default(),
+            &build,
+            standalone,
+            limit == 0,
+        )
+    })?;
+    crate::timing::span("lift.mark_groups", || mark_chunk_files(out))?;
+    let tables = crate::timing::Stage::new("lift.tables");
     let mut table = String::from("#include \"a64.h\"\n");
     for entry in &written_entries {
         table.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
@@ -1917,6 +2046,8 @@ pub fn write_json(
         ));
     }
     std::fs::write(out.join("a64_hooks.c"), hooks_c).map_err(|e| e.to_string())?;
+    tables.done();
+    total.done();
     Ok(serde_json::json!({
         "files": files,
         "functions": written,
