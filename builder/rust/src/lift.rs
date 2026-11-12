@@ -82,7 +82,8 @@ impl<'a, C: Code> Lifter<'a, C> {
     }
 
     pub fn discover(&mut self) {
-        let entries: Vec<u64> = self.entries.iter().copied().collect();
+        let mut entries: Vec<u64> = self.entries.iter().copied().collect();
+        entries.sort_unstable();
         for entry in entries {
             let (body, labels) = self.walk(entry);
             if !body.is_empty() {
@@ -111,6 +112,8 @@ impl<'a, C: Code> Lifter<'a, C> {
                 }
             }
         }
+        added.sort_unstable();
+        added.dedup();
         for entry in added {
             let (body, labels) = self.walk(entry);
             if !body.is_empty() {
@@ -854,7 +857,8 @@ pub fn tables_json(exefs: &str) -> Result<serde_json::Value, String> {
         "functions": lift.funcs.len(),
         "jump_tables": lift.jt.len(),
         "plt_stubs": lift.plt.len(),
-        "missing": lift.jt_missing.keys().take(20).map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
+        "missing": lift.jt_missing.keys().map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
+        "keys": lift.jt.keys().map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
         "jt_missing": lift.jt_missing.len(),
         "targets": lift.jt.values().map(Vec::len).sum::<usize>(),
         "stats": lift.stats,
