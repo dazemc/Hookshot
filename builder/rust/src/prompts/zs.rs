@@ -42,7 +42,9 @@ pub fn sarc_dictionary(sarc: &[u8]) -> Option<Vec<u8>> {
         let rest = sarc.get(offset..)?;
         let length = rest.iter().position(|b| *b == 0)?;
         if &rest[..length] == b"zs.zsdic" {
-            return sarc.get(data + start..data + end).map(<[u8]>::to_vec);
+            let from = data.checked_add(start)?;
+            let to = data.checked_add(end)?;
+            return sarc.get(from..to).map(<[u8]>::to_vec);
         }
     }
     None

@@ -446,6 +446,19 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "out").unwrap_or_default(),
             string(&request, "png").as_deref(),
         ),
+        "prompts.build" => prompts::build(
+            std::path::Path::new(&string(&request, "romfs").unwrap_or_default()),
+            std::path::Path::new(&string(&request, "out").unwrap_or_default()),
+        )
+        .map(|written| {
+            json!({
+                "font_bytes": written.font_bytes,
+                "size_table": written.size_table,
+                "faces": written.faces,
+                "hint": written.hint,
+                "ring": written.ring,
+            })
+        }),
         "build.polls" => {
             let text = string(&request, "text").unwrap_or_default();
             Ok(poll::json(&text))

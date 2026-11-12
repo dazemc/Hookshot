@@ -277,6 +277,22 @@ fn package_json_on(
         version.push_str(&format!("version={release}\n"));
     }
     fs::write(out.join("hookshot_version.txt"), version).map_err(|e| e.to_string())?;
+    // The button prompts of other controllers, as Python's make_game makes
+    // them: never fatal, and a failure leaves the game its own icons.
+    let prompts = if romfs.is_dir() {
+        match crate::prompts::build(romfs, &out.join("prompts")) {
+            Ok(written) => json!({
+                "font_bytes": written.font_bytes,
+                "size_table": written.size_table,
+                "faces": written.faces,
+                "hint": written.hint,
+                "ring": written.ring,
+            }),
+            Err(error) => json!({"error": error}),
+        }
+    } else {
+        json!({"skipped": true})
+    };
     Ok(json!({
         "stage": "packaged",
         "exe": exe.to_string_lossy(),
@@ -288,6 +304,7 @@ fn package_json_on(
         "vk": bin.join(platform.vulkan_library()).is_file(),
         "sdl": bin.join(platform.primary_sdl_library()).is_file(),
         "seed": seed,
+        "prompts": prompts,
     }))
 }
 

@@ -26,6 +26,7 @@ png = "0.17"
 regex = "1"
 curl = "0.4"
 crc32fast = "1.5"
+ttf-parser = "0.25"
 
 [profile.release]
 lto = "thin"
