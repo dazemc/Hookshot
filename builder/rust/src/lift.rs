@@ -1319,9 +1319,12 @@ fn seed_chunk_boundaries(dir: &std::path::Path) -> Vec<u64> {
     out
 }
 
+/// Write the recorded boundaries (the first function of each chunk after the
+/// first): what `load_chunk_boundaries` reads back. The guest-address
+/// sub-boundaries are not written; they are worked out again each lift.
 fn save_chunk_boundaries(dir: &std::path::Path, starts: &[u64]) -> Result<(), String> {
     let mut text = String::from("# first guest address of each lifted C chunk after the first\n");
-    for start in starts.iter().skip(1) {
+    for start in starts {
         text.push_str(&format!("{start:08x}\n"));
     }
     std::fs::write(dir.join("chunks.txt"), text)
@@ -1862,6 +1865,9 @@ pub fn write_json(
     crate::timing::count("lift_cache_misses", misses.len() as u64);
     let texts = crate::timing::span("lift.shared_texts", || shared_texts(&lift, &image, &misses))?;
     let emit = crate::timing::Stage::new("lift.emit");
+    // (native threads, not processes: the workers share the lifter read-only,
+    // so the same code runs on Windows, where nx2/lift.py had to spawn
+    // processes; HOOKSHOT_LIFT_JOBS caps them)
     let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -1934,7 +1940,7 @@ pub fn write_json(
     written_entries.sort_unstable();
     written_entries.dedup();
     let reference = regex::Regex::new(r"\bf_([0-9a-f]{8})\b").unwrap();
-    let boundaries = {
+    let recorded = {
         let saved = load_chunk_boundaries(out);
         if saved.is_empty() {
             seed_chunk_boundaries(out)
@@ -1942,6 +1948,14 @@ pub fn write_json(
             saved
         }
     };
+    // (the recorded boundaries and the guest-address sub-boundaries: a
+    // function that grows moves neither, so only the chunks holding changed
+    // functions are compiled again; #2890)
+    let boundaries = crate::chunks::chunk_starts(
+        &recorded,
+        lift.funcs.keys().copied(),
+        crate::chunks::SUB_STRIDE,
+    );
     let chunks = crate::timing::Stage::new("lift.chunks");
     let mut chunk = String::new();
     let mut decls = std::collections::BTreeSet::new();
@@ -2002,7 +2016,18 @@ pub fn write_json(
         &reference,
     )?;
     chunks.mark("assembled and written");
-    save_chunk_boundaries(out, &starts)?;
+    // (code_NNN.c: three digits, which split_big, split_hot and the build
+    // match. A thousandth chunk would be left out of all three)
+    if files.len() > 1000 {
+        return Err(format!(
+            "chunks: more than 1000 chunks (SUB_STRIDE {:#x}): make it larger",
+            crate::chunks::SUB_STRIDE
+        ));
+    }
+    // (only the recorded boundaries are saved: the sub-boundaries come back
+    // from the functions' addresses on the next lift, so a newly found
+    // function does not leave an extra old boundary behind)
+    save_chunk_boundaries(out, &recorded)?;
     remove_stale_chunks(out, files.len())?;
     chunks.done();
     let build = crate::nso::build_id(&path.join("main")).unwrap_or_default();

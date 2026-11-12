@@ -23,6 +23,21 @@ const HASH_CACHE: &str = "hash_cache.json";
 const HASH_SCHEME: u32 = 1;
 const RACY_NS: u64 = 2_000_000_000;
 
+/// What a dependency blob starts with when it names the headers a compile's
+/// depfile says it read (the back end's renderer deps), rather than a folder
+/// tree's whole blob. The key is only sound for the object the depfile was
+/// written with, so `compile_one` leaves such an object pending until
+/// `rekey_object` names it by its own new depfile.
+pub const DEPFILE_DEPS: &[u8] = b"depfile:";
+/// The stamp of an object compiled from a depfile key, until the depfile the
+/// compile just wrote names it. A build that stops before the re-keying leaves
+/// it pending, and the next build compiles it again.
+pub const DEPFILE_PENDING: &str = "depfile-pending";
+
+/// The compile commands file, beside the objects in the work folder: every
+/// compile this build runs, for clangd and clang-tidy.
+pub const COMPDB: &str = "compile_commands.json";
+
 #[derive(Clone, Debug, PartialEq)]
 struct FileStat {
     size: u64,
@@ -263,12 +278,16 @@ fn key_from_content(content: &[u8], flags: &[String], deps: &[u8], root: &Path) 
 
 /// The flags an object key is named by: include folders are left out (their
 /// headers are in deps), the builder's folder is <root>, and a sysroot's
-/// mount path is <sysroot>.
+/// mount path is <sysroot>. `-MD` and `-MF` are left out too: they only write
+/// the depfile beside the object (the renderer deps), and change nothing in
+/// it.
 pub fn flag_text(flags: &[String], root: &Path) -> String {
     let root = root.to_string_lossy();
     flags
         .iter()
-        .filter(|flag| !flag.starts_with("-I"))
+        .filter(|flag| {
+            !flag.starts_with("-I") && flag.as_str() != "-MD" && !flag.starts_with("-MF")
+        })
         .map(|flag| {
             if flag.starts_with("--sysroot=") {
                 "--sysroot=<sysroot>".to_owned()
@@ -304,6 +323,129 @@ fn cache_put(object: &Path, key: &str, cache: &Path) -> Result<(), String> {
     }
     if fs::hard_link(object, &target).is_err() {
         fs::copy(object, &target).map_err(|e| format!("{}: {e}", target.display()))?;
+    }
+    Ok(())
+}
+
+/// Name an object compiled from a depfile key by the key its own new depfile
+/// gives, and cache it under that key. `planned_key` is the key `compile_one`
+/// used: the old depfile's, which may lack a header the new source reads, or
+/// the folders' whole blob, which covers every header. Only an object stamped
+/// with one of those (or left pending) is this build's; another build's is
+/// left alone. Returns the new key when it re-keyed the object.
+pub fn rekey_object(
+    source: &Path,
+    object: &Path,
+    flags: &[String],
+    deps: &[u8],
+    root: &Path,
+    cache: &Path,
+    planned_key: &str,
+) -> Result<Option<String>, String> {
+    if !object.is_file() {
+        return Ok(None);
+    }
+    let stamp = append(object, ".sha1");
+    let Ok(old) = fs::read_to_string(&stamp) else {
+        return Ok(None);
+    };
+    if old != DEPFILE_PENDING && old != planned_key {
+        return Ok(None);
+    }
+    let key = object_key(source, flags, deps, root)?;
+    cache_put(object, &key, cache)?;
+    if key != old {
+        fs::write(&stamp, &key).map_err(|e| format!("{}: {e}", stamp.display()))?;
+    }
+    Ok(Some(key))
+}
+
+/// Start a build's compile commands file over: the stages after the driver
+/// add theirs to the same file, and an earlier build's commands do not stay.
+pub fn reset_compdb(path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
+/// `<build>/compile_commands.json`: every compile this build runs, as
+/// `compile_one` runs it, for clangd and clang-tidy. Stages write their own
+/// jobs into the same file; an entry whose object this build compiles again
+/// replaces the old one. A failure to write it is no failed build.
+pub fn write_compdb(path: &Path, jobs: &[Value]) -> Result<(), String> {
+    let directory = std::env::current_dir().unwrap_or_default();
+    let entries: Vec<Value> = jobs
+        .iter()
+        .filter_map(|job| {
+            let cc = job.get("cc").and_then(Value::as_str)?;
+            let src = job.get("src").and_then(Value::as_str)?;
+            let obj = job.get("obj").and_then(Value::as_str)?;
+            let flags: Vec<String> = job
+                .get("flags")
+                .and_then(Value::as_array)
+                .map(|flags| {
+                    flags
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut arguments = vec![cc.to_owned()];
+            arguments.extend(flags);
+            arguments.extend([
+                "-c".to_owned(),
+                src.to_owned(),
+                "-o".to_owned(),
+                obj.to_owned(),
+            ]);
+            Some(json!({
+                "directory": directory.to_string_lossy(),
+                "file": src,
+                "output": obj,
+                "arguments": arguments,
+            }))
+        })
+        .collect();
+    let mut merged: Vec<Value> = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let outputs: std::collections::HashSet<String> = entries
+        .iter()
+        .filter_map(|entry| entry["output"].as_str().map(str::to_owned))
+        .collect();
+    merged.retain(|entry| {
+        entry["output"]
+            .as_str()
+            .is_some_and(|output| !outputs.contains(output))
+            && entry["file"]
+                .as_str()
+                .is_some_and(|file| Path::new(file).is_file())
+    });
+    merged.extend(entries);
+    merged.sort_by(|a, b| {
+        a["file"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(b["file"].as_str().unwrap_or_default())
+            .then_with(|| {
+                a["output"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(b["output"].as_str().unwrap_or_default())
+            })
+    });
+    let temporary = path.with_extension("json.new");
+    let write = || -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&temporary, serde_json::to_vec(&merged)?)?;
+        fs::rename(&temporary, path)
+    };
+    if let Err(error) = write() {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("{}: {error}", path.display()));
     }
     Ok(())
 }
@@ -541,6 +683,17 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
             .unwrap_or_else(|e| e.into_inner())
             .save();
     }
+    let keys: Vec<Value> = results
+        .iter()
+        .filter_map(|(index, result)| {
+            let key = result.as_ref().ok()?.get("key")?.as_str()?;
+            Some(json!({
+                "src": jobs[*index]["src"],
+                "obj": jobs[*index]["obj"],
+                "key": key,
+            }))
+        })
+        .collect();
     for (index, result) in results {
         match result {
             Ok(value) if value["compiled"] == Value::Bool(true) => compiled += 1,
@@ -562,6 +715,7 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
         "compiled": compiled,
         "cached": cached,
         "failed": failed,
+        "keys": keys,
         "seconds": started.elapsed().as_secs_f64(),
     }))
 }
@@ -677,6 +831,17 @@ fn compile_one_with(
         );
     }
     fs::rename(&temporary, &object).map_err(|e| format!("{}: {e}", object.display()))?;
+    if deps.starts_with(DEPFILE_DEPS) {
+        // (the planned key came from the last compile's depfile, which may lack
+        // a header this source reads now: the key does not vouch for the
+        // object. rekey_object names it by the depfile this compile wrote; a
+        // build that stops before that leaves it pending, and the next build
+        // compiles it again)
+        fs::write(&stamp, DEPFILE_PENDING).map_err(|e| format!("{}: {e}", stamp.display()))?;
+        return Ok(
+            json!({"compiled": true, "cached": false, "seconds": seconds, "key": key, "error": Value::Null}),
+        );
+    }
     fs::write(&stamp, &key).map_err(|e| format!("{}: {e}", stamp.display()))?;
     cache_put(&object, &key, &cache)?;
     Ok(
@@ -1034,6 +1199,145 @@ mod tests {
             assert_eq!(changed["compiled"], true);
             assert_ne!(changed["key"], first["key"]);
         }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_depfile_flag_is_not_part_of_the_object_key() {
+        let plain = vec!["-O1".to_owned(), "-I/headers".to_owned()];
+        let with_md = vec!["-O1".to_owned(), "-I/headers".to_owned(), "-MD".to_owned()];
+        assert_eq!(
+            flag_text(&plain, Path::new("/repo")),
+            flag_text(&with_md, Path::new("/repo"))
+        );
+        assert!(!flag_text(&with_md, Path::new("/repo")).contains("-MD"));
+    }
+
+    #[test]
+    fn a_depfile_keyed_object_waits_for_its_own_depfile_and_is_rekeyed() {
+        let base =
+            std::env::temp_dir().join(format!("hookshot-rust-depfile-key-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("a.c");
+        fs::write(&source, "int a;\n").unwrap();
+        let object = base.join("a.o");
+        fs::write(&object, b"object").unwrap();
+        let stamp = append(&object, ".sha1");
+        let flags = vec!["-O1".to_owned(), "-MD".to_owned()];
+        let cache = base.join("cache");
+        fs::write(&stamp, DEPFILE_PENDING).unwrap();
+        let new_deps = b"depfile:the headers the new compile read";
+        let key = rekey_object(&source, &object, &flags, new_deps, &base, &cache, "old")
+            .unwrap()
+            .expect("a pending object is this build's");
+        assert_eq!(key, object_key(&source, &flags, new_deps, &base).unwrap());
+        assert_eq!(fs::read_to_string(&stamp).unwrap(), key);
+        assert!(cache.join(format!("{key}.o")).is_file());
+        // (an object stamped by another build is left alone)
+        fs::write(&stamp, "another build's key").unwrap();
+        assert_eq!(
+            rekey_object(&source, &object, &flags, new_deps, &base, &cache, "old").unwrap(),
+            None
+        );
+        assert_eq!(fs::read_to_string(&stamp).unwrap(), "another build's key");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_compile_from_a_depfile_key_is_pending_and_not_cached() {
+        let base = std::env::temp_dir().join(format!(
+            "hookshot-rust-depfile-pending-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("a.c");
+        fs::write(&source, "int hookshot_pending(void) { return 1; }\n").unwrap();
+        let deps = base.join("deps.bin");
+        fs::write(&deps, b"depfile:the last compile's headers").unwrap();
+        let object = base.join("a.o");
+        let cache = base.join("cache");
+        let request = json!({
+            "cc": "cc", "src": source, "obj": object, "cache": cache,
+            "flags": ["-O0", "-MD"], "deps_file": deps,
+        });
+        let answer = compile_one_json(&request, &base).unwrap();
+        if answer["error"] != Value::Null {
+            let _ = fs::remove_dir_all(base);
+            return; // no C compiler on this machine
+        }
+        assert_eq!(answer["compiled"], true);
+        let stamp = append(&object, ".sha1");
+        assert_eq!(fs::read_to_string(&stamp).unwrap(), DEPFILE_PENDING);
+        assert!(object.is_file());
+        let key = answer["key"].as_str().unwrap();
+        assert!(
+            !cache.join(format!("{key}.o")).is_file(),
+            "a key from the last depfile does not vouch for this object"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn compile_commands_have_the_clangd_schema_and_merge_stages() {
+        let base =
+            std::env::temp_dir().join(format!("hookshot-rust-compdb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let one = base.join("one.c");
+        let two = base.join("two.cpp");
+        fs::write(&one, "int one;\n").unwrap();
+        fs::write(&two, "int two;\n").unwrap();
+        let path = base.join(COMPDB);
+        let jobs = vec![json!({
+            "cc": "clang", "src": one, "obj": base.join("one.o"),
+            "flags": ["-O1", "-Ifoo"],
+        })];
+        write_compdb(&path, &jobs).unwrap();
+        let entries: Vec<Value> =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["file"], one.to_string_lossy().as_ref());
+        assert_eq!(
+            entries[0]["output"],
+            base.join("one.o").to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            entries[0]["arguments"],
+            json!([
+                "clang",
+                "-O1",
+                "-Ifoo",
+                "-c",
+                one.to_string_lossy(),
+                "-o",
+                base.join("one.o").to_string_lossy()
+            ])
+        );
+        assert_eq!(
+            entries[0]["directory"],
+            std::env::current_dir().unwrap().to_string_lossy().as_ref()
+        );
+        // (a later stage adds its jobs: the earlier stage's entry stays)
+        let jobs = vec![json!({
+            "cc": "clang++", "src": two, "obj": base.join("two.o"),
+            "flags": ["-O2"],
+        })];
+        write_compdb(&path, &jobs).unwrap();
+        let entries: Vec<Value> =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["file"] == one.to_string_lossy().as_ref())
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["file"] == two.to_string_lossy().as_ref())
+        );
         let _ = fs::remove_dir_all(base);
     }
 }

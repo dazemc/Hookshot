@@ -2,7 +2,7 @@
 //! Ported from nx2/chunks.py (the parts that do not need the lifter).
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -20,12 +20,56 @@ pub const CHUNK_BYTES: u64 = 24 << 20;
 /// six such pieces take ~0.45 GB each and a sixth of that time, so the build
 /// runs more of them at once and one changed function recompiles one piece.
 pub const UNIT_BYTES: u64 = 6 << 20;
+/// A lifted chunk also starts at the first function at or after each
+/// SUB_STRIDE of guest address (nx2/chunks.py's #2890): the game's code does
+/// not move between Hookshot versions, so these boundaries stay put however
+/// much C each function's translation is. ~14.8 bytes of C a guest byte makes
+/// a chunk about 3.7 MB, under UNIT_BYTES; a function found where none was
+/// found before moves at most one of them.
+pub const SUB_STRIDE: u64 = 0x40000;
 /// In the units folder: each chunk's size, time and pieces, so an unchanged
 /// chunk is not read again (an update build splits in milliseconds).
 pub const MANIFEST: &str = ".units.json";
 
 pub fn fn_cost(size: u64) -> u64 {
     size + size * size / QUAD
+}
+
+/// The first function at or after each multiple of `stride` past the first
+/// function (none when `stride` is 0 or there is no function). Sorted guest
+/// addresses; a function found since moves one boundary by one function.
+pub fn sub_starts(funcs: impl IntoIterator<Item = u64>, stride: u64) -> BTreeSet<u64> {
+    let mut order: Vec<u64> = funcs.into_iter().collect();
+    order.sort_unstable();
+    order.dedup();
+    let mut out = BTreeSet::new();
+    if order.is_empty() || stride == 0 {
+        return out;
+    }
+    let mut edge = (order[0] / stride + 1).saturating_mul(stride);
+    let mut at = 0usize;
+    loop {
+        at += order[at..].partition_point(|entry| *entry < edge);
+        if at >= order.len() {
+            return out;
+        }
+        out.insert(order[at]);
+        edge = (order[at] / stride + 1).saturating_mul(stride);
+    }
+}
+
+/// The boundaries of a lift: the recorded ones (`chunks.txt` or a previous
+/// lift's files) and the guest-address sub-boundaries, sorted. The
+/// sub-boundaries are not recorded: they are worked out again from the
+/// functions' addresses.
+pub fn chunk_starts(
+    recorded: &[u64],
+    funcs: impl IntoIterator<Item = u64>,
+    stride: u64,
+) -> Vec<u64> {
+    let mut starts: BTreeSet<u64> = recorded.iter().copied().collect();
+    starts.extend(sub_starts(funcs, stride));
+    starts.into_iter().collect()
 }
 
 pub fn text_cost(text: &str) -> u64 {
@@ -417,6 +461,46 @@ mod tests {
     fn costs_grow_with_the_square_of_a_function() {
         assert_eq!(fn_cost(1000), 1002);
         assert!(fn_cost(QUAD) == 2 * QUAD);
+    }
+
+    #[test]
+    fn sub_boundaries_are_the_first_function_past_each_stride() {
+        let funcs = [
+            0x80000000, 0x80000400, 0x80001010, 0x80001800, 0x80003004, 0x80003008,
+        ];
+        assert_eq!(
+            sub_starts(funcs, 0x1000),
+            BTreeSet::from([0x80001010, 0x80003004])
+        );
+        // (a long function spans strides without a boundary inside it)
+        assert_eq!(
+            sub_starts([0x80000000, 0x80000ff0, 0x80005000], 0x1000),
+            BTreeSet::from([0x80005000])
+        );
+        assert!(sub_starts([0x80000000, 0x80100000], 0).is_empty());
+        assert!(sub_starts([], 0x1000).is_empty());
+    }
+
+    #[test]
+    fn a_function_found_since_moves_one_sub_boundary_at_most() {
+        let before: Vec<u64> = (0..40).map(|i| 0x80000000 + 0x300 * i).collect();
+        let mut after = before.clone();
+        after.push(0x80004001);
+        after.sort_unstable();
+        let a = sub_starts(before, 0x1000);
+        let b = sub_starts(after, 0x1000);
+        assert!(a.symmetric_difference(&b).count() <= 2, "{a:?} -> {b:?}");
+    }
+
+    #[test]
+    fn chunk_starts_keep_the_recorded_ones_and_add_the_sub_boundaries() {
+        let funcs = [0x80000000, 0x80000800, 0x80001010, 0x80002020, 0x80004000];
+        let starts = chunk_starts(&[0x80002020], funcs, 0x1000);
+        assert_eq!(starts, [0x80001010, 0x80002020, 0x80004000]);
+        assert_eq!(
+            chunk_starts(&[], funcs, 0x1000),
+            [0x80001010, 0x80002020, 0x80004000]
+        );
     }
 
     #[test]

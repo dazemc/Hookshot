@@ -17,6 +17,7 @@
 //! project caches). Each names a package root with `include/`, or its
 //! `include/` folder itself.
 
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +25,10 @@ use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
 use crate::platform::Platform;
+
+/// The header extensions a depfile's prerequisites are read for: the back
+/// end's own headers, not the compiler's or the Vulkan SDK's.
+const HEADER_EXTS: [&str; 3] = ["h", "hpp", "inc"];
 
 /// NVIDIA's NGX runtime shim: build.py compiles it only for the Windows DLL
 /// with the NGX SDK, never for the Linux shared object.
@@ -328,6 +333,139 @@ fn absolute(path: &Path) -> PathBuf {
             .map(|dir| dir.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
     }
+}
+
+/// The prerequisites of a make-style depfile (clang -MD): the target and its
+/// `:` left out, line continuations joined, `\ ` a space in a name, `$$` a
+/// `$`, `\#` a `#`. Clang writes the names with `/` on Windows too.
+pub fn depfile_paths(text: &str) -> Vec<String> {
+    let text = text.replace("\\\r\n", " ").replace("\\\n", " ");
+    let bytes = text.as_bytes();
+    let Some(colon) = (0..bytes.len()).find(|index| {
+        bytes[*index] == b':'
+            && (*index + 1 == bytes.len() || bytes[*index + 1].is_ascii_whitespace())
+    }) else {
+        return Vec::new();
+    };
+    let body: Vec<char> = text[colon + 1..].chars().collect();
+    let mut paths = Vec::new();
+    let mut current = String::new();
+    let mut i = 0;
+    while i < body.len() {
+        let c = body[i];
+        if c == '\\' && i + 1 < body.len() && (body[i + 1] == ' ' || body[i + 1] == '#') {
+            current.push(body[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c == '$' && body.get(i + 1) == Some(&'$') {
+            current.push('$');
+            i += 2;
+            continue;
+        }
+        if c.is_whitespace() {
+            if !current.is_empty() {
+                paths.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+        i += 1;
+    }
+    if !current.is_empty() {
+        paths.push(current);
+    }
+    paths
+}
+
+/// The depfile clang writes beside an object: `vk_x.o` -> `vk_x.d`.
+pub fn depfile_of(object: &Path) -> PathBuf {
+    object.with_extension("d")
+}
+
+fn path_key(path: &Path) -> String {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = absolute.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        text.to_ascii_lowercase()
+    } else {
+        text
+    }
+}
+
+/// The headers under `roots` that `object`'s last compile read (its depfile),
+/// by name and content; `blob`, the whole folders', when there is no depfile
+/// or it names nothing under them. `cache` keeps each header's digest for the
+/// build: many objects read the same headers.
+pub fn renderer_deps(
+    blob: &str,
+    roots: &[PathBuf],
+    object: &Path,
+    cache: &mut HashMap<PathBuf, Vec<u8>>,
+) -> String {
+    let Ok(text) = fs::read_to_string(depfile_of(object)) else {
+        return blob.to_owned();
+    };
+    let tops: Vec<String> = roots
+        .iter()
+        .map(|root| {
+            let mut key = path_key(root);
+            if !key.ends_with('/') {
+                key.push('/');
+            }
+            key
+        })
+        .collect();
+    let mut picked = BTreeSet::new();
+    for path in depfile_paths(&text) {
+        let path = PathBuf::from(&path);
+        let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+        if !HEADER_EXTS.contains(&extension) {
+            continue;
+        }
+        let key = path_key(&path);
+        if tops.iter().any(|top| key.starts_with(top)) {
+            picked.insert(key);
+        }
+    }
+    if picked.is_empty() {
+        return blob.to_owned();
+    }
+    let mut digest = Sha1::new();
+    digest.update(b"depfile 1\0");
+    for key in picked {
+        let path = PathBuf::from(&key);
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let entry = cache.entry(path.clone()).or_insert_with(|| {
+            let mut entry = name.as_bytes().to_vec();
+            match fs::read(&path) {
+                Ok(data) => entry.extend_from_slice(&Sha1::digest(&data)),
+                Err(_) => entry.extend_from_slice(b"\0gone"),
+            }
+            entry
+        });
+        digest.update(entry);
+    }
+    format!("depfile:{:x}", digest.finalize())
+}
+
+/// The back end's own files are compiled with `-MD`, which writes the depfile
+/// `renderer_deps` names them by; Eden's and sirit's keep their own headers'
+/// blob and no depfile. `-MF` names the depfile explicitly because the object
+/// is written to a temporary name first: without it clang would name the
+/// depfile after `vk_x.o.part`, not `vk_x.d`.
+pub fn backend_flags(base: &[String], library: bool, depfile: Option<&Path>) -> Vec<String> {
+    let mut flags = base.to_vec();
+    if !library {
+        flags.push("-MD".to_owned());
+        if let Some(depfile) = depfile {
+            flags.push(format!("-MF{}", depfile.display()));
+        }
+    }
+    flags
 }
 
 /// The DLSS SDK folder a build reads: the request's, else `HOOKSHOT_NGX_SDK`.
@@ -1041,12 +1179,13 @@ fn build_at_for(
         vk.join("compat"),
         gpu.join("compat"),
     ])?;
-    let vdeps = tree_headers(&[
+    let vdeps_roots = vec![
         vk.clone(),
         gpu.join("render"),
         gpu.join("compat"),
         gpu.join("third_party/suyu/video_core/textures"),
-    ])?;
+    ];
+    let vdeps = tree_headers(&vdeps_roots)?;
     let imgui_deps = flat_headers(&[imgui.clone(), imgui.join("backends"), zstd.clone()])?;
     let vdeps_imgui = {
         let mut digest = Sha1::new();
@@ -1064,17 +1203,20 @@ fn build_at_for(
     // (NVIDIA's and AMD's headers are that file's dependency alone: an SDK
     // update rebuilds vk_dlss.cpp or vk_fsr4.cpp and nothing else, as
     // build.py's ngx_deps and FSR flags do)
-    let vdeps_ngx = match &ngx {
-        Some(sdk) => Some(format!("{vdeps}{}", tree_headers(&[sdk.join("include")])?)),
+    let ngx_headers_deps = match &ngx {
+        Some(sdk) => Some(tree_headers(&[sdk.join("include")])?),
         None => None,
     };
-    let vdeps_fsr = match &fsr {
-        Some(folder) => Some(format!(
-            "{vdeps}{}",
-            tree_headers(std::slice::from_ref(folder))?
-        )),
+    let fsr_headers_deps = match &fsr {
+        Some(folder) => Some(tree_headers(std::slice::from_ref(folder))?),
         None => None,
     };
+    let vdeps_ngx = ngx_headers_deps
+        .as_ref()
+        .map(|extra| format!("{vdeps}{extra}"));
+    let vdeps_fsr = fsr_headers_deps
+        .as_ref()
+        .map(|extra| format!("{vdeps}{extra}"));
     let zstd_deps = zstd_headers(&zstd)?;
     let posix_deps = tree_headers(&[root.join("host/posix")])?;
     let deps = |name: &str| build.join(name);
@@ -1146,7 +1288,10 @@ fn build_at_for(
         Path::new(""),
         &cache,
     ));
-    // (the back end's own sources)
+    // (the back end's own sources: each compiled with -MD, and keyed by the
+    // headers its last depfile says it read, not the whole folder tree)
+    let mut header_digests = HashMap::new();
+    let mut depfile_jobs: Vec<(PathBuf, PathBuf, Vec<String>, String)> = Vec::new();
     for src in sources(root)? {
         let relative = relative_to(&src, &vk);
         let name = src.file_name().and_then(|name| name.to_str()).unwrap_or("");
@@ -1154,22 +1299,9 @@ fn build_at_for(
             .components()
             .next()
             .is_some_and(|top| top.as_os_str() == "eden" || top.as_os_str() == "sirit");
-        let deps_file = if lib {
-            &vk_lib_deps_file
-        } else if name == "vk_dlss.cpp" && vdeps_ngx.is_some() {
-            &vdeps_ngx_file
-        } else if name == "vk_fsr4.cpp" && vdeps_fsr.is_some() {
-            &vdeps_fsr_file
-        } else if IMGUI_USERS.contains(&name) {
-            if name == "vk_imgui.cpp" {
-                &vdeps_imgui_file
-            } else {
-                &vdeps_ui_file
-            }
-        } else {
-            &vdeps_file
-        };
-        let mut flags = vflags.clone();
+        let object = obj_dir.join(object_name(&relative));
+        let depfile = depfile_of(&object);
+        let mut flags = backend_flags(&vflags, lib, (!lib).then_some(depfile.as_path()));
         if name == "vk_shader.cpp" {
             flags.push(shader_stamp_define(&stamp));
         }
@@ -1191,14 +1323,36 @@ fn build_at_for(
         if IMGUI_USERS.contains(&name) {
             flags.extend(imflags.iter().cloned());
         }
-        jobs.push(job(
-            &cxx,
-            &src,
-            &obj_dir.join(object_name(&relative)),
-            &flags,
-            deps_file,
-            &cache,
-        ));
+        let mut extras = String::new();
+        if name == "vk_dlss.cpp"
+            && let Some(extra) = &ngx_headers_deps
+        {
+            extras.push_str(extra);
+        }
+        if name == "vk_fsr4.cpp"
+            && let Some(extra) = &fsr_headers_deps
+        {
+            extras.push_str(extra);
+        }
+        if IMGUI_USERS.contains(&name) {
+            extras.push_str(&imgui_deps);
+            if name == "vk_imgui.cpp" {
+                extras.push_str(&logo);
+            }
+        }
+        let deps_file = if lib {
+            vk_lib_deps_file.clone()
+        } else {
+            let deps_text = format!(
+                "{}{extras}",
+                renderer_deps(&vdeps, &vdeps_roots, &object, &mut header_digests)
+            );
+            let path = build.join(format!("vk_deps_{}.bin", object_name(&relative)));
+            write_deps(&path, &deps_text)?;
+            depfile_jobs.push((src.clone(), object.clone(), flags.clone(), extras));
+            path
+        };
+        jobs.push(job(&cxx, &src, &object, &flags, &deps_file, &cache));
     }
     if platform == Platform::Windows
         && let Some(sdk) = &ngx
@@ -1245,6 +1399,7 @@ fn build_at_for(
         ));
     }
 
+    let _ = crate::compile::write_compdb(&work.join("build").join(crate::compile::COMPDB), &jobs);
     let mut compiled =
         crate::compile::many_json(&json!({"jobs": jobs, "cache": cache, "parallel": 0}), root)?;
     if compiled["failed"]
@@ -1258,6 +1413,37 @@ fn build_at_for(
             "compiled": compiled,
             "headers": roots.json(),
         }));
+    }
+    // (an object compiled from a depfile key is pending: name it by the
+    // depfile this compile wrote, or the next build compiles it again)
+    let keys: HashMap<String, String> = compiled["keys"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some((
+                entry["obj"].as_str()?.to_owned(),
+                entry["key"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    for (src, object, flags, extras) in depfile_jobs {
+        let Some(planned) = keys.get(object.to_string_lossy().as_ref()) else {
+            continue;
+        };
+        let deps_text = format!(
+            "{}{extras}",
+            renderer_deps(&vdeps, &vdeps_roots, &object, &mut header_digests)
+        );
+        crate::compile::rekey_object(
+            &src,
+            &object,
+            &flags,
+            deps_text.as_bytes(),
+            root,
+            &cache,
+            planned,
+        )?;
     }
     let objects: Vec<String> = jobs
         .iter()
@@ -2299,6 +2485,150 @@ mod tests {
                 .iter()
                 .any(|flag| flag == &format!("-I{}", folder.display()))
         );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_depfile_names_its_prerequisites_with_escapes_and_continuations() {
+        let paths = depfile_paths(
+            "obj/vk_x.o: /repo/gpu/vk/a.h \\\n /repo/gpu/vk/b\\ c.h /usr/include/vulkan.h \\\n /repo/gpu/vk/d\\#e.h /repo/gpu/vk/$$x.h\n",
+        );
+        assert_eq!(
+            paths,
+            [
+                "/repo/gpu/vk/a.h",
+                "/repo/gpu/vk/b c.h",
+                "/usr/include/vulkan.h",
+                "/repo/gpu/vk/d#e.h",
+                "/repo/gpu/vk/$x.h",
+            ]
+        );
+        assert!(depfile_paths("no target here").is_empty());
+    }
+
+    #[test]
+    fn renderer_deps_follow_the_headers_the_depfile_names() {
+        let base = temp("depfile");
+        let vk = base.join("gpu/vk");
+        let render = base.join("gpu/render");
+        fs::create_dir_all(&vk).unwrap();
+        fs::create_dir_all(&render).unwrap();
+        let one = vk.join("one.h");
+        let two = render.join("two.hpp");
+        let outside = base.join("outside.h");
+        fs::write(&one, "/* one */\n").unwrap();
+        fs::write(&two, "/* two */\n").unwrap();
+        fs::write(&outside, "/* outside */\n").unwrap();
+        let object = base.join("obj/vk_x.o");
+        fs::create_dir_all(object.parent().unwrap()).unwrap();
+        let depfile = depfile_of(&object);
+        fs::write(
+            &depfile,
+            format!(
+                "{}: {} {} {} /usr/include/vulkan/vulkan.h\n",
+                object.display(),
+                one.display(),
+                two.display(),
+                outside.display()
+            ),
+        )
+        .unwrap();
+        let roots = vec![vk.clone(), render.clone()];
+        let mut cache = HashMap::new();
+        let first = renderer_deps("the folders' blob", &roots, &object, &mut cache);
+        assert_ne!(first, "the folders' blob");
+        assert!(first.starts_with("depfile:"));
+        assert_eq!(
+            first,
+            renderer_deps("the folders' blob", &roots, &object, &mut cache)
+        );
+        // (a header the depfile names is the key; one outside the roots and
+        // the compiler's own are not. The cache is this run's: a new run
+        // reads the header again)
+        fs::write(&one, "/* one changed */\n").unwrap();
+        let mut cache = HashMap::new();
+        let changed = renderer_deps("the folders' blob", &roots, &object, &mut cache);
+        assert_ne!(first, changed);
+        fs::write(&outside, "/* outside changed */\n").unwrap();
+        assert_eq!(
+            changed,
+            renderer_deps("the folders' blob", &roots, &object, &mut cache)
+        );
+        // (no depfile yet, or one that names nothing under the roots: the
+        // whole folders' blob)
+        fs::remove_file(&depfile).unwrap();
+        assert_eq!(
+            renderer_deps("the folders' blob", &roots, &object, &mut cache),
+            "the folders' blob"
+        );
+        fs::write(
+            &depfile,
+            format!("{}: {}\n", object.display(), outside.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            renderer_deps("the folders' blob", &roots, &object, &mut cache),
+            "the folders' blob"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn only_the_back_ends_own_files_are_compiled_with_a_depfile() {
+        let base = vec!["-O2".to_owned()];
+        let depfile = Path::new("/work/obj/vk_x.d");
+        let own = backend_flags(&base, false, Some(depfile));
+        let library = backend_flags(&base, true, Some(depfile));
+        assert_eq!(
+            own,
+            [
+                "-O2".to_owned(),
+                "-MD".to_owned(),
+                "-MF/work/obj/vk_x.d".to_owned()
+            ]
+        );
+        assert_eq!(library, ["-O2".to_owned()]);
+    }
+
+    #[test]
+    fn a_compile_writes_the_depfile_the_renderer_key_reads() {
+        let base = temp("depfile-compile");
+        let header = base.join("a.h");
+        let source = base.join("a.cpp");
+        fs::write(&header, "#define HOOKSHOT_A 1\n").unwrap();
+        fs::write(
+            &source,
+            "#include \"a.h\"\nint hookshot_dep(void) { return HOOKSHOT_A; }\n",
+        )
+        .unwrap();
+        let object = base.join("obj/vk_a.o");
+        fs::create_dir_all(object.parent().unwrap()).unwrap();
+        let depfile = depfile_of(&object);
+        let flags = backend_flags(
+            &["-O0".to_owned(), format!("-I{}", base.display())],
+            false,
+            Some(&depfile),
+        );
+        let request = json!({
+            "cc": "clang", "src": source, "obj": object, "cache": base.join("cache"),
+            "flags": flags, "deps_file": "",
+        });
+        let answer = crate::compile::compile_one_json(&request, &base).unwrap();
+        if answer["error"] != Value::Null {
+            let _ = fs::remove_dir_all(base);
+            return; // no clang on this machine
+        }
+        assert!(depfile.is_file(), "{} was not written", depfile.display());
+        let text = fs::read_to_string(&depfile).unwrap();
+        assert!(text.contains("a.h"), "{text}");
+        let mut cache = HashMap::new();
+        let deps = renderer_deps(
+            "the folders' blob",
+            std::slice::from_ref(&base),
+            &object,
+            &mut cache,
+        );
+        assert!(deps.starts_with("depfile:"), "{deps}");
         let _ = fs::remove_dir_all(base);
     }
 }
