@@ -399,7 +399,32 @@ fn patch_frame_seconds(s: &str) -> (String, u32) {
     (out, done)
 }
 
+fn heap_sites() -> &'static regex::RegexSet {
+    static SET: std::sync::OnceLock<regex::RegexSet> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let mut patterns = Vec::new();
+        for lr in GPU_ALLOC_SITES {
+            patterns.push(regex::escape(&format!(
+                "c->x[30] = {lr:#x}ULL; f_80522050(c);"
+            )));
+            patterns.push(regex::escape(&format!(
+                "c->x[30] = {lr:#x}ULL; hos_oot_gpu_alloc(c, f_80522050);"
+            )));
+        }
+        for lr in HEAP_ALLOC_SITES {
+            patterns.push(regex::escape(&format!(
+                "{{ uint64_t _t = c->x[8]; c->x[30] = {lr:#x}ULL; A64_ICALL(c, _t); }}"
+            )));
+            patterns.push(regex::escape(&format!("c->x[30] = {lr:#x}ULL; A64_ICALL(c, _t);")));
+        }
+        regex::RegexSet::new(patterns).expect("heap site patterns")
+    })
+}
+
 fn patch_heap_retry(s: &str) -> (String, [u32; 2]) {
+    if !heap_sites().is_match(s) {
+        return (s.to_owned(), [0, 0]);
+    }
     let mut out = s.to_owned();
     let mut found = [0u32, 0u32];
     let mut decls: Vec<&str> = Vec::new();
@@ -1067,11 +1092,27 @@ pub fn apply_folder(
     Ok(log)
 }
 
+fn out_edits() -> &'static regex::RegexSet {
+    static SET: std::sync::OnceLock<regex::RegexSet> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let patterns: Vec<String> = OUT_EDITS
+            .iter()
+            .flat_map(|(old, new)| [regex::escape(old), regex::escape(new)])
+            .collect();
+        regex::RegexSet::new(patterns).expect("output-size patterns")
+    })
+}
+
 /// The output-size edits for one chunk's text. Kept apart from the driver so
 /// the same file is read, patched and written once.
 fn output_size_patch(out: &mut String, base: &str) -> (Vec<String>, [usize; OUT_EDITS.len()]) {
     let mut log = Vec::new();
     let mut found = [0usize; OUT_EDITS.len()];
+    // (one pass over the file to know that none of the 16 literals is here;
+    // without it every chunk is searched 16 times for rare sites)
+    if !out_edits().is_match(out) {
+        return (log, found);
+    }
     let mut hit = false;
     for (index, (old, new)) in OUT_EDITS.iter().enumerate() {
         let made = out.matches(new).count();
