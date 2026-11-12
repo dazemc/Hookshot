@@ -2,6 +2,7 @@
 # (builder/setup/setup.c, with llvm-mingw) and the Flutter Builder package (builder/flutter with the Rust engine in
 # builder/rust), split into the parts the setup downloads by scripts/windows/release_parts.sh. The cpm, third_party and
 # wgpu-native parts, and the play profile, are the latest release's (scripts/windows/release_parts.sh previous/package);
+# the cpm part gets dav1d added (the dav1d job) when that release's lacks it;
 # llvm-mingw is its official release. The Windows Vulkan back end is compiled too, with the same llvm-mingw through the
 # Rust engine's build.vk: players build it on their PC, this only checks that it still builds. A workflow artifact on
 # every run; for a release, the new parts go to the builder-parts release and the setup (HookshotBuilder.exe) and its
@@ -55,6 +56,7 @@ jobs:
     # (builder-parts holds the installer's parts: no package there. nightly is moved by the release job of a push to main,
     # and rc by the Release workflow)
     if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly' && github.ref_name != 'rc'
+    needs: [dav1d]
     runs-on: windows-2022
     timeout-minutes: 60
     # (id-token and attestations: a release's build provenance)
@@ -156,6 +158,12 @@ jobs:
           flutter build windows --release
           ls -l build/windows/x64/runner/Release
 
+      # (dav1d for the AV1 movies, from the dav1d job: added to the cpm part when the latest release's lacks it)
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dav1d-windows
+          path: ${{ runner.temp }}/dav1d-cpm
+
       # (it stops when assets/pipeline_states/, the sources of the pipeline state list every release ships, hold none; and
       # when the Flutter bundle has none of the engine, a64emit or the sources the engine compiles)
       - name: Package folder
@@ -168,6 +176,7 @@ jobs:
             --setup "$RUNNER_TEMP/HookshotBuilder-Setup.exe"
             --tag "$TAG"
             --repository "$GITHUB_REPOSITORY"
+            --cpm-add "$RUNNER_TEMP/dav1d-cpm"
           )
           if [[ -n $PREVIOUS ]]; then args+=(--previous "$PREVIOUS"); fi
           scripts/windows/release_parts.sh package "${args[@]}"
@@ -204,6 +213,51 @@ jobs:
         with:
           name: HookshotBuilder-windows
           path: dist/
+          if-no-files-found: error
+
+  # dav1d for the AV1 movies (issue 2316: the CPM cache's FFmpeg has none), made as scripts/windows/dav1d.sh makes it, with
+  # the same llvm-mingw release on Linux, and checked under Wine by tests/dav1d_av1_test.c. The artifact is a CPM folder
+  # (dav1d/<version>): the package job adds it to the cpm part when the latest release's lacks it, and the new part goes
+  # to builder-parts with the others. The build prints the library's SHA-256, the same on every run with the same pins.
+  dav1d:
+    name: dav1d for Windows (llvm-mingw)
+    if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly' && github.ref_name != 'rc'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      LLVM_MINGW: llvm-mingw-20261104-ucrt-ubuntu-22.04-x86_64
+      LLVM_MINGW_SHA256: 919380403de87dca3c581c2053230cd298af5e891286628ba0613b7fed370926
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Meson, nasm and Wine
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build nasm wine64
+      - name: llvm-mingw (Linux)
+        run: |
+          curl -fL --retry 5 --retry-delay 10 --proto '=https' -o "$RUNNER_TEMP/llvm.tar.xz" \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/$LLVM_MINGW.tar.xz"
+          echo "$LLVM_MINGW_SHA256  $RUNNER_TEMP/llvm.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
+          echo "HOOKSHOT_MINGW=$RUNNER_TEMP/$LLVM_MINGW" >> "$GITHUB_ENV"
+      - name: dav1d
+        run: scripts/windows/dav1d.sh "$RUNNER_TEMP/cpm"
+      - name: host/dav1d_av1.c on it, under Wine
+        run: |
+          dav1d=$(ls -d "$RUNNER_TEMP"/cpm/dav1d/*)
+          cc="$HOOKSHOT_MINGW/bin/x86_64-w64-mingw32-clang"
+          "$cc" -std=c11 -O1 -w -I"$dav1d/include" tests/dav1d_av1_test.c host/dav1d_av1.c \
+            "$dav1d/lib/libdav1d.a" -static -o "$RUNNER_TEMP/dav1d-test.exe"
+          wine=$(command -v wine || command -v wine64 || echo /usr/lib/wine/wine64)
+          export WINEPREFIX="$RUNNER_TEMP/wine" WINEDEBUG=-all
+          HOS_DAV1D_THREADS=1 "$wine" "$RUNNER_TEMP/dav1d-test.exe" tests/dav1d_av1/lossless_64x48.ivf
+          HOS_DAV1D_THREADS=4 "$wine" "$RUNNER_TEMP/dav1d-test.exe" tests/dav1d_av1/lossless_64x48.ivf
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dav1d-windows
+          path: ${{ runner.temp }}/cpm
           if-no-files-found: error
 
   vulkan:

@@ -13,14 +13,20 @@
 #       with llvm-mingw (not third_party/a64-kit/lift/build_emit.py)
 #   scripts/windows/release_parts.sh package <out folder> --bundle <Flutter Release folder>
 #       --engine <cargo target/release> --tag <tag> [--a64emit <dll>] [--setup <setup exe>]
-#       [--previous <setup list>] [--repository <owner/name>]
+#       [--previous <setup list>] [--repository <owner/name>] [--cpm-add <folder>]
 #       the package folder the setup splits: the Flutter app and its Rust
-#       engine, a64emit, the tracked sources under tools/ and the play profile
+#       engine, a64emit, the tracked sources under tools/ and the play profile;
+#       --cpm-add adds a <package>/<version> folder (dav1d, scripts/windows/dav1d.sh)
+#       to the earlier cpm part's tools/cpm when it lacks it
+#   scripts/windows/release_parts.sh cpm-add <setup list> <folder> <tools folder>
+#       the earlier cpm part into <tools folder>/cpm with the folder's
+#       <package>/<version> folders added when it lacks one
 #   scripts/windows/release_parts.sh parts <package folder> <tag> <out folder>
 #       --base <url> [--reuse <setup list>] [--require-reuse]
-#       the app part zip and hookshot-setup.txt; cpm, third_party, wgpu-native
-#       and llvm-mingw keep the earlier list's lines, so unchanged parts are
-#       not uploaded again
+#       the app part zip and hookshot-setup.txt; a cpm part when the package
+#       has tools/cpm (dav1d added), else the earlier list's; third_party,
+#       wgpu-native and llvm-mingw keep the earlier list's lines, so unchanged
+#       parts are not uploaded again
 #   scripts/windows/release_parts.sh zip <out.zip> <folder>
 #       a zip of the folder's contents (the RecompLauncher zip)
 #
@@ -45,7 +51,7 @@ say() { printf '%s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
 
 usage() {
-    sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -303,11 +309,52 @@ a64emit() {
     say "$out: $(file_size "$out") bytes"
 }
 
+cpm_add() {
+    [ $# -eq 3 ] || usage
+    local list=$1 add=$2 tools=$3
+    list=$(posix_path "$list")
+    add=$(posix_path "$add")
+    tools=$(posix_path "$tools")
+    [ -d "$add" ] || die "$add: no <package>/<version> folders"
+    local cpm="$tools/cpm"
+    if [ -n "$list" ] && [ -f "$list" ]; then
+        local zip tmp
+        zip=$(download_part "$list" cpm)
+        tmp=$(mktemp -d)
+        extract_zip "$zip" "$tmp"
+        if [ -d "$tmp/HookshotBuilder/tools/cpm" ]; then
+            mkdir -p "$cpm"
+            cp -a "$tmp/HookshotBuilder/tools/cpm"/. "$cpm"/
+            say "cpm: the earlier part unpacked into $cpm"
+        else
+            say "warning: the earlier cpm part has no tools/cpm"
+        fi
+        rm -rf "$tmp"
+    fi
+    local src name version dst added=0
+    for src in "$add"/*/*; do
+        [ -d "$src" ] || continue
+        name=$(basename "$(dirname "$src")")
+        version=$(basename "$src")
+        dst="$cpm/$name/$version"
+        if [ -d "$dst" ]; then
+            say "cpm: $name/$version is already there"
+        else
+            mkdir -p "$cpm/$name"
+            cp -a "$src" "$dst"
+            added=1
+        fi
+    done
+    if [ "$added" = 0 ]; then
+        say "cpm: the earlier part has every package"
+    fi
+}
+
 package() {
     [ $# -ge 1 ] || usage
     local out=$1
     shift
-    local bundle="" engine="" a64="" setup="" tag="" previous="" repository=""
+    local bundle="" engine="" a64="" setup="" tag="" previous="" repository="" cpm_add_folder=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --bundle) bundle="${2:?}"; shift 2 ;;
@@ -317,6 +364,7 @@ package() {
             --tag) tag="${2:?}"; shift 2 ;;
             --previous) previous="${2:?}"; shift 2 ;;
             --repository) repository="${2:?}"; shift 2 ;;
+            --cpm-add) cpm_add_folder="${2:?}"; shift 2 ;;
             *) usage ;;
         esac
     done
@@ -389,6 +437,9 @@ package() {
         fi
         rm -rf "$tmp"
     fi
+    if [ -n "$cpm_add_folder" ] && [ -n "$previous" ]; then
+        cpm_add "$previous" "$cpm_add_folder" "$tools"
+    fi
 
     find "$out" -name __pycache__ -prune -exec rm -rf {} +
     find "$tools/assets/pipeline_states" -name '*.bin.xz' -size +0 -print -quit 2>/dev/null |
@@ -416,7 +467,8 @@ parts() {
     [ -n "$base" ] || die "parts needs --base"
     base=${base%/}
     mkdir -p "$out"
-    rm -f "$out"/HookshotBuilder-app.zip "$out"/HookshotBuilder-app-*.zip "$out/hookshot-setup.txt"
+    rm -f "$out"/HookshotBuilder-app.zip "$out"/HookshotBuilder-app-*.zip \
+        "$out"/HookshotBuilder-cpm-*.zip "$out/hookshot-setup.txt"
     printf '%s\n' "$tag" >"$package/HookshotBuilder/tools/version.txt"
     printf '%s\n' "$tag" >"$package/HookshotBuilder/tools/VERSION"
 
@@ -427,14 +479,35 @@ parts() {
     named="$out/HookshotBuilder-app-${sha:0:12}.zip"
     mv -f "$zip" "$named"
 
+    local cpm_line=""
+    if [ -d "$package/HookshotBuilder/tools/cpm" ]; then
+        local stage="$out/.cpm-part" cpm_zip="$out/HookshotBuilder-cpm.zip" csha csize cnamed
+        rm -rf "$stage"
+        mkdir -p "$stage/HookshotBuilder/tools"
+        cp -a "$package/HookshotBuilder/tools/cpm" "$stage/HookshotBuilder/tools/cpm"
+        create_zip "$cpm_zip" "$stage"
+        csha=$(file_sha "$cpm_zip")
+        csize=$(file_size "$cpm_zip")
+        cnamed="$out/HookshotBuilder-cpm-${csha:0:12}.zip"
+        mv -f "$cpm_zip" "$cnamed"
+        cpm_line="part $csha $csize . - - $base/$(basename "$cnamed")"
+        rm -rf "$stage"
+        say "cpm: a new part with $(find "$package/HookshotBuilder/tools/cpm" -type f | wc -l | tr -d ' ') files, $((csize >> 20)) MB compressed, $csha"
+    fi
+
     local -a lines=("tag $tag" "part $sha $size . - - $base/$(basename "$named")")
     local name line
     for name in cpm third_party wgpu-native; do
         line=""
-        if [ -n "$reuse" ]; then line=$(part_line "$reuse" "$name"); fi
+        if [ "$name" = cpm ] && [ -n "$cpm_line" ]; then line="$cpm_line"; fi
+        if [ -z "$line" ] && [ -n "$reuse" ]; then line=$(part_line "$reuse" "$name"); fi
         if [ -n "$line" ]; then
             lines+=("$line")
-            say "$name: as in $(basename "$reuse")"
+            if [ "$name" = cpm ] && [ -n "$cpm_line" ]; then
+                say "cpm: the new part with dav1d"
+            else
+                say "$name: as in $(basename "$reuse")"
+            fi
         elif [ "$require" = 1 ]; then
             die "no $name part in $reuse: a release needs it"
         else
@@ -466,6 +539,7 @@ case "$command" in
     previous) previous "$@" ;;
     llvm-mingw) llvm_mingw "$@" ;;
     a64emit) a64emit "$@" ;;
+    cpm-add) cpm_add "$@" ;;
     package) package "$@" ;;
     parts) parts "$@" ;;
     zip) zip_folder "$@" ;;
