@@ -15,6 +15,9 @@ on:
       - 'gpu/vk/sirit/**'
       - 'gpu/vk/compat/**'
       - 'gpu/compat/**'
+      - 'gpu/vk/retired_give_back.h'
+      - 'gpu/vk/vk_memory.cpp'
+      - 'tests/retired_give_back_test.cpp'
       - 'gpu/third_party/suyu/**'
       - 'tests/global_load_16/**'
       - 'tests/global_load_16_ir.cpp'
@@ -31,6 +34,9 @@ on:
       - 'gpu/vk/sirit/**'
       - 'gpu/vk/compat/**'
       - 'gpu/compat/**'
+      - 'gpu/vk/retired_give_back.h'
+      - 'gpu/vk/vk_memory.cpp'
+      - 'tests/retired_give_back_test.cpp'
       - 'gpu/third_party/suyu/**'
       - 'tests/global_load_16/**'
       - 'tests/global_load_16_ir.cpp'
@@ -200,6 +206,20 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ${{ steps.ccache.outputs.key }}
+
+  retired-give-back:
+    name: Retired import rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile and run the rules
+        run: |
+          c++ -std=c++20 -Wall -Wextra -Werror tests/retired_give_back_test.cpp -o "$RUNNER_TEMP/retired-give-back"
+          "$RUNNER_TEMP/retired-give-back"
 
   actionlint:
     name: Workflow lint (actionlint)

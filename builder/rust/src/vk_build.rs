@@ -1773,6 +1773,27 @@ mod tests {
     }
 
     #[test]
+    fn retired_imports_use_the_grace_rule() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mem = fs::read_to_string(root.join("gpu/vk/vk_memory.cpp")).unwrap();
+        for needle in [
+            "#include \"retired_give_back.h\"",
+            "retired_give_back::mode(v && *v, env_on(\"RX_VK_KEEP_RETIRED\"), windows, dev.props.vendorID == 0x10DE)",
+            "retired_give_back::due(mode, idle, idle_ms, floor_ms, want > 0)",
+            "env_int(\"RX_VK_RETIRE_SECS\", 30)",
+            "env_int(\"RX_VK_RETIRE_MIN_SECS\", 2)",
+            "if (mode == Mode::GRACE && high > 0) {",
+            "old->retired_ms = import_now_ms();",
+            "retired_give_back::settled(used, dead_import_bytes), budget, high, low)",
+            "if (retired_mode() == retired_give_back::Mode::GRACE) used = retired_give_back::settled(used, dead_import_bytes);",
+            "dead_import_bytes += p.hi - p.lo;",
+            "dead_import_bytes -= std::min(dead_import_bytes, dead_imports.front().bytes);",
+        ] {
+            assert!(mem.contains(needle), "vk_memory.cpp no longer has {needle}");
+        }
+    }
+
+    #[test]
     fn image_pool_blocks_are_made_at_the_start() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let vma = fs::read_to_string(root.join("gpu/vk/vk_vma.cpp")).unwrap();
