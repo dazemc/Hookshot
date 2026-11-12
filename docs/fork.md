@@ -109,7 +109,7 @@ Still Python or not ported:
 |---|---|
 | Flutter build/update fallback | **Removed.** Flutter does not invoke Python; a missing engine is a typed error. |
 | Release/AppImage/Windows packaging | Linux AppImage and Windows package pipelines build Flutter + Rust; `v2.2.0-rs.1` is published with both. The AppImage needs distribution clang and Vulkan/SPIR-V/VMA headers for a game build |
-| Prompt textures (`Common.bntx`, per-face `textures.bin`) | **BC4 letters and ASTC notes ported in Rust**: BNTX/GOB parsing, a glyph rasterizer, BC4 blocks, a vendored ASTC encoder and the HPTX run writer make `Common.bntx`, the non-Switch faces' `KeyTexFont` shapes and the `OcarinaButton` note textures. Controller pictures and guide lines are still the game's |
+| Prompt textures (`Common.bntx`, per-face `textures.bin`) | **BC4 letters, ASTC notes and controller labels ported in Rust**: BNTX/GOB parsing, a glyph rasterizer, BC4 blocks, a vendored ASTC encoder/decoder and the HPTX run writer make `Common.bntx`, the `KeyTexFont` shapes, the `OcarinaButton` note textures and the four face labels on `Controller_Pro`/`Controller_Pro1`. The hand-drawn controller bodies and guide lines are still the game's |
 | Legacy Tk/WPF builders | Kept for upstream release scripts, not used by the Flutter app |
 | Python source-reading tests | Deleted; tests are Rust, Flutter and C/C++ |
 
@@ -140,11 +140,12 @@ commits, not upstream ancestors. Ported recently:
 - **RADV/Navi #1965, #2215**: the AMD no-optimizer rule for task and mesh programs excludes Mesa's RADV (the unoptimized
   task program reset the GPU while the Great Deku Tree save loads), and the task+mesh fallback covers 0x73af (RX 6900
   XT XTXH) and 0x73a5 (RX 6950 XT).
-- **Prompt textures, BC4 letters and ASTC notes**: the Rust prompt build writes `Common.bntx` and each non-Switch
-  face's `textures.bin`. ARM's astc-encoder is vendored behind a two-function C wrapper (no bindgen/libclang), and the
-  `OcarinaButton` note icons are compressed as 4x4 ASTC. The in-game Xbox face logged 3,968 runs and the live texture
-  pool at 60 fps with no traps. Fixtures cover the BNTX table (BC4 and ASTC), GOB addresses, BC4 levels, masks, the
-  ASTC wrapper and the HPTX header; controller pictures and guide lines remain.
+- **Prompt textures, BC4 letters, ASTC notes and controller labels**: the Rust prompt build writes `Common.bntx` and
+  each non-Switch face's `textures.bin`. ARM's astc-encoder is vendored behind a C wrapper (no bindgen/libclang); the
+  note icons are compressed as 4x4 ASTC, and the game's `Controller_Pro`/`Controller_Pro1` pictures get the face's
+  four button labels. The in-game Xbox face logged 102,568 runs and ran at 56 fps with no traps. Fixtures cover the
+  BNTX table, GOB addresses, BC4 levels, masks, the ASTC wrapper and the HPTX header; the controller bodies and guide
+  lines remain.
 - **11 Vulkan fixes**: texture table, span aging, split fence wait, recorder packet, Intel storage loop, subgroup
   barrier, mesh grass hold, pipeline-cache header, 250 ms readback, RADV mesh default, Intel uniform snapshot.
 - **7 host fixes**: update downgrade guard, menu option order, Steam gyro, Aux/splitter audio, window title/class,
@@ -162,13 +163,13 @@ Do not port game-derived pipeline lists or generated game data.
 
 `source-regressions.yml` runs Rust tests on Linux and Windows, Flutter tests/analyze, three SPIR-V fixture builds and
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
-All five workflows are green on `8fbdb957`. The pre-release `v2.2.0-rs.8` was built from that commit and adds the
-vendored ASTC encoder and note textures to the RADV/Navi, GCN, BC4 prompt-texture, #1830 shader, #2114 video,
-DLSS/V-Sync, compile-wave scheduler, worker/mirror/image-pool and retired-import work. `v2.2.0-rs.7` (from
-`b961fc43`) has everything but the ASTC notes; `v2.2.0-rs.6` (from `b8928aff`) has neither of the last two.
+All five workflows are green on `acf9b000`. The pre-release `v2.2.0-rs.9` was built from that commit and adds the
+controller-picture labels to the vendored ASTC notes, RADV/Navi, GCN, BC4 prompt-texture, #1830 shader, #2114 video,
+DLSS/V-Sync, compile-wave scheduler, worker/mirror/image-pool and retired-import work. `v2.2.0-rs.8` (from
+`8fbdb957`) has everything but the controller labels; `v2.2.0-rs.7` (from `b961fc43`) has neither of the last two.
 
 The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
-app and Rust engine without Python; the pre-release (`v2.2.0-rs.8`) is published with the AppImage and the
+app and Rust engine without Python; the pre-release (`v2.2.0-rs.9`) is published with the AppImage and the
 Windows setup. The Linux image is a development image: a game build needs distribution clang and Vulkan/SPIR-V/VMA
 headers (or a source build). The repository never contains game files or generated game data.
 
