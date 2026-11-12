@@ -25,6 +25,8 @@ on:
       - 'nx2/oot_jitter.py'
       - 'nx2/build.py'
       - 'nx2/make_game.py'
+      - 'builder/rust/Cargo.toml'
+      - 'builder/rust/Cargo.lock'
       - 'builder/rust/src/ngx_sdk.rs'
       - '.github/workflows/vulkan-dlss.yml'
   pull_request:
@@ -43,6 +45,8 @@ on:
       - 'nx2/oot_jitter.py'
       - 'nx2/build.py'
       - 'nx2/make_game.py'
+      - 'builder/rust/Cargo.toml'
+      - 'builder/rust/Cargo.lock'
       - 'builder/rust/src/ngx_sdk.rs'
       - '.github/workflows/vulkan-dlss.yml'
   workflow_dispatch:
