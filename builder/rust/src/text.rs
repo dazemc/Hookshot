@@ -66,6 +66,52 @@ pub fn stack_stores(text: &str) -> String {
         .into_owned()
 }
 
+/// Guest registers an instruction's C may write (bit n for x[n]).
+pub fn reg_writes(text: &str) -> u32 {
+    let bytes = text.as_bytes();
+    let mut mask = 0u32;
+    let mut at = 0usize;
+    while let Some(found) = text[at..].find("c->x[") {
+        let start = at + found;
+        let number_at = start + 5;
+        let mut end = number_at;
+        while bytes.get(end).is_some_and(|b| b.is_ascii_digit()) {
+            end += 1;
+        }
+        let Ok(number) = text[number_at..end].parse::<u32>() else {
+            at = end;
+            continue;
+        };
+        if number >= 32 {
+            at = end;
+            continue;
+        }
+        let before = text[..start].trim_end();
+        let mut cursor = end;
+        if bytes.get(cursor) == Some(&b']') {
+            cursor += 1;
+        }
+        while bytes.get(cursor) == Some(&b' ') {
+            cursor += 1;
+        }
+        let after = &text[cursor..];
+        let write = before.ends_with('&')
+            || before.ends_with("++")
+            || before.ends_with("--")
+            || after.starts_with("++")
+            || after.starts_with("--")
+            || (after.starts_with('=') && !after.starts_with("=="))
+            || ["+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="]
+                .iter()
+                .any(|op| after.starts_with(op));
+        if write {
+            mask |= 1 << number;
+        }
+        at = end;
+    }
+    mask
+}
+
 /// Remove the context synchronization markers when registers stay in the
 /// context (the default build).
 pub fn strip_sync(text: &str) -> String {
@@ -111,6 +157,15 @@ mod tests {
     fn sync_markers_are_removed() {
         assert_eq!(strip_sync("a\x01C3\x01b\x01L3\x01c"), "abc");
         assert_eq!(strip_sync("plain"), "plain");
+    }
+
+    #[test]
+    fn guest_register_writes() {
+        assert_eq!(
+            reg_writes("c->x[0]=1; c->x[1]+=2; ++c->x[2]; &c->x[3];"),
+            0b1111
+        );
+        assert_eq!(reg_writes("c->x[0]==1; x=c->x[4];"), 0);
     }
 
     #[test]

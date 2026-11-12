@@ -192,6 +192,9 @@ pub fn dispatch(text: &str) -> String {
                 json!({"reads": read, "writes": written, "dropped": text::drop_flag_stores(&text, dead)}),
             )
         }
+        "lift.reg_writes" => {
+            Ok(json!({"mask": text::reg_writes(&string(&request, "text").unwrap_or_default())}))
+        }
         "lift.stack" => {
             Ok(json!({"stores": text::stack_stores(&string(&request, "text").unwrap_or_default())}))
         }
