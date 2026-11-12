@@ -7,7 +7,7 @@ use std::os::raw::{c_char, c_int};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use libloading::{Library, Symbol};
+use libloading::Library;
 use serde_json::{Value, json};
 
 type Config = unsafe extern "C" fn(c_int, c_int);
