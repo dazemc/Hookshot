@@ -1233,9 +1233,15 @@ impl<'a, C: Code> Lifter<'a, C> {
 
 type FpxUse = (String, String, usize, usize);
 
+fn fpx_call() -> &'static regex::Regex {
+    static CALL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    CALL.get_or_init(|| {
+        regex::Regex::new(r"a64_fpx_([a-z0-9]+)_([a-z0-9]+)\(c,([^)]*?)\)").expect("fpx call")
+    })
+}
+
 fn collect_fpx(text: &str, used: &mut std::collections::HashSet<FpxUse>) {
-    let call = regex::Regex::new(r"a64_fpx_([a-z0-9]+)_([a-z0-9]+)\(c,([^)]*?)\)").unwrap();
-    for caps in call.captures_iter(text) {
+    for caps in fpx_call().captures_iter(text) {
         let fast = caps[1].to_owned();
         let exact = caps[2].to_owned();
         let args = caps[3]
