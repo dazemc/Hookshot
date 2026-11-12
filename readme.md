@@ -31,7 +31,8 @@ Hookshot is a static recompilation. The game's code is translated to C and compi
 the console's system software is reimplemented, and the Switch 2 graphics are rebuilt on Vulkan. All of this happens
 **on your PC, from your own copy of the game**.
 
-This tree is the build-system fork of [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot). The game, the renderer
+This tree is the build-system fork of [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot), published as
+[Hookshot-rs](https://github.com/dazemc/Hookshot-rs). The game, the renderer
 and the player documentation come from upstream; the fork moves the build to **one Flutter desktop app** and a **Rust
 engine**. The Flutter app is `builder/flutter`; the engine is the `hookshot_engine` crate in `builder/rust`. On Linux, a
 game build started from the Flutter app runs no Python: the `.nup` read, lift, patches, compile, host link, Vulkan

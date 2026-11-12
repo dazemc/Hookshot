@@ -7,7 +7,7 @@ import 'package:path/path.dart' as p;
 
 const appId = 'io.github.NotRexed.Hookshot';
 const builderVersion = '1.0.0'; // (the desktop app's own version; the tools/game version is separate)
-const defaultRepository = 'NotRexed/Hookshot';
+const defaultRepository = 'dazemc/Hookshot-rs';
 const tracks = ['release', 'rc', 'nightly'];
 const trackNames = {'release': 'Release', 'rc': 'Release candidate', 'nightly': 'Nightly'};
 
