@@ -10,7 +10,6 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-const COMMIT: &str = "9981c6350dc58c0ce21f024fd65e31e851c31689"; // (v310.9.16)
 const BASE: &str =
     "https://raw.githubusercontent.com/NVIDIA/DLSS/9981c6350dc58c0ce21f024fd65e31e851c31689";
 const LICENSE_URL: &str =
@@ -181,6 +180,7 @@ pub fn destination(path: &str) -> String {
     }
 }
 
+#[allow(dead_code)] // (the Vulkan build links it)
 pub fn library(sdk: &Path, platform: Platform) -> PathBuf {
     sdk.join(destination(platform.library().0))
 }
