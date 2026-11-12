@@ -17,7 +17,9 @@ on:
       - 'gpu/compat/**'
       - 'gpu/vk/retired_give_back.h'
       - 'gpu/vk/vk_memory.cpp'
+      - 'gpu/vk/shadow_stage_policy.h'
       - 'tests/retired_give_back_test.cpp'
+      - 'tests/shadow_stage_test.cpp'
       - 'gpu/third_party/suyu/**'
       - 'tests/global_load_16/**'
       - 'tests/global_load_16_ir.cpp'
@@ -44,7 +46,9 @@ on:
       - 'gpu/compat/**'
       - 'gpu/vk/retired_give_back.h'
       - 'gpu/vk/vk_memory.cpp'
+      - 'gpu/vk/shadow_stage_policy.h'
       - 'tests/retired_give_back_test.cpp'
+      - 'tests/shadow_stage_test.cpp'
       - 'gpu/third_party/suyu/**'
       - 'tests/global_load_16/**'
       - 'tests/global_load_16_ir.cpp'
@@ -245,6 +249,10 @@ jobs:
         run: |
           c++ -std=c++20 -Wall -Wextra -Werror tests/fallback_size_policy_test.cpp -o "$RUNNER_TEMP/fallback-policy"
           "$RUNNER_TEMP/fallback-policy"
+      - name: Compile and run the shadow staging free list
+        run: |
+          c++ -std=c++20 -Wall -Wextra -Werror tests/shadow_stage_test.cpp -o "$RUNNER_TEMP/shadow-stage"
+          "$RUNNER_TEMP/shadow-stage"
 
   video-uv:
     name: Video UV interleave
