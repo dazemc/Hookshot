@@ -126,7 +126,14 @@ class _GamescopeDialogState extends State<_GamescopeDialog> {
               ),
               if (_error != null) ...[
                 const SizedBox(height: 10),
-                Text(_error!, style: const TextStyle(fontSize: 12, color: HsColors.bad)),
+                Semantics(
+                  container: true,
+                  liveRegion: true,
+                  label: _error,
+                  child: ExcludeSemantics(
+                    child: Text(_error!, style: const TextStyle(fontSize: 12, color: HsColors.bad)),
+                  ),
+                ),
               ],
             ],
           ),
@@ -145,13 +152,16 @@ class _GamescopeDialogState extends State<_GamescopeDialog> {
       children: [
         Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: HsColors.inkSoft)),
         const SizedBox(height: 6),
-        SizedBox(
-          height: 36,
-          child: TextBox(
-            controller: controller,
-            maxLines: 1,
-            placeholder: placeholder,
-            placeholderStyle: const TextStyle(color: HsColors.inkFaint, fontWeight: FontWeight.w300),
+        Semantics(
+          label: label,
+          child: SizedBox(
+            height: 36,
+            child: TextBox(
+              controller: controller,
+              maxLines: 1,
+              placeholder: placeholder,
+              placeholderStyle: const TextStyle(color: HsColors.inkFaint, fontWeight: FontWeight.w300),
+            ),
           ),
         ),
       ],
@@ -159,16 +169,18 @@ class _GamescopeDialogState extends State<_GamescopeDialog> {
   }
 
   Widget _check(String title, String flag, bool value, ValueChanged<bool> onChanged) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        children: [
-          Checkbox(checked: value, onChanged: (v) => onChanged(v ?? false)),
-          const SizedBox(width: 8),
-          Expanded(child: Text(title, style: const TextStyle(fontSize: 12.5, color: HsColors.inkSoft))),
-          Text(flag,
-              style: const TextStyle(fontSize: 11, color: HsColors.inkFaint, fontFamilyFallback: hsMonoFamilies)),
-        ],
+    return MergeSemantics(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Row(
+          children: [
+            Checkbox(checked: value, onChanged: (v) => onChanged(v ?? false)),
+            const SizedBox(width: 8),
+            Expanded(child: Text(title, style: const TextStyle(fontSize: 12.5, color: HsColors.inkSoft))),
+            Text(flag,
+                style: const TextStyle(fontSize: 11, color: HsColors.inkFaint, fontFamilyFallback: hsMonoFamilies)),
+          ],
+        ),
       ),
     );
   }

@@ -50,21 +50,23 @@ class _DiagnosticsDialogState extends State<_DiagnosticsDialog> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Checkbox(
-                  checked: _trace,
-                  onChanged: (value) {
-                    setState(() => _trace = value ?? false);
-                    setTraceNextRun(widget.folder, _trace);
-                  },
-                ),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text('Trace the next game run (HOS_TRACE=1 in hookshot_env.txt)',
-                      style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
-                ),
-              ],
+            MergeSemantics(
+              child: Row(
+                children: [
+                  Checkbox(
+                    checked: _trace,
+                    onChanged: (value) {
+                      setState(() => _trace = value ?? false);
+                      setTraceNextRun(widget.folder, _trace);
+                    },
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text('Trace the next game run (HOS_TRACE=1 in hookshot_env.txt)',
+                        style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 10),
             Expanded(

@@ -6,6 +6,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../a11y.dart';
 import '../blocs/launcher_bloc.dart';
 import '../blocs/update_bloc.dart';
 import '../config.dart' as cfg;
@@ -33,6 +34,7 @@ class LauncherPage extends StatelessWidget {
           LauncherLoading(:final folder) => folder,
           LauncherReady(:final folder) => folder,
         };
+        final status = state is LauncherReady ? state.status : 'Checking for updates…';
         return Column(
           children: [
             HsHeader(chip: version ?? 'Game launcher'),
@@ -48,7 +50,7 @@ class LauncherPage extends StatelessWidget {
                           subtitle: 'Looking up its version and checking for updates.',
                           child: Padding(
                             padding: EdgeInsets.symmetric(vertical: 26),
-                            child: Center(child: ProgressRing()),
+                            child: Center(child: ProgressRing(semanticLabel: 'Checking your game')),
                           ),
                         ),
                       LauncherReady() => _LauncherDetails(state: state),
@@ -58,11 +60,14 @@ class LauncherPage extends StatelessWidget {
               ),
             ),
             HsFooter(
-              leading: Text(
-                state is LauncherReady ? state.status : 'Checking for updates…',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12, color: HsColors.inkSoft),
+              leading: HsLiveStatus(
+                text: status,
+                child: Text(
+                  status,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: HsColors.inkSoft),
+                ),
               ),
               actions: [
                 if (onBack != null) HsButton.quiet(label: 'Back', onPressed: onBack),
@@ -176,13 +181,17 @@ class _LauncherDetails extends StatelessWidget {
                 child: const Icon(LucideIcons.gamepad2, color: HsColors.brandHover),
               ),
               const SizedBox(width: 14),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Your game', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: HsColors.ink)),
-                    SizedBox(height: 3),
-                    Text('Launch the installed game or update it first.',
+                    Semantics(
+                      header: true,
+                      child: const Text('Your game',
+                          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: HsColors.ink)),
+                    ),
+                    const SizedBox(height: 3),
+                    const Text('Launch the installed game or update it first.',
                         style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
                   ],
                 ),
@@ -237,43 +246,55 @@ class _LauncherDetails extends StatelessWidget {
               style:
                   TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: HsColors.inkFaint)),
           const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Checkbox(
-                checked: state.pinSelected,
-                onChanged: (value) =>
-                    context.read<LauncherBloc>().add(LauncherSelectionChanged(pinSelected: value ?? false)),
-              ),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Padding(
-                  padding: EdgeInsets.only(top: 3),
-                  child:
-                      Text('Stay on the selected version', style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
+          MergeSemantics(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Checkbox(
+                  checked: state.pinSelected,
+                  onChanged: (value) =>
+                      context.read<LauncherBloc>().add(LauncherSelectionChanged(pinSelected: value ?? false)),
                 ),
-              ),
-            ],
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Padding(
+                    padding: EdgeInsets.only(top: 3),
+                    child:
+                        Text('Stay on the selected version', style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
+                  ),
+                ),
+              ],
+            ),
           ),
           if (Platform.isLinux)
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Checkbox(
-                  checked: state.gamescope,
-                  onChanged: (value) => context.read<LauncherBloc>().add(LauncherGamescopeChanged(value ?? false)),
-                ),
-                const SizedBox(width: 8),
                 Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Column(
+                  child: MergeSemantics(
+                    child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('Launch the game in gamescope',
-                            style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
-                        Text(GamescopeSettings.load().summary,
-                            style: const TextStyle(fontSize: 11, color: HsColors.inkFaint)),
+                        Checkbox(
+                          checked: state.gamescope,
+                          onChanged: (value) =>
+                              context.read<LauncherBloc>().add(LauncherGamescopeChanged(value ?? false)),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Launch the game in gamescope',
+                                    style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
+                                Text(GamescopeSettings.load().summary,
+                                    style: const TextStyle(fontSize: 11, color: HsColors.inkFaint)),
+                              ],
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -294,7 +315,7 @@ class _LauncherDetails extends StatelessWidget {
           const Divider(),
           const SizedBox(height: 10),
           AnimatedSwitcher(
-            duration: const Duration(milliseconds: 200),
+            duration: HsMotion.duration(context, 200),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
             child: state.showUpdate
@@ -303,8 +324,9 @@ class _LauncherDetails extends StatelessWidget {
                     kind: HsBannerKind.warning,
                     title: 'Version switch',
                     message: state.status,
+                    live: true,
                   )
-                : HsStatusLine(state.status, key: ValueKey(state.status), icon: LucideIcons.info),
+                : HsStatusLine(state.status, key: ValueKey(state.status), icon: LucideIcons.info, live: true),
           ),
         ],
       ),
@@ -325,26 +347,28 @@ class _CloseAfterLaunchOptionState extends State<_CloseAfterLaunchOption> {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Checkbox(
-          checked: _close,
-          onChanged: (value) {
-            setState(() => _close = value ?? false);
-            final config = cfg.loadConfig()..['close_after_launch'] = _close ? '1' : '0';
-            cfg.saveConfig(config);
-          },
-        ),
-        const SizedBox(width: 8),
-        const Expanded(
-          child: Padding(
-            padding: EdgeInsets.only(top: 3),
-            child: Text('Close the builder after the game starts',
-                style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
+    return MergeSemantics(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Checkbox(
+            checked: _close,
+            onChanged: (value) {
+              setState(() => _close = value ?? false);
+              final config = cfg.loadConfig()..['close_after_launch'] = _close ? '1' : '0';
+              cfg.saveConfig(config);
+            },
           ),
-        ),
-      ],
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(top: 3),
+              child: Text('Close the builder after the game starts',
+                  style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
