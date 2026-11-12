@@ -9021,6 +9021,15 @@ void pipeline_cache_close() {
         logf("vk: pipeline cache save failed: %s", e.what());
     }
 }
+/// What play made since the last save, into a play file now (vk_fsr4.cpp: its tuned layers, minutes to build the first time,
+/// kept even when the game does not close normally)
+void pipeline_cache_save_play() {
+    try {
+        if (play_cache.load()) play_cache_save();
+    } catch (const std::exception& e) {
+        logf("vk: pipeline cache save failed: %s", e.what());
+    }
+}
 
 void pipeline_cache_save(bool force) {
     if (!pcache || pcache_no_save || (!force && pcache_built_since_save < 32)) return;
