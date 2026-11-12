@@ -13,7 +13,7 @@ import '../backend/rust_build.dart';
 import '../config.dart' as cfg;
 import '../engine.dart';
 import '../gamescope.dart';
-import '../updater/installer.dart' show latestTag, fetchBytes;
+import '../updater/installer.dart' show latestTag, fetchCheck;
 import '../updater/manifest.dart' as upd;
 
 // ---- events ----
@@ -401,12 +401,14 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     final game = gv.version;
     final switching = s.track != upd.trackOf(_toolsTag());
     final mode = upd.chooseMode(game, _toolsTag(), s.latest, s.sourcePicked, kept, switchTrack: switching);
+    final target = upd.updateTarget(s.latest, _toolsTag(), switchTrack: switching);
+    final older = game != null && target != null && upd.olderVersion(target, game);
     var dlssChanged = false;
     if (mode == 'up-to-date' && kept && game != null && s.sourcePicked && s.dlssToggled) {
       dlssChanged = _folderHasDlss(folder) != s.dlss;
     }
-    final effectiveMode = (mode == 'up-to-date' && dlssChanged) ? 'update-game' : mode;
-    final target = upd.updateTarget(s.latest, _toolsTag(), switchTrack: switching);
+    // (a known older target is not rebuilt implicitly, not even for a DLSS change: that would downgrade the game)
+    final effectiveMode = (mode == 'up-to-date' && dlssChanged && !older) ? 'update-game' : mode;
     var button = 'Build the game';
     var about = '';
     var status = '';
@@ -420,9 +422,12 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       }
     } else if (effectiveMode == 'up-to-date') {
       button = 'Play';
-      status = s.latest == null
-          ? 'Your game is $game, as this builder. GitHub did not answer, so newer versions could not be checked.'
-          : '$game is the latest version.';
+      status = older && !switching
+          ? 'Your game is $game, newer than this builder\'s update target $target. Play keeps this version; '
+              'choose another update track to change versions.'
+          : s.latest == null
+              ? 'Your game is $game, as this builder. GitHub did not answer, so newer versions could not be checked.'
+              : '$game is the latest version.';
     } else if (effectiveMode == 'update-builder') {
       button = 'Update builder';
       final have = _toolsTag();
@@ -538,7 +543,7 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     final s = state;
     final track = s is BuilderForm ? s.track : upd.trackOf(_toolsTag());
     try {
-      final tag = forced ?? await latestTag(fetchBytes, track: track);
+      final tag = forced ?? await latestTag(fetchCheck, track: track);
       add(_LatestReceived(tag));
     } catch (_) {
       add(const _LatestReceived(null));

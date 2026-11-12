@@ -17,6 +17,18 @@ List<int> _zip(Map<String, String> entries) {
 
 void main() {
   group('UpdateBloc cancellation', () {
+    test('a stopped update returns to an idle form', () async {
+      final bloc =
+          UpdateBloc(fetcher: (url, {stop}) async => throw const SocketException('offline'), runningRoot: () => null);
+      addTearDown(bloc.close);
+      final failed = expectLater(bloc.stream, emitsThrough(isA<UpdateFailed>()));
+      bloc.add(const BeginUpdate(folder: '', toolsTag: 'v9.9.0', latest: 'v9.9.9'));
+      await failed;
+      final idle = expectLater(bloc.stream, emitsThrough(isA<UpdateIdle>()));
+      bloc.add(const UpdateReset());
+      await idle;
+    });
+
     test('cancelling a download stops the update and stages nothing', () async {
       final tmp = await Directory.systemTemp.createTemp('hookshot-bloc-cancel-');
       try {
