@@ -55,7 +55,7 @@ class DamagedFilesNoteTests(unittest.TestCase):
         lines = note.read_text(encoding="utf-8").splitlines()
         self.assertTrue(lines[0].startswith("Your game dump is incomplete: 1 game file"))
         self.assertEqual(len(lines), 2)
-        self.assertIn("Tex/broken.bntx.zs: in its place ", lines[-1])
+        self.assertIn("Tex/broken.bntx.zs: in its place ", lines[-1].replace(os.sep, "/"))
         legacy = self.out / make_game.DAMAGED_FILES_LEGACY
         self.assertEqual(legacy.read_bytes(), note.read_bytes())
 

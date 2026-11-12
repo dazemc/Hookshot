@@ -547,7 +547,7 @@ def stand_in_damaged_files(out, romfs):
              "with different textures in those places. Dump the game again for the original files:" %
              (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are")]
     for path, other in done:
-        lines.append("  %s: %s" % (os.path.relpath(path, romfs).replace(os.sep, "/"),
+        lines.append("  %s: %s" % (os.path.relpath(path, romfs),
                                    "in its place " + os.path.basename(other) if other else "no replacement found; build cannot continue"))
     for line in lines:
         print(line, flush=True)
