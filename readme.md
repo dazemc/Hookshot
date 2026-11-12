@@ -86,14 +86,15 @@ baseline.
 | OoT after-instruction sites | Python's output | byte-identical | all 20 sites: 11 widescreen, 3 jitter, 6 occlusion |
 | Shader census | — | 9.7 s | 1,445 files, 38,809 programs, 42,856 stages, 539 MB list |
 | Shader preparation | — | 36.8 s first run; 17.6 s for the whole cached `build.all` | 2,863 programs; 15,330 graphics + 71 compute pipelines |
-| `.nup` read | — | 25.6 GB package | read to exefs + 1.7 GB romfs, 0 unresolved |
-| Vulkan backend build | — | 140 s clean, 0.7 s repeat | 195 sources, 212 jobs, content-addressed objects; 11,665,496-byte `hookshot_vk.so` with 3 compile jobs |
+| `.nup` read | — | 94 s for 25.6 GB | read to exefs + 1.7 GB romfs, 0 unresolved |
+| Vulkan backend build | — | 100.6 s clean, 0.7 s repeat | 195 sources, 212 jobs, content-addressed objects; 11,665,496-byte `hookshot_vk.so` with 4 compile jobs |
 | End-to-end `build.all` | — | packaged | 66/66 objects cached, host link ok |
-| Boot | — | 3,000 presents at about 58 fps | nnMain reached, Vulkan renderer, content and save mounted, 0 traps |
+| Boot | — | 2,640 presents at 60 fps | Rust-built Vulkan backend, prompts generated, content and save mounted, 0 traps |
 
-The boot run used the host build from before the teleport minimap repair landed and before the Rust Vulkan backend
-build, so it does not test either change; it is not a result for the latest backend. The shader, `.nup` and Vulkan rows
-have no "before" figure because the same Rust stage did not exist to time.
+The boot run is the Rust-built Vulkan backend with Rust-generated prompts; it predates the latest upstream host-fix
+batch, so those host changes are not in that binary. The shader, `.nup` and Vulkan rows have no "before" figure because
+the same Rust stage did not exist to time. A separate build-performance branch has measured further lift/NUP/census
+gains; those numbers are not in this table until it merges.
 
 ### What changed from upstream
 
@@ -131,7 +132,7 @@ have no "before" figure because the same Rust stage did not exist to time.
 | Builder services | `profiles.*`, `diagnostics`, `gamescope.command`, `build.cpu`, `build.toolchain`, `build.jobs`, `build.check`, `version.describe` | profiles list/add/rename/remove/export; diagnostics; gamescope; CPU, jobs and toolchain checks |
 | Saves | `saves.list`, `saves.import` | the app's save scan and import: emulator layouts, profile ids, backup to `oot-save-backups`, running-game and NX2navi guards, rollback |
 | Updates | `build.all` from `.hookshot_exefs` and `romfs` | a built folder keeps the game files an update needs |
-| DLSS | `build.all` with `dlss`, `build.ngx_fetch`, `build.ngx_install` | the SDK's headers, library and runtime, each checked against its SHA-256; the Linux backend is compiled and linked with NGX and DLSS's runtime is packaged in `<game folder>/ngx` |
+| DLSS | `build.all` with `dlss`, `build.ngx_fetch`, `build.ngx_install` | the SDK's headers, library and runtime, each checked against its SHA-256; the Linux backend is compiled and linked with NGX and DLSS's runtime is packaged in `<game folder>/ngx`. Frame Generation's runtime and the Windows DLL are in progress; DLSS 5 is not in the public SDK |
 
 The prompt font is semantically identical to Python's, not byte-identical: the glyphs, outlines, cmap and hmtx match,
 while the CFF layout differs (37,360 bytes against Python's 33,452). `Common.blarc`, `ring.bin` and all five `hint.bin`
@@ -146,16 +147,20 @@ are byte-identical; `rsizetable.zs` has the same content with a different compre
 | Windows Vulkan DLL | The Rust engine links the Windows host, but `build.vk` still links only the Linux `hookshot_vk.so`; the Windows `hookshot_vk.dll` is still `nx2/build.py`'s. | in progress |
 | Prompt textures | The package writes the font, layouts, ring, hints and size table; `Common.bntx` and `prompts/<face>/textures.bin` are not generated, so the game keeps its own button textures. | not ported |
 | Release and AppImage packaging | `scripts/linux/appimage.sh`, `scripts/release_parts.py`, `scripts/make_setup_parts.py`; the AppImage still launches the Tk builder and the Windows package is still the .NET builder's. | not ported |
+| Flutter fallback | Default builds use Rust. If the Rust engine CLI is missing, a non-DLSS folder or update build still falls back to `make_game.py`; DLSS builds stop with a typed error. | fallback only |
+| DLSS 5 | Not available: NVIDIA has not published the DLSS 5 SDK; the public SDK is 310.9.16 (DLSS 4.5). | unavailable |
 
 ### Still to come
 
 - Windows Vulkan DLL linking in Rust, and with it the Windows DLSS build (the Linux NGX/DLSS and FSR 4 flags are in).
+- DLSS Frame Generation's runtime beside DLSS's in `<game folder>/ngx`, on both platforms.
 - The prompt textures: `Common.bntx` and `prompts/<face>/textures.bin`.
 - A Windows boot test of the cross-built host and a real game link; the VM is prepared but not started while builds run.
-- A boot of the Vulkan backend this engine builds; the boot row above is the earlier host and backend, not the new one.
 - Release, AppImage and Windows packaging in the new builder.
-- A build-performance pass is in progress over the lift, NUP read, shader census, package and object cache. The table
-  above is the verified baseline; no further gain is promised yet.
+- Further upstream Vulkan and host fixes are being ported; hardware-specific ones need that hardware in the game.
+- A build-performance pass is in progress over lift chunks, NUP read, shader census, compile, link and package. On that
+  branch the cached full lift measured 50.8 → 15.05 s, `.nup` read 94 → 46 s and shader census 4.02 → 3.08 s, with
+  byte-identical output; it is not merged, so the table above is the verified baseline.
 
 Until the Windows Vulkan DLL and packaging stages land, those paths still use Python. Everything else in a Linux
 Flutter game build is Rust, DLSS included; the prompt textures are the one asset it does not write.
@@ -1125,6 +1130,8 @@ check runs without the game or a dump.
 | `flutter test` and `flutter analyze` in `builder/flutter` | Builder state, routing, updater, profiles and UI tests. |
 | The C and C++ fixtures under `tests/` and `gpu/vk/tests` | Game-free checks, compiled with the host compiler. The three SPIR-V fixtures under `tests/global_load_16`, `tests/native_suatom` and `tests/f2i_immediate` have their own `CMakeLists.txt`. |
 | A run in the game on your hardware | Runtime and renderer changes: what you did, what you saw, and the numbers from `hookshot_log.txt`. |
+
+At this tree that is 208 Rust tests, 4 CLI tests and 59 Flutter tests, with a clean `flutter analyze`.
 
 CI runs `cargo test --workspace` on Linux and Windows, plus `flutter test`, `flutter analyze` and the three SPIR-V
 fixtures on Linux. Add a Rust or Flutter test for a fix where the behavior can be tested without the game. Never add
