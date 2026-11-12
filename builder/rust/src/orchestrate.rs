@@ -85,6 +85,14 @@ pub fn all_json_with(
     // The game's shader list, as Python's finish stage makes it: the first
     // start translates it instead of compiling each program as it meets it.
     // A failure leaves that work to the first start, never stops the build.
+    // (the game's code as read, kept in the folder as Python's read stage
+    // does: an update builds from it without asking for the game files again)
+    let kept = std::path::Path::new(out).join(".hookshot_exefs");
+    let source = std::path::Path::new(exefs);
+    if !kept.is_dir() && source.is_dir() && source != kept {
+        let mut linked = 0;
+        crate::package::link_tree(source, &kept, &mut linked)?;
+    }
     let shaders = match crate::shader::census(
         std::path::Path::new(romfs),
         Some(&std::path::Path::new(out).join("hookshot_shaders.bin")),

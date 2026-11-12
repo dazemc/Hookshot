@@ -58,7 +58,7 @@ fn copy(src: &Path, dst: &Path) -> Result<u64, String> {
 
 /// Hard links where the disk allows (the 26 GB romfs is not written twice),
 /// copies across volumes.
-fn link_tree(src: &Path, dst: &Path, counter: &mut u64) -> Result<(), String> {
+pub(crate) fn link_tree(src: &Path, dst: &Path, counter: &mut u64) -> Result<(), String> {
     if !src.is_dir() {
         return Ok(());
     }
