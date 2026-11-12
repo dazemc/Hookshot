@@ -26,6 +26,7 @@ mod lifted_c;
 mod linker;
 mod logo_rgba;
 mod lz4;
+mod ngx_sdk;
 mod nso;
 mod nso_image;
 mod nup;
@@ -190,6 +191,8 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "out").unwrap_or_default(),
             &string(&request, "work").unwrap_or_default(),
         ),
+        "build.ngx_fetch" => ngx_sdk::fetch_json(&request),
+        "build.ngx_install" => ngx_sdk::install_json(&request),
         "build.prepare" => stage::prepare_json(
             &string(&request, "nup").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
