@@ -27,6 +27,9 @@ pub fn sx(value: u32, bits: u32) -> i64 {
 }
 
 pub fn classify(word: u32, pc: u64) -> Kind {
+    if let Some(kind) = crate::insn::classify(word) {
+        return kind;
+    }
     if word & 0x7C00_0000 == 0x1400_0000 {
         let target = pc.wrapping_add((4 * sx(word & 0x03FF_FFFF, 26)) as u64);
         return if word & 0x8000_0000 != 0 {

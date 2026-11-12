@@ -123,12 +123,19 @@ pub fn translate(items: &[(u64, u32)]) -> Result<(Vec<String>, Vec<i32>), String
             continue;
         }
         output.truncate(need as usize);
-        let texts = (0..items.len())
+        let mut texts: Vec<String> = (0..items.len())
             .map(|i| {
                 String::from_utf8_lossy(&output[offsets[i] as usize..offsets[i + 1] as usize])
                     .into_owned()
             })
             .collect();
+        // (nx2/insn.py: forms the shared translator does not know)
+        for (i, (_, word)) in items.iter().enumerate() {
+            if let Some(text) = crate::insn::emit(*word) {
+                texts[i] = format!("{text}\n");
+                flags[i] = 0;
+            }
+        }
         return Ok((texts, flags));
     }
 }

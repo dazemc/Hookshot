@@ -17,6 +17,7 @@ mod gamescope;
 mod host;
 mod host_build;
 mod image;
+mod insn;
 mod kit;
 mod lift;
 mod lifted_c;

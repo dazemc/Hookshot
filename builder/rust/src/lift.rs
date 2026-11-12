@@ -440,6 +440,9 @@ impl<'a, C: Code> Lifter<'a, C> {
                         found.insert(value);
                     }
                 }
+            } else if word & 0x9F000000 == 0x10000000 && d == reg {
+                let imm = ((word >> 3) & 0x1FFFFC) | ((word >> 29) & 3);
+                found.insert(pc.wrapping_add(a64::sx(imm, 21) as u64));
             }
             pc += 4;
         }
@@ -534,7 +537,24 @@ impl<'a, C: Code> Lifter<'a, C> {
         let mut values: std::collections::HashMap<u8, V> = std::collections::HashMap::new();
         let mut bounds: std::collections::HashMap<u8, usize> = std::collections::HashMap::new();
         let mut cmp: Option<(u8, usize)> = None;
-        for pc in (br_pc.saturating_sub(128)..br_pc).step_by(4) {
+        let mut window = 32usize;
+        for k in 1..=32 {
+            let Some(pc) = br_pc.checked_sub(4 * k as u64) else {
+                break;
+            };
+            let Some(word) = self.code.word(pc) else {
+                break;
+            };
+            if word == 0xD65F_0BFF
+                || word == 0xD65F_0FFF
+                || word & 0xFFFF_F81F == 0xD61F_081F
+                || word & 0xFFFF_F800 == 0xD71F_0800
+            {
+                window = k - 1;
+                break;
+            }
+        }
+        for pc in (br_pc.saturating_sub(4 * window as u64)..br_pc).step_by(4) {
             let Some(word) = self.code.word(pc) else {
                 break;
             };
