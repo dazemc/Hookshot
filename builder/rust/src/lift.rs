@@ -172,6 +172,41 @@ impl<'a, C: Code> Lifter<'a, C> {
         }
     }
 
+    fn function_constant(&self, br_pc: u64, reg: u8) -> Option<u64> {
+        let (lo, hi) = self.function_extent(br_pc);
+        if hi.saturating_sub(lo) > 0x40000 {
+            return None;
+        }
+        let mut pages = std::collections::HashMap::new();
+        let mut found = std::collections::HashSet::new();
+        let mut pc = lo;
+        while pc < hi {
+            let Some(word) = self.code.word(pc) else {
+                break;
+            };
+            let d = (word & 31) as u8;
+            if word & 0x9F000000 == 0x90000000 {
+                let imm = ((word >> 3) & 0x1FFFFC) | ((word >> 29) & 3);
+                pages.insert(
+                    d,
+                    (pc & !0xFFF).wrapping_add((a64::sx(imm, 21) << 12) as u64),
+                );
+            } else if word & 0xFF800000 == 0x91000000 {
+                if let Some(base) = pages.get(&((word >> 5) & 31)).copied() {
+                    let value = base.wrapping_add(
+                        (((word >> 10) & 0xFFF) << if word & (1 << 22) != 0 { 12 } else { 0 })
+                            as u64,
+                    );
+                    if d == reg {
+                        found.insert(value);
+                    }
+                }
+            }
+            pc += 4;
+        }
+        (found.len() == 1).then(|| *found.iter().next().unwrap())
+    }
+
     fn hoisted_constant(&self, before: u64, reg: u8, scan: usize) -> Option<u64> {
         let mut pc = before;
         for _ in 0..scan {
@@ -330,7 +365,9 @@ impl<'a, C: Code> Lifter<'a, C> {
         };
         let table = match *table {
             V::Const(table) => table,
-            V::Reg(reg) => self.hoisted_constant(br_pc, reg, 1024)?,
+            V::Reg(reg) => self
+                .hoisted_constant(br_pc, reg, 1024)
+                .or_else(|| self.function_constant(br_pc, reg))?,
             V::Add { left, right, .. } => match (*left, *right) {
                 (V::Reg(reg), V::Const(offset)) => self
                     .hoisted_constant(br_pc, reg, 1024)?
