@@ -7,6 +7,14 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 pub fn root() -> PathBuf {
+    // (the packaged builder: AppRun/the Flutter app point this at the image's
+    // tools root, where host/, gpu/, third_party/ and assets/ live)
+    if let Some(tools) = std::env::var_os("HOOKSHOT_TOOLS") {
+        let tools = PathBuf::from(tools);
+        if tools.is_dir() {
+            return tools.canonicalize().unwrap_or(tools);
+        }
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()

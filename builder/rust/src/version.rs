@@ -13,13 +13,10 @@ const SOURCE_EXT: [&str; 13] = [
     ".c", ".cc", ".cpp", ".h", ".hpp", ".inc", ".py", ".glsl", ".comp", ".vert", ".frag", ".spv",
     ".rs",
 ];
-const DEFAULT_REPOSITORY: &str = "NotRexed/Hookshot";
+const DEFAULT_REPOSITORY: &str = "dazemc/Hookshot-rs";
 
 pub fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("../.."))
+    crate::kit::root()
 }
 
 pub fn release(root: &Path) -> String {
@@ -205,6 +202,7 @@ mod tests {
     fn repository_names_are_checked() {
         assert!(valid_repository("NotRexed/Hookshot"));
         assert!(valid_repository("dazemc/Hookshot"));
+        assert!(valid_repository("dazemc/Hookshot-rs"));
         assert!(!valid_repository("no-slash"));
         assert!(!valid_repository("a/b/c"));
         assert!(!valid_repository("a b/c"));
