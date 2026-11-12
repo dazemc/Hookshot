@@ -807,7 +807,9 @@ impl<'a, C: Code> Lifter<'a, C> {
                 Kind::Op => {
                     let text = texts.get(index).map(String::as_str).unwrap_or("");
                     if text.is_empty() {
-                        out.push(format!("a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"));
+                        out.push(format!(
+                            "\x01A{index}\x01a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"
+                        ));
                         falls = false;
                     } else {
                         let text = dead
@@ -858,9 +860,11 @@ impl<'a, C: Code> Lifter<'a, C> {
                 Kind::Bl(target) => {
                     let next = pc + 4;
                     if self.entries.contains(&target) {
-                        out.push(format!("c->x[30] = 0x{next:x}ULL; f_{target:08x}(c);"));
+                        out.push(format!("\x01C{index}\x01c->x[30] = 0x{next:x}ULL; f_{target:08x}(c);\x01B{index}\x01"));
                     } else {
-                        out.push(format!("a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"));
+                        out.push(format!(
+                            "\x01A{index}\x01a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"
+                        ));
                         falls = false;
                     }
                 }
@@ -871,16 +875,22 @@ impl<'a, C: Code> Lifter<'a, C> {
                     ));
                 }
                 Kind::Ret(_) => {
-                    out.push("return;".to_owned());
+                    out.push(format!("\x01R{index}\x01return;"));
                     falls = false;
                 }
                 Kind::Br(reg) => {
-                    out.push(format!("A64_IJUMP(c, c->x[{reg}]); return;"));
+                    out.push(format!(
+                        "\x01A{index}\x01A64_IJUMP(c, c->x[{reg}]); return;"
+                    ));
                     falls = false;
                 }
-                Kind::Svc(imm) => out.push(format!("a64_svc(c, {imm}u);")),
+                Kind::Svc(imm) => out.push(format!(
+                    "\x01A{index}\x01a64_svc(c, {imm}u);\x01L{index}\x01"
+                )),
                 Kind::Trap => {
-                    out.push(format!("a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"));
+                    out.push(format!(
+                        "\x01A{index}\x01a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"
+                    ));
                     falls = false;
                 }
                 Kind::Isb => out.push("recomp_barrier();".to_owned()),
@@ -891,7 +901,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             }
         }
         out.push("}".to_owned());
-        out.join("\n") + "\n"
+        crate::text::strip_sync(&(out.join("\n") + "\n"))
     }
 
     fn dead_flags(

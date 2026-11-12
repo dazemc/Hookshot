@@ -66,6 +66,13 @@ pub fn stack_stores(text: &str) -> String {
         .into_owned()
 }
 
+/// Remove the context synchronization markers when registers stay in the
+/// context (the default build).
+pub fn strip_sync(text: &str) -> String {
+    let marker = Regex::new("\x01[CBRALT][0-9]+\x01").unwrap();
+    marker.replace_all(text, "").into_owned()
+}
+
 /// Give x29-based stores the stack variants.
 pub fn frame_stores(text: &str) -> String {
     let first = fp_store_pre()
@@ -98,6 +105,12 @@ mod tests {
             stack_stores("recomp_store32(c,c->x[0],v);"),
             "recomp_store32(c,c->x[0],v);"
         );
+    }
+
+    #[test]
+    fn sync_markers_are_removed() {
+        assert_eq!(strip_sync("a\x01C3\x01b\x01L3\x01c"), "abc");
+        assert_eq!(strip_sync("plain"), "plain");
     }
 
     #[test]
