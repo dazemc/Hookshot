@@ -161,20 +161,39 @@ pub fn plan_json(
     let mut compiled = Value::Null;
     if compile && chunks > 0 {
         let cc = crate::toolchain::find("clang", false);
+        let code_flags = vec![
+            "-O1".to_owned(),
+            "-g0".to_owned(),
+            "-fPIC".to_owned(),
+            "-Wno-everything".to_owned(),
+            "-ffp-contract=off".to_owned(),
+            "-mcx16".to_owned(),
+            "-DA64_POLLING".to_owned(),
+            "-DA64_WRITE_TRACK".to_owned(),
+            format!("-march={}", crate::host::march()),
+            format!("-I{}", rt64.display()),
+            format!("-I{}", gen_dir.display()),
+            format!("-I{}", game_gen.display()),
+        ];
         let mut jobs: Vec<Value> = fs::read_dir(&game_gen)
             .map(|entries| {
                 entries
                     .flatten()
-                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("code_") && entry.file_name().to_string_lossy().ends_with(".c"))
+                    .filter(|entry| {
+                        entry.file_name().to_string_lossy().starts_with("code_")
+                            && entry.file_name().to_string_lossy().ends_with(".c")
+                    })
                     .map(|entry| {
                         let src = entry.path();
-                        let obj = work.join("obj").join(format!("{}.o", entry.file_name().to_string_lossy()));
+                        let obj = work
+                            .join("obj")
+                            .join(format!("{}.o", entry.file_name().to_string_lossy()));
                         json!({
                             "cc": cc.to_string_lossy(),
                             "src": src.to_string_lossy(),
                             "obj": obj.to_string_lossy(),
                             "cache": work.join("objcache").to_string_lossy(),
-                            "flags": ["-O1", "-g0", "-fPIC", "-Wno-everything", format!("-I{}", rt64.display()), format!("-I{}", gen_dir.display()), format!("-I{}", game_gen.display())],
+                            "flags": code_flags,
                             "deps_file": "",
                         })
                     })
@@ -200,7 +219,7 @@ pub fn plan_json(
                 "src": src.to_string_lossy(),
                 "obj": obj.to_string_lossy(),
                 "cache": work.join("objcache").to_string_lossy(),
-                "flags": ["-O1", "-g0", "-fPIC", "-Wno-everything", format!("-I{}", rt64.display()), format!("-I{}", gen_dir.display()), format!("-I{}", game_gen.display())],
+                "flags": code_flags,
                 "deps_file": "",
             }));
         }

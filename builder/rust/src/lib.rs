@@ -15,6 +15,7 @@ mod emitter;
 mod fpx_headers;
 mod gamescope;
 mod host;
+mod host_build;
 mod image;
 mod kit;
 mod lift;
@@ -134,6 +135,11 @@ pub fn dispatch(text: &str) -> String {
         }
         "version.describe" => version::describe_json(),
         "build.host" => Ok(host::json()),
+        "build.host_link" => host_build::link_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "work").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+        ),
         "build.cpu" => host::check_json(),
         "build.jobs" => {
             let given = request
