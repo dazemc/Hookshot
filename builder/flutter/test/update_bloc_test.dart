@@ -16,6 +16,44 @@ List<int> _zip(Map<String, String> entries) {
 }
 
 void main() {
+  group('UpdateBloc version admission', () {
+    const sha = '0000000000000000000000000000000000000000000000000000000000000000';
+    const list = 'tag v9.9.8\npart $sha 1 . https://example.com/a\ntree\n';
+
+    test('a release list that lags the requested target is refused', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-bloc-lag-');
+      try {
+        final bloc = UpdateBloc(
+          fetcher: (url, {stop}) async => utf8.encode(list),
+          runningRoot: () => tmp.path,
+          installRoot: '${tmp.path}/builder',
+        );
+        addTearDown(bloc.close);
+        final failed = expectLater(
+            bloc.stream,
+            emitsThrough(
+                isA<UpdateFailed>().having((s) => s.error, 'error', contains('GitHub offered v9.9.8, not v9.9.9'))));
+        bloc.add(const BeginUpdate(folder: '', toolsTag: 'v9.9.8', latest: 'v9.9.9'));
+        await failed;
+        expect(Directory('${tmp.path}/builder/versions/v9.9.8').existsSync(), isFalse);
+      } finally {
+        await tmp.delete(recursive: true);
+      }
+    });
+
+    test('a fetched builder that is not the requested version is refused', () async {
+      final bloc =
+          UpdateBloc(fetcher: (url, {stop}) async => throw const SocketException('offline'), runningRoot: () => null);
+      addTearDown(bloc.close);
+      final failed = expectLater(
+          bloc.stream,
+          emitsThrough(isA<UpdateFailed>()
+              .having((s) => s.error, 'error', contains('This Builder is v9.9.8, not the requested v9.9.9'))));
+      bloc.add(const BeginUpdate(folder: '', toolsTag: 'v9.9.8', latest: 'v9.9.9', tag: 'v9.9.9', fetched: true));
+      await failed;
+    });
+  });
+
   group('UpdateBloc cancellation', () {
     test('a stopped update returns to an idle form', () async {
       final bloc =
