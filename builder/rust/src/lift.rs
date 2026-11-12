@@ -533,6 +533,13 @@ impl<'a, C: Code> Lifter<'a, C> {
             let Some(word) = self.code.word(pc) else {
                 break;
             };
+            if word & 0xFC000000 == 0x14000000
+                || matches!(word & 0xFFFFFC1F, 0xD65F0000 | 0xD61F0000)
+            {
+                values.clear();
+                bounds.clear();
+                continue;
+            }
             let d = (word & 31) as u8;
             let n = ((word >> 5) & 31) as u8;
             let m = ((word >> 16) & 31) as u8;
@@ -667,8 +674,10 @@ impl<'a, C: Code> Lifter<'a, C> {
                 if tables.is_empty() {
                     tables.extend(self.function_constants(br_pc, reg));
                 }
-                if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
-                    tables.push(hoisted);
+                if tables.is_empty() {
+                    if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
+                        tables.push(hoisted);
+                    }
                 }
                 tables.sort_unstable();
                 tables.dedup();
@@ -683,8 +692,10 @@ impl<'a, C: Code> Lifter<'a, C> {
                     if tables.is_empty() {
                         tables.extend(self.function_constants(br_pc, reg));
                     }
-                    if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
-                        tables.push(hoisted);
+                    if tables.is_empty() {
+                        if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
+                            tables.push(hoisted);
+                        }
                     }
                     tables
                         .iter()
