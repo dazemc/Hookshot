@@ -1055,12 +1055,14 @@ static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value) {
 }
 
 /* Age toggle: flips Sequence_IsChildhood (what the Temple of Time event sets) and reloads the current map, or the
-   Market when this map is not in oot_destinations, through the teleport so the other age's map and Link load. */
-static void oot_toggle_age(Ctx *c, uint64_t actor) {
+   Market when this map is not in oot_destinations, through the teleport so the other age's map and Link load. 1: the map
+   change was sent (teleport.banc its map); 0: not, teleport.why says why (the control bridge's reply) */
+static int oot_toggle_age(Ctx *c, uint64_t actor) {
     int child = 1;
     if (!oot_gamedata_bool(c, 0xcea220d3u, &child)) {
         hos_log("cheats: age toggle: Sequence_IsChildhood not found");
-        return;
+        teleport.why = "Link's age is not in the game's data (Sequence_IsChildhood not found)", teleport.banc = NULL;
+        return 0;
     }
     char current[80];
     oot_gamedata_string(c, 0x1d6189dau, current, sizeof current);   /* Sequence_CurrentBanc */
@@ -1075,14 +1077,17 @@ static void oot_toggle_age(Ctx *c, uint64_t actor) {
     }
     if (!oot_gamedata_set_bool(c, 0xcea220d3u, !child)) {
         hos_log("cheats: age toggle: could not write Sequence_IsChildhood");
-        return;
+        teleport.why = "Link's age could not be written (Sequence_IsChildhood)", teleport.banc = NULL;
+        return 0;
     }
     hos_log("cheats: age toggle: %s -> %s, reloading via destination %u (current map \"%s\")",
             child ? "child" : "adult", child ? "adult" : "child", target, current);
     if (!oot_teleport(c, actor, target)) {
         oot_gamedata_set_bool(c, 0xcea220d3u, child);
         hos_log("cheats: age toggle undone, the map change was not requested");
+        return 0;
     }
+    return 1;
 }
 
 static void oot_teleport_followup(Ctx *c) {
@@ -1142,11 +1147,13 @@ int hos_oot_destination(int index, const char **child, const char **adult) {
 }
 /* The bridge's teleport: asked on its thread, taken at the player's next update (oot_bridge_teleport_take), and what came
    of it kept for the bridge, by ticket. A later ask replaces one not taken yet. (oot_map_lock) */
+#define OOT_BRIDGE_AGE 0x10000   /* (oot_bridge_tp.asked: the age switch to the child, | 1 to the adult; not a destination) */
 static struct {
-    int asked;    /* the destination + 1 waiting to be taken; 0 none */
+    int asked;    /* the destination + 1 waiting to be taken, OOT_BRIDGE_AGE | adult the age switch; 0 none */
     int ticket;   /* the last ask's */
     int taking;   /* the ticket taken by the player's update and not done yet (it is not replaced meanwhile) */
-    int done_ticket, result, accepted;   /* the last one taken: 1 sent, -1 refused; accepted: the event manager's answer */
+    int done_ticket, result, accepted;   /* the last one taken: 1 sent, -1 refused, 2 (the age switch) Link was that age
+                                            already; accepted: the event manager's answer */
     char why[96], map[80];
 } oot_bridge_tp;
 int hos_oot_teleport_ask(int index) {
@@ -1157,8 +1164,19 @@ int hos_oot_teleport_ask(int index) {
     ReleaseSRWLockExclusive(&oot_map_lock);
     return ticket;
 }
+/* The bridge's age switch to the adult (1) or the child (0): the Debug tab's Switch age (oot_toggle_age), asked and taken as
+   a teleport is, with the same tickets, result and cancel. The age wanted goes with it and is checked when it is taken (the
+   bridge's sample of Link's age can be old): already that age, nothing is done (result 2) */
+int hos_oot_age_ask(int adult) {
+    AcquireSRWLockExclusive(&oot_map_lock);
+    const int ticket = ++oot_bridge_tp.ticket;
+    __atomic_store_n(&oot_bridge_tp.asked, OOT_BRIDGE_AGE | (adult ? 1 : 0), __ATOMIC_RELAXED);
+    ReleaseSRWLockExclusive(&oot_map_lock);
+    return ticket;
+}
 /* 1 sent (map: the map it goes to; accepted: whether the game's event manager took the request), -1 refused (why: the
-   reason), 0 not taken yet (or being taken), -2 replaced by a later ask or cancelled */
+   reason), 2 (the age switch) Link was that age already, nothing done, 0 not taken yet (or being taken), -2 replaced by a
+   later ask or cancelled */
 int hos_oot_teleport_result(int ticket, char *why, size_t why_cap, char *map, size_t map_cap, int *accepted) {
     AcquireSRWLockShared(&oot_map_lock);
     int r = -2;
@@ -1185,8 +1203,14 @@ static int oot_bridge_teleport_take(int *ticket) {   /* (the player's update) th
     ReleaseSRWLockExclusive(&oot_map_lock);
     return asked;
 }
-static void oot_bridge_teleport_done(int ticket, int sent) {
+static void oot_bridge_teleport_done(int ticket, int sent) {   /* sent: 1, 0 refused (teleport.why), 2 already that age */
     AcquireSRWLockExclusive(&oot_map_lock);
+    if (sent == 2) {
+        oot_bridge_tp.done_ticket = ticket, oot_bridge_tp.result = 2, oot_bridge_tp.taking = 0, oot_bridge_tp.accepted = 0;
+        oot_bridge_tp.why[0] = oot_bridge_tp.map[0] = 0;
+        ReleaseSRWLockExclusive(&oot_map_lock);
+        return;
+    }
     oot_bridge_tp.done_ticket = ticket, oot_bridge_tp.result = sent ? 1 : -1, oot_bridge_tp.taking = 0;
     oot_bridge_tp.accepted = sent && teleport.result != 0;
     snprintf(oot_bridge_tp.why, sizeof oot_bridge_tp.why, "%s", sent || !teleport.why ? "" : teleport.why);
@@ -1271,10 +1295,12 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     last_player_tick = now;
     int action = rx_option(HOS_OPT_CHEAT_ACTION, 0);
     if (!action) action = __atomic_exchange_n(&hos_oot_live_action, 0, __ATOMIC_RELAXED);
-    int bridge_ticket = 0;   /* (the control bridge's teleport, host/control.c: what came of it is kept for its reply) */
+    int bridge_ticket = 0;   /* (the control bridge's teleport or age switch, host/control.c: what came of it is kept for its reply) */
+    int bridge_adult = -1;   /* (the bridge's age switch: the age wanted, 1 the adult) */
     if (!action) {
         const int asked = oot_bridge_teleport_take(&bridge_ticket);
-        if (asked) action = OOT_TELEPORT_ACTION + asked - 1;
+        if (asked & OOT_BRIDGE_AGE) action = OOT_AGE_ACTION, bridge_adult = asked & 1;
+        else if (asked) action = OOT_TELEPORT_ACTION + asked - 1;
     }
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
@@ -1283,7 +1309,14 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
     } else if (action == OOT_AGE_ACTION) {
-        oot_toggle_age(c, actor);
+        int child = 1;   /* (the bridge's: Link's age now, not its sample's; already the age wanted, nothing to flip) */
+        if (bridge_adult >= 0 && oot_gamedata_bool(c, 0xcea220d3u, &child) && !child == bridge_adult) {
+            hos_log("cheats: age toggle: Link is the %s already", child ? "child" : "adult");
+            oot_bridge_teleport_done(bridge_ticket, 2);
+        } else {
+            const int sent = oot_toggle_age(c, actor);
+            if (bridge_ticket) oot_bridge_teleport_done(bridge_ticket, sent);
+        }
     } else if (action >= OOT_TELEPORT_ACTION) {
         const int sent = oot_teleport(c, actor, (unsigned)(action - OOT_TELEPORT_ACTION));
         if (bridge_ticket) oot_bridge_teleport_done(bridge_ticket, sent);

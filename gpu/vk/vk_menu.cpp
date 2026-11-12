@@ -1276,6 +1276,7 @@ bool cheat_chooses(int i) { return i == 4 || i == 5 || i == 6 || i == 11; }
 bool age_shown(int i) { return i == 9 && link_age.load(std::memory_order_relaxed) >= 0; }
 /// What confirm does on a tool's row, for its prompt (nullptr: nothing)
 const char* cheat_confirm(int i) {
+    if (i == 9 && !age_shown(9)) return nullptr;   // (no save loaded: no Switch to offer)
     static const char* const says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
                                                  "Switch", "Open", nullptr};
     return i >= 0 && i < kCheatRows ? says[i] : nullptr;
@@ -3719,9 +3720,12 @@ void cheat_press(int i, const bool* press, bool& changed) {
         }
     }
     if (press[7] && i == 9) {
-        cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
-        open_now = false;
-        changed = true;
+        const int age = link_age.load(std::memory_order_relaxed);
+        if (age >= 0) {   // (no save loaded: an action asked for now would wait and switch him after the next load)
+            cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
+            open_now = false;
+            changed = true;
+        }
     }
 }
 
