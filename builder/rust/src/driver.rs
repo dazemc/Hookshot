@@ -92,11 +92,18 @@ pub fn plan_json(
             24 << 20,
         )?;
     }
+    let mut standalone_info = Value::Null;
     if standalone {
         fs::create_dir_all(&game_gen).map_err(|e| format!("{}: {e}", game_gen.display()))?;
         crate::standalone::write_json(
             exefs.to_str().unwrap_or_default(),
             game_gen.to_str().unwrap_or_default(),
+            "",
+        )?;
+        let image_dir = work.join("sa").join("image");
+        standalone_info = crate::standalone::image_json(
+            exefs.to_str().unwrap_or_default(),
+            image_dir.to_str().unwrap_or_default(),
             "",
         )?;
     }
@@ -280,6 +287,7 @@ pub fn plan_json(
         "rt64": rt64.to_string_lossy(),
         "chunks": chunks,
         "standalone": standalone,
+        "standalone_info": standalone_info,
         "compiled": compiled,
         "romfs_entries": romfs_files,
         "ready": stage == "compile",
