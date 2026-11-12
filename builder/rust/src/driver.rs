@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Value, json};
+use sha1::Digest;
 
 use crate::kit;
 use crate::logo_rgba;
@@ -36,6 +37,9 @@ fn stamp_one(text: &mut String, path: &Path) {
 /// the 400 MB library instead of linking it again.
 fn link_stamp(objects: &[String], cc: &Path, lib: &Path) -> String {
     let mut text = format!("hookshot-link-v1 {}\n", env!("CARGO_PKG_VERSION"));
+    let mut linker = sha1::Sha1::new();
+    linker.update(include_bytes!("linker.rs"));
+    text.push_str(&format!("linker {:x}\n", linker.finalize()));
     stamp_one(&mut text, cc);
     let mut objects = objects.to_vec();
     objects.sort();
