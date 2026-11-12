@@ -48,6 +48,7 @@ pub fn inputs(
         ("restbl.rs", include_str!("restbl.rs")),
         ("bntx.rs", include_str!("bntx.rs")),
         ("raster.rs", include_str!("raster.rs")),
+        ("overrides.rs", include_str!("overrides.rs")),
         ("textures.rs", include_str!("textures.rs")),
         ("zs.rs", include_str!("zs.rs")),
     ];
@@ -72,6 +73,12 @@ pub fn inputs(
     parts.insert("restbl".to_owned(), hash_restbl(romfs)?);
     parts.insert("kenney".to_owned(), hash_tree(kenney)?);
     parts.insert("kenney_keyboard".to_owned(), hash_tree(keyboard)?);
+    // (a hand-made prompt image changes what the build draws: its addition,
+    // edit or removal must not leave the previous output stamped unchanged)
+    parts.insert(
+        "prompt_faces".to_owned(),
+        hash_tree(&crate::kit::root().join(super::overrides::ROOT))?,
+    );
     Ok(parts)
 }
 

@@ -866,6 +866,12 @@ mod tests {
                 "button {button} defaults to a pad input"
             );
         }
+        for pad in PADS {
+            assert!(
+                switch_icon(pad).is_some(),
+                "the Switch has an icon for {pad}"
+            );
+        }
         assert_eq!(switch_icon("east"), Some(0xE040));
         assert_eq!(switch_icon("nope"), None);
     }

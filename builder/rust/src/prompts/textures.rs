@@ -1,15 +1,17 @@
 //! Per-face `textures.bin`: the blocks written over the game's button-icon
 //! textures (`host/prompts.c` applies the runs the controls choose).
 //!
-//! The BC4 letters, the ASTC ocarina notes, each non-Switch face's drawn
-//! controller picture with the page's tinted copy and shadow, and the pause
-//! menu's leader lines are all made here, as `nx2/prompt_assets.py` does.
+//! The BC4 letters, the ASTC ocarina notes (the Switch's non-default controls
+//! included), each non-Switch face's drawn controller picture with the page's
+//! tinted copy and shadow, and the pause menu's leader lines are all made
+//! here, as `nx2/prompt_assets.py` does. A hand-made image in
+//! `nx2/prompt_faces/<face>/` takes a layer's place (`super::overrides`).
 //! Pillow-compatible shapes, blur and resampling are in `raster`; glyph
 //! silhouettes are scanline-rasterized, so their antialiased edges can differ
 //! from FreeType's (the real pictures differ from the Python reference on
 //! 0.06% of RGBA bytes for the Steam Deck to 0.46% for the Xbox).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -18,6 +20,7 @@ use ttf_parser::{Face, GlyphId};
 use super::astc;
 use super::bntx::{self, Texture};
 use super::guide;
+use super::overrides::Overrides;
 use super::raster::{self, Filter, Mask, Rgba};
 use super::{faces, zs};
 
@@ -139,6 +142,9 @@ fn runs_blocks(texture: &Texture, blocks: &[u8]) -> Vec<(u32, Vec<u8>)> {
             pieces.push((at, blocks[from..from + size].to_vec()));
         }
     }
+    // (the file's order, not the row-major block order: adjacent blocks in
+    // the block-linear layout are one run, as the Python build writes them)
+    pieces.sort_by_key(|(at, _)| *at);
     let mut out: Vec<(u32, Vec<u8>)> = Vec::new();
     for (at, piece) in pieces {
         if let Some(last) = out.last_mut()
@@ -240,28 +246,39 @@ fn runs_area(
     out
 }
 
+/// The box two boxes cover together, or either one.
+fn union_box(a: Option<guide::Bbox>, b: Option<guide::Bbox>) -> Option<guide::Bbox> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Each face's leader-line entries, in `textures.bin`'s order: the lines that
-/// stay first (Switch button 0xff), then each moving line over them.
+/// stay first (Switch button 0xff), then each moving line over them. A
+/// hand-made layer takes the place of the drawn one, and a hand-made line of
+/// the lines that stay is what the moving lines are drawn over.
 fn guide_entries(
     bytes: &[u8],
     textures: &BTreeMap<String, Texture>,
     face: &str,
-) -> Vec<(u8, u8, Vec<(u32, Vec<u8>)>)> {
+    overrides: &Overrides,
+) -> Result<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>, String> {
     let Some(first) = textures.get(guide::GUIDES[0]) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(second) = textures.get(guide::GUIDES[1]) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     if first.is_astc() || second.is_astc() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let game = [
         guide::decode_bc4(bytes, first),
         guide::decode_bc4(bytes, second),
     ];
     if game[0].width != game[1].width || game[0].height != game[1].height {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let textures = [first, second];
     let mut keep: [Option<Mask>; 2] = [None, None];
@@ -273,7 +290,22 @@ fn guide_entries(
                 mask,
                 bbox,
             } => {
-                entries.push((0xff, 0, runs_area(textures[texture], &mask, bbox, None)));
+                let texture_spec = textures[texture];
+                let mut mask = mask;
+                let mut bbox = bbox;
+                if let Some(hand) = overrides.mask(
+                    face,
+                    &format!("{}.png", guide::GUIDES[texture]),
+                    texture_spec.width,
+                    texture_spec.height,
+                )? {
+                    // (a hand-made image may reach further than the drawn
+                    // lines: the box takes in all of it, as `face_textures`
+                    // does)
+                    bbox = union_box(bbox, hand.bbox());
+                    mask = hand;
+                }
+                entries.push((0xff, 0, runs_area(texture_spec, &mask, bbox, None)));
                 keep[texture] = Some(mask);
             }
             guide::Layer::Over {
@@ -282,17 +314,32 @@ fn guide_entries(
                 pad,
                 mask,
             } => {
+                let texture_spec = textures[texture];
+                let mut mask = mask;
+                if let Some(hand) = overrides.mask(
+                    face,
+                    &format!(
+                        "{}.{}.{}.png",
+                        guide::GUIDES[texture],
+                        faces::SWITCH_NAMES[usize::from(button)],
+                        faces::PADS[usize::from(pad)]
+                    ),
+                    texture_spec.width,
+                    texture_spec.height,
+                )? {
+                    mask = hand;
+                }
                 let under = keep[texture].as_ref().unwrap_or(&game[texture]);
                 let combined = under.lighter(&mask);
                 entries.push((
                     button,
                     pad,
-                    runs_area(textures[texture], &combined, None, Some(&mask)),
+                    runs_area(texture_spec, &combined, None, Some(&mask)),
                 ));
             }
         }
     }
-    entries
+    Ok(entries)
 }
 
 fn draw_button(
@@ -745,14 +792,173 @@ fn picture_scaled(
     Some(im.resize(pro.width, pro.height, Filter::Box))
 }
 
+/// The icon's size in a texture: `int(min(width, height) * 0.9)`, as the
+/// Python build truncates it.
+fn icon_size(texture: &Texture) -> u32 {
+    ((texture.width.min(texture.height) as f64) * 0.9) as u32
+}
+
+/// The ocarina's note layers: for each note texture and each pad input, the
+/// face's icon (white) with its letter (black) on a transparent texture
+/// (`face_layers`' NOTES). The Switch face keeps the game's own texture for
+/// its default controls.
+fn note_entries(
+    icons: &Icons,
+    textures: &BTreeMap<String, Texture>,
+    switch: bool,
+    overrides: &Overrides,
+    face: &str,
+) -> Result<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>, String> {
+    let mut sizes = BTreeSet::new();
+    for (name, _) in NOTES {
+        if let Some(texture) = textures.get(name)
+            && texture.is_astc()
+        {
+            sizes.insert(icon_size(texture));
+        }
+    }
+    // (the same icon is used by every note of a size: draw it once)
+    let mut masks: BTreeMap<(&'static str, u32), (Mask, Mask, Mask)> = BTreeMap::new();
+    for pad in faces::PADS {
+        for size in &sizes {
+            if let Some(mask) = icons.masks(pad, *size) {
+                masks.insert((pad, *size), mask);
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    for (name, button) in NOTES {
+        let Some(texture) = textures.get(name) else {
+            continue;
+        };
+        if !texture.is_astc() {
+            continue;
+        }
+        for (pad_index, pad) in faces::PADS.iter().enumerate() {
+            if switch && faces::DEFAULT[usize::from(button)] == *pad {
+                continue;
+            }
+            let Some((_, shape, holes)) = masks.get(&(*pad, icon_size(texture))) else {
+                continue;
+            };
+            let shape = shape.place(texture.width, texture.height);
+            let holes = holes.place(texture.width, texture.height);
+            let mut rgba = vec![0u8; (texture.width * texture.height * 4) as usize];
+            for y in 0..texture.height {
+                for x in 0..texture.width {
+                    let at = ((y * texture.width + x) * 4) as usize;
+                    if holes.at(x, y) > 127 {
+                        rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
+                    } else if shape.at(x, y) > 127 {
+                        rgba[at..at + 4].copy_from_slice(&[255, 255, 255, 255]);
+                    }
+                }
+            }
+            if let Some(hand) = overrides.rgba(
+                face,
+                &format!("{name}.{pad}.png"),
+                texture.width,
+                texture.height,
+            )? {
+                rgba = hand;
+            }
+            let Ok(blocks) = astc::encode(
+                &rgba,
+                texture.width,
+                texture.height,
+                (texture.format & 0xff) == 6,
+            ) else {
+                continue;
+            };
+            entries.push((button, pad_index as u8, runs_blocks(texture, &blocks)));
+        }
+    }
+    Ok(entries)
+}
+
+/// The white letters on black (`KeyTexFont`, BC4): for each letter texture and
+/// each pad input, the icon's letter (its holes, or its shape when it has
+/// none) as an L mask (`face_layers`' LETTERS). The Switch face keeps the
+/// game's own texture for its default controls.
+fn letter_entries(
+    icons: &Icons,
+    textures: &BTreeMap<String, Texture>,
+    switch: bool,
+    overrides: &Overrides,
+    face: &str,
+) -> Result<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>, String> {
+    let mut sizes = BTreeSet::new();
+    for (name, _) in LETTERS {
+        if let Some(texture) = textures.get(name)
+            && !texture.is_astc()
+        {
+            sizes.insert(icon_size(texture));
+        }
+    }
+    // (the same icon is used by every letter of a size: draw it once)
+    let mut masks: BTreeMap<(&'static str, u32), (Mask, Mask, Mask)> = BTreeMap::new();
+    for pad in faces::PADS {
+        for size in &sizes {
+            if let Some(mask) = icons.masks(pad, *size) {
+                masks.insert((pad, *size), mask);
+            }
+        }
+    }
+    let mut entries = Vec::new();
+    for (name, button) in LETTERS {
+        let Some(texture) = textures.get(name) else {
+            continue;
+        };
+        if texture.is_astc() {
+            continue;
+        }
+        for (pad_index, pad) in faces::PADS.iter().enumerate() {
+            if switch && faces::DEFAULT[usize::from(button)] == *pad {
+                continue;
+            }
+            let Some((icon, _, holes)) = masks.get(&(*pad, icon_size(texture))) else {
+                continue;
+            };
+            let mark = if holes.any() { holes } else { icon };
+            let mut mask = mark.place(texture.width, texture.height);
+            if let Some(hand) = overrides.mask(
+                face,
+                &format!("{name}.{pad}.png"),
+                texture.width,
+                texture.height,
+            )? {
+                mask = hand;
+            }
+            entries.push((button, pad_index as u8, runs(texture, &mask)));
+        }
+    }
+    Ok(entries)
+}
+
+/// The Switch face's own `textures.bin` entries: the notes and letters the
+/// game does not draw for the controls' non-default pad inputs, then the
+/// page's leader lines (`nx2/prompt_assets.py`'s `face_layers` on "switch").
+fn switch_entries(
+    icons: &Icons,
+    textures: &BTreeMap<String, Texture>,
+    bytes: &[u8],
+    overrides: &Overrides,
+) -> Result<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>, String> {
+    let mut entries = note_entries(icons, textures, true, overrides, "switch")?;
+    entries.extend(letter_entries(icons, textures, true, overrides, "switch")?);
+    entries.extend(guide_entries(bytes, textures, "switch", overrides)?);
+    Ok(entries)
+}
+
 fn controller_layers(
     bytes: &[u8],
     textures: &BTreeMap<String, Texture>,
     font: &Face,
     spec: &faces::Face,
-) -> Vec<(u8, u8, Vec<(u32, Vec<u8>)>)> {
+    overrides: &Overrides,
+) -> Result<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>, String> {
     if spec.name == "switch" {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let icons = Icons::for_face(font, spec);
     let mut entries = Vec::new();
@@ -802,6 +1008,37 @@ fn controller_layers(
                 });
             }
         }
+        // (a hand-made picture is written only where it has any of itself,
+        // as `face_textures` does over the game's picture)
+        if let Some(hand) = overrides.rgba(
+            spec.name,
+            &format!("{name}.png"),
+            texture.width,
+            texture.height,
+        )? {
+            let hand = Rgba::from_rgba(hand, texture.width, texture.height);
+            let mut hand_box: Option<(u32, u32, u32, u32)> = None;
+            for y in 0..texture.height {
+                for x in 0..texture.width {
+                    if hand.at(x, y).iter().any(|value| *value != 0) {
+                        hand_box = union_box(hand_box, Some((x, y, x + 1, y + 1)));
+                    }
+                }
+            }
+            if let Some(hand_box) = hand_box {
+                // (the hand-made image replaces the drawn one in the box the
+                // label layer and the image cover, as `face_textures` writes
+                // it, transparent pixels included)
+                let box_ = union_box(changed, Some(hand_box)).unwrap();
+                for y in box_.1..box_.3 {
+                    for x in box_.0..box_.2 {
+                        let at = ((y * texture.width + x) * 4) as usize;
+                        rgba[at..at + 4].copy_from_slice(&hand.at(x, y));
+                    }
+                }
+                changed = Some(box_);
+            }
+        }
         let Ok(blocks) = encode_changed(
             &rgba,
             texture.width,
@@ -814,7 +1051,7 @@ fn controller_layers(
         };
         entries.push((0xff, 0, runs_blocks(texture, &blocks)));
     }
-    entries
+    Ok(entries)
 }
 
 fn decode_rgba(bytes: &[u8], texture: &Texture) -> Option<Rgba> {
@@ -912,19 +1149,45 @@ fn picture_layers(
     spec: &faces::Face,
     font: &Face,
     game_font: Option<&Face>,
-) -> Option<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>> {
-    if spec.drawing.is_none() {
-        return None;
-    }
-    let plain_texture = textures.get(PICTURES[0])?;
-    let tinted_texture = textures.get(PICTURES[1])?;
-    let shadow_texture = textures.get(PICTURE_SHADOW)?;
+    overrides: &Overrides,
+) -> Result<Option<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>>, String> {
+    let Some(plain_texture) = textures.get(PICTURES[0]) else {
+        return Ok(None);
+    };
+    let Some(tinted_texture) = textures.get(PICTURES[1]) else {
+        return Ok(None);
+    };
+    let Some(shadow_texture) = textures.get(PICTURE_SHADOW) else {
+        return Ok(None);
+    };
     if !plain_texture.is_astc() || !tinted_texture.is_astc() || shadow_texture.is_astc() {
-        return None;
+        return Ok(None);
     }
-    let plain = decode_rgba(bytes, plain_texture)?;
-    let tinted = decode_rgba(bytes, tinted_texture)?;
-    let own = picture(spec, &plain, font, game_font)?;
+    let Some(plain) = decode_rgba(bytes, plain_texture) else {
+        return Ok(None);
+    };
+    let Some(tinted) = decode_rgba(bytes, tinted_texture) else {
+        return Ok(None);
+    };
+    // (a hand-made picture is the source of the tinted copy and shadow, as
+    // `face_layers` uses it in place of `prompt_draw.picture`)
+    let own = match overrides.rgba(
+        spec.name,
+        &format!("{}.png", PICTURES[0]),
+        plain_texture.width,
+        plain_texture.height,
+    )? {
+        Some(hand) => Rgba::from_rgba(hand, plain_texture.width, plain_texture.height),
+        None => {
+            if spec.drawing.is_none() {
+                return Ok(None);
+            }
+            match picture(spec, &plain, font, game_font) {
+                Some(own) => own,
+                None => return Ok(None),
+            }
+        }
+    };
     picture_entries(
         plain_texture,
         tinted_texture,
@@ -932,11 +1195,15 @@ fn picture_layers(
         &plain,
         &tinted,
         &own,
+        overrides,
+        spec.name,
     )
 }
 
 /// The three layers a drawn picture writes, in `textures.bin`'s order: the
-/// picture, the page's tinted copy, then its shadow.
+/// picture, the page's tinted copy, then its shadow. A hand-made layer of the
+/// same name takes any of their places.
+#[allow(clippy::too_many_arguments)]
 fn picture_entries(
     plain_texture: &Texture,
     tinted_texture: &Texture,
@@ -944,28 +1211,53 @@ fn picture_entries(
     plain: &Rgba,
     tinted: &Rgba,
     own: &Rgba,
-) -> Option<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>> {
-    let plain_blocks = astc::encode(
+    overrides: &Overrides,
+    face: &str,
+) -> Result<Option<Vec<(u8, u8, Vec<(u32, Vec<u8>)>)>>, String> {
+    let Ok(plain_blocks) = astc::encode(
         &own.data,
         own.width,
         own.height,
         (plain_texture.format & 0xff) == 6,
-    )
-    .ok()?;
-    let tint = tint_layer(plain, tinted, own)?;
-    let tint_blocks = astc::encode(
+    ) else {
+        return Ok(None);
+    };
+    let Some(tint) = tint_layer(plain, tinted, own) else {
+        return Ok(None);
+    };
+    // (a hand-made tinted copy replaces the one fitted from the picture)
+    let tint = match overrides.rgba(
+        face,
+        &format!("{}.png", PICTURES[1]),
+        tint.width,
+        tint.height,
+    )? {
+        Some(hand) => Rgba::from_rgba(hand, tint.width, tint.height),
+        None => tint,
+    };
+    let Ok(tint_blocks) = astc::encode(
         &tint.data,
         tint.width,
         tint.height,
         (tinted_texture.format & 0xff) == 6,
-    )
-    .ok()?;
+    ) else {
+        return Ok(None);
+    };
     let shadow = shadow_layer(own, shadow_texture.width, shadow_texture.height);
-    Some(vec![
+    let shadow = match overrides.mask(
+        face,
+        &format!("{PICTURE_SHADOW}.png"),
+        shadow.width,
+        shadow.height,
+    )? {
+        Some(hand) => hand,
+        None => shadow,
+    };
+    Ok(Some(vec![
         (0xff, 0, runs_blocks(plain_texture, &plain_blocks)),
         (0xff, 0, runs_blocks(tinted_texture, &tint_blocks)),
         (0xff, 0, runs_blocks(shadow_texture, &encode_bc4(&shadow))),
-    ])
+    ]))
 }
 
 fn write_textures(path: &Path, entries: &[(u8, u8, Vec<(u32, Vec<u8>)>)]) -> Result<(), String> {
@@ -998,13 +1290,32 @@ fn icon_glyph(font: &Face, spec: &faces::Face, pad: &str) -> Option<GlyphId> {
 }
 
 /// Write `Common.bntx` and each face's `textures.bin`; returns the entries
-/// written.
+/// written. Hand-made images come from `nx2/prompt_faces` in the checkout.
 pub fn build(
     romfs: &Path,
     out: &Path,
     dictionary: &[u8],
     kenney: &Path,
     game_otf: &[u8],
+) -> Result<usize, String> {
+    build_with(
+        romfs,
+        out,
+        dictionary,
+        kenney,
+        game_otf,
+        &Overrides::default(),
+    )
+}
+
+/// As [`build`], with the hand-made images read from `overrides`.
+pub fn build_with(
+    romfs: &Path,
+    out: &Path,
+    dictionary: &[u8],
+    kenney: &Path,
+    game_otf: &[u8],
+    overrides: &Overrides,
 ) -> Result<usize, String> {
     let bytes = zs::read_zs(romfs, bntx::TEXTURES, dictionary)?;
     fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
@@ -1017,6 +1328,24 @@ pub fn build(
         Face::parse(game_otf, 0).ok()
     };
     let mut written = 0usize;
+    // (the Switch face first, as `nx2/prompt_assets.py` writes it: the notes
+    // and letters of its non-default controls, then the leader lines)
+    let switch = match &game_font {
+        Some(font) => {
+            let icons = Icons::for_game(font);
+            switch_entries(&icons, &textures, &bytes, overrides)?
+        }
+        None => guide_entries(&bytes, &textures, "switch", overrides)?,
+    };
+    if !switch.is_empty() {
+        written += switch
+            .iter()
+            .filter(|(button, _, _)| *button != 0xff)
+            .count();
+        let dir = out.join("switch");
+        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        write_textures(&dir.join("textures.bin"), &switch)?;
+    }
     for spec in &faces::FACES {
         let path = kenney.join(spec.font);
         let font_bytes = match fs::read(&path) {
@@ -1027,83 +1356,31 @@ pub fn build(
             Ok(font) => font,
             Err(_) => continue,
         };
-        let mut entries: Vec<(u8, u8, Vec<(u32, Vec<u8>)>)> = Vec::new();
-        for (name, button) in NOTES {
-            let Some(texture) = textures.get(name) else {
-                continue;
-            };
-            if !texture.is_astc() {
-                continue;
-            }
-            for (pad_index, pad) in faces::PADS.iter().enumerate() {
-                let Some(gid) = icon_glyph(&font, spec, pad) else {
-                    continue;
-                };
-                let size = ((texture.width.min(texture.height) as f64) * 0.9).round() as u32;
-                let icon = match raster::glyph(&font, gid, size.max(1)) {
-                    Ok(icon) if icon.any() => icon,
-                    _ => continue,
-                };
-                let holes = icon.holes();
-                let shape = icon.shape();
-                let shape = shape.place(texture.width, texture.height);
-                let holes = holes.place(texture.width, texture.height);
-                let mut rgba = vec![0u8; (texture.width * texture.height * 4) as usize];
-                for y in 0..texture.height {
-                    for x in 0..texture.width {
-                        let at = ((y * texture.width + x) * 4) as usize;
-                        if holes.at(x, y) > 127 {
-                            rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
-                        } else if shape.at(x, y) > 127 {
-                            rgba[at..at + 4].copy_from_slice(&[255, 255, 255, 255]);
-                        }
-                    }
-                }
-                let Ok(blocks) = astc::encode(
-                    &rgba,
-                    texture.width,
-                    texture.height,
-                    (texture.format & 0xff) == 6,
-                ) else {
-                    continue;
-                };
-                entries.push((button, pad_index as u8, runs_blocks(texture, &blocks)));
-                written += 1;
-            }
-        }
-        for (name, button) in LETTERS {
-            let Some(texture) = textures.get(name) else {
-                continue;
-            };
-            if texture.is_astc() {
-                continue;
-            }
-            for (pad_index, pad) in faces::PADS.iter().enumerate() {
-                let Some(gid) = icon_glyph(&font, spec, pad) else {
-                    continue;
-                };
-                let size = ((texture.width.min(texture.height) as f64) * 0.9).round() as u32;
-                let icon = match raster::glyph(&font, gid, size.max(1)) {
-                    Ok(icon) if icon.any() => icon,
-                    _ => continue,
-                };
-                let holes = icon.holes();
-                let mark = if holes.any() { holes } else { icon };
-                let mask = mark.place(texture.width, texture.height);
-                entries.push((button, pad_index as u8, runs(texture, &mask)));
-                written += 1;
-            }
-        }
+        let icons = Icons::for_face(&font, spec);
+        let notes = note_entries(&icons, &textures, false, overrides, spec.name)?;
+        let letters = letter_entries(&icons, &textures, false, overrides, spec.name)?;
+        written += notes.len() + letters.len();
+        let mut entries = notes;
+        entries.extend(letters);
         if spec.name != "switch" {
-            match picture_layers(&bytes, &textures, spec, &font, game_font.as_ref()) {
+            match picture_layers(
+                &bytes,
+                &textures,
+                spec,
+                &font,
+                game_font.as_ref(),
+                overrides,
+            )? {
                 Some(layers) => {
                     written += layers.len();
                     entries.extend(layers);
                 }
-                None => entries.extend(controller_layers(&bytes, &textures, &font, spec)),
+                None => entries.extend(controller_layers(
+                    &bytes, &textures, &font, spec, overrides,
+                )?),
             }
         }
-        let guides = guide_entries(&bytes, &textures, spec.name);
+        let guides = guide_entries(&bytes, &textures, spec.name, overrides)?;
         written += guides
             .iter()
             .filter(|(button, _, _)| *button != 0xff)
@@ -1115,16 +1392,6 @@ pub fn build(
         let dir = out.join(spec.name);
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         write_textures(&dir.join("textures.bin"), &entries)?;
-    }
-    let switch_guides = guide_entries(&bytes, &textures, "switch");
-    if !switch_guides.is_empty() {
-        written += switch_guides
-            .iter()
-            .filter(|(button, _, _)| *button != 0xff)
-            .count();
-        let dir = out.join("switch");
-        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        write_textures(&dir.join("textures.bin"), &switch_guides)?;
     }
     Ok(written)
 }
@@ -1553,7 +1820,10 @@ mod tests {
             &plain,
             &tinted,
             &own,
+            &Overrides::none(),
+            "xbox",
         )
+        .unwrap()
         .unwrap();
         assert_eq!(entries.len(), 3);
         assert!(
@@ -1597,5 +1867,570 @@ mod tests {
                 "a generated prompt asset is committed at the repository root: {generated}"
             );
         }
+    }
+
+    fn kenney(name: &str) -> Vec<u8> {
+        fs::read(
+            crate::kit::root()
+                .join("third_party/kenney_input")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    fn first_glyph(font: &Face, name: &str) -> GlyphId {
+        (0..font.number_of_glyphs())
+            .map(GlyphId)
+            .find(|gid| font.glyph_name(*gid) == Some(name))
+            .unwrap()
+    }
+
+    fn test_icons<'a>(font: &'a Face<'a>, gid: GlyphId) -> Icons<'a> {
+        Icons {
+            font,
+            codes: faces::PADS.iter().map(|pad| (*pad, gid)).collect(),
+        }
+    }
+
+    fn synthetic_texture(name: &str, format: u32, width: u32, height: u32) -> Texture {
+        Texture {
+            name: name.to_owned(),
+            record: 0,
+            format,
+            width,
+            height,
+            gobs: 1,
+            data: 0,
+        }
+    }
+
+    fn texture_bytes(texture: &Texture) -> Vec<u8> {
+        let (bw, bh) = texture.blocks();
+        vec![0u8; (bw * bh) as usize * texture.bytes_per_block()]
+    }
+
+    fn layer_textures() -> BTreeMap<String, Texture> {
+        let mut textures = BTreeMap::new();
+        for (name, _) in NOTES {
+            textures.insert(name.to_owned(), synthetic_texture(name, 0x2d06, 8, 8));
+        }
+        for (name, _) in LETTERS {
+            textures.insert(name.to_owned(), synthetic_texture(name, 0x1d01, 8, 8));
+        }
+        for name in guide::GUIDES {
+            textures.insert(name.to_owned(), synthetic_texture(name, 0x1d01, 64, 64));
+        }
+        textures
+    }
+
+    fn guide_bytes(textures: &BTreeMap<String, Texture>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for name in guide::GUIDES {
+            let texture = &textures[name];
+            assert_eq!(texture.data, 0);
+            bytes.extend(texture_bytes(texture));
+        }
+        bytes
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hookshot-layers-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_png(
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+        color: png::ColorType,
+        data: &[u8],
+    ) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = fs::File::create(path).unwrap();
+        let mut encoder = png::Encoder::new(file, width, height);
+        encoder.set_color(color);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(data).unwrap();
+    }
+
+    #[test]
+    fn switch_notes_and_letters_skip_only_the_default_pad() {
+        let bytes = kenney("kenney_input_xbox_series.otf");
+        let font = Face::parse(&bytes, 0).unwrap();
+        let gid = first_glyph(&font, "xbox_button_a");
+        let icons = test_icons(&font, gid);
+        let textures = layer_textures();
+
+        let notes = note_entries(&icons, &textures, true, &Overrides::none(), "switch").unwrap();
+        assert_eq!(notes.len(), NOTES.len() * (faces::PADS.len() - 1));
+        let mut at = 0;
+        for (_, button) in NOTES {
+            for (pad_index, pad) in faces::PADS.iter().enumerate() {
+                if faces::DEFAULT[usize::from(button)] == *pad {
+                    continue;
+                }
+                assert_eq!(
+                    (notes[at].0, notes[at].1),
+                    (button, pad_index as u8),
+                    "note {button} on {pad}"
+                );
+                at += 1;
+            }
+        }
+        assert_eq!(at, notes.len());
+
+        let letters =
+            letter_entries(&icons, &textures, true, &Overrides::none(), "switch").unwrap();
+        assert_eq!(letters.len(), LETTERS.len() * (faces::PADS.len() - 1));
+        let mut at = 0;
+        for (_, button) in LETTERS {
+            for (pad_index, pad) in faces::PADS.iter().enumerate() {
+                if faces::DEFAULT[usize::from(button)] == *pad {
+                    continue;
+                }
+                assert_eq!((letters[at].0, letters[at].1), (button, pad_index as u8));
+                at += 1;
+            }
+        }
+        assert_eq!(at, letters.len());
+
+        // (a controller face keeps every pad input its font has an icon for)
+        let notes = note_entries(&icons, &textures, false, &Overrides::none(), "xbox").unwrap();
+        let letters = letter_entries(&icons, &textures, false, &Overrides::none(), "xbox").unwrap();
+        assert_eq!(notes.len(), NOTES.len() * faces::PADS.len());
+        assert_eq!(letters.len(), LETTERS.len() * faces::PADS.len());
+    }
+
+    #[test]
+    fn switch_entries_are_the_notes_then_the_letters_then_the_guides() {
+        let bytes = kenney("kenney_input_xbox_series.otf");
+        let font = Face::parse(&bytes, 0).unwrap();
+        let gid = first_glyph(&font, "xbox_button_a");
+        let icons = test_icons(&font, gid);
+        let textures = layer_textures();
+        let guide_bytes = guide_bytes(&textures);
+
+        let entries = switch_entries(&icons, &textures, &guide_bytes, &Overrides::none()).unwrap();
+        let notes = NOTES.len() * (faces::PADS.len() - 1);
+        let letters = LETTERS.len() * (faces::PADS.len() - 1);
+        assert!(entries.len() > notes + letters, "the guide layers follow");
+        assert!(
+            entries[..notes]
+                .iter()
+                .all(|(button, _, _)| NOTES.iter().any(|(_, b)| b == button))
+        );
+        assert!(
+            entries[notes..notes + letters]
+                .iter()
+                .all(|(button, _, _)| LETTERS.iter().any(|(_, b)| b == button))
+        );
+        assert_eq!(entries[notes + letters].0, 0xff);
+        assert_eq!(entries[notes + letters].1, 0);
+        assert!(
+            entries[notes + letters..]
+                .iter()
+                .any(|(button, _, _)| *button != 0xff),
+            "a moving line follows the lines that stay"
+        );
+    }
+
+    #[test]
+    fn a_hand_made_note_letter_or_line_takes_precedence() {
+        let dir = scratch("precedence");
+        let bytes = kenney("kenney_input_xbox_series.otf");
+        let font = Face::parse(&bytes, 0).unwrap();
+        let gid = first_glyph(&font, "xbox_button_a");
+        let icons = test_icons(&font, gid);
+        let textures = layer_textures();
+        let overrides = Overrides::new(&dir);
+
+        // (the ocarina's note: an RGBA image)
+        let note_pixels: Vec<u8> = (0..8 * 8)
+            .flat_map(|i| [255, (i * 7) as u8, 0, 255])
+            .collect();
+        write_png(
+            &dir.join("switch").join("OcarinaButtonA_00.south.png"),
+            8,
+            8,
+            png::ColorType::Rgba,
+            &note_pixels,
+        );
+        let notes = note_entries(&icons, &textures, true, &overrides, "switch").unwrap();
+        let note = notes
+            .iter()
+            .find(|(button, pad, _)| *button == 0 && *pad == 0)
+            .unwrap();
+        let expected_blocks = astc::encode(&note_pixels, 8, 8, true).unwrap();
+        assert_eq!(
+            note.2,
+            runs_blocks(&textures["OcarinaButtonA_00"], &expected_blocks)
+        );
+
+        // (a letter: an L mask)
+        let letter_pixels: Vec<u8> = (0..8 * 8).map(|i| (i * 3) as u8).collect();
+        write_png(
+            &dir.join("switch").join("KeyTexFontA_00.south.png"),
+            8,
+            8,
+            png::ColorType::Grayscale,
+            &letter_pixels,
+        );
+        let letters = letter_entries(&icons, &textures, true, &overrides, "switch").unwrap();
+        let letter = letters
+            .iter()
+            .find(|(button, pad, _)| *button == 0 && *pad == 0)
+            .unwrap();
+        let mut mask = Mask::new(8, 8);
+        mask.data.copy_from_slice(&letter_pixels);
+        assert_eq!(letter.2, runs(&textures["KeyTexFontA_00"], &mask));
+
+        // (the lines that stay, and a moving line drawn over them)
+        let mut keep = Mask::new(64, 64);
+        for y in 10..20 {
+            for x in 12..30 {
+                keep.set(x, y, 255);
+            }
+        }
+        write_png(
+            &dir.join("switch").join("ControllerGuide_Pro_00.png"),
+            64,
+            64,
+            png::ColorType::Grayscale,
+            &keep.data,
+        );
+        let mut line = Mask::new(64, 64);
+        for y in 30..40 {
+            for x in 40..50 {
+                line.set(x, y, 255);
+            }
+        }
+        write_png(
+            &dir.join("switch")
+                .join("ControllerGuide_Pro_00.a.south.png"),
+            64,
+            64,
+            png::ColorType::Grayscale,
+            &line.data,
+        );
+        let guide_bytes = guide_bytes(&textures);
+        let guides = guide_entries(&guide_bytes, &textures, "switch", &overrides).unwrap();
+        let kept = &guides[0];
+        assert_eq!(kept.0, 0xff);
+        assert_eq!(
+            kept.2,
+            runs_area(&textures[guide::GUIDES[0]], &keep, keep.bbox(), None)
+        );
+        let moving = guides
+            .iter()
+            .find(|(button, pad, _)| *button == 0 && *pad == 0)
+            .unwrap();
+        assert_eq!(
+            moving.2,
+            runs_area(
+                &textures[guide::GUIDES[0]],
+                &keep.lighter(&line),
+                None,
+                Some(&line)
+            )
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_wrong_sized_hand_made_layer_stops_the_build() {
+        let dir = scratch("wrong-size");
+        let bytes = kenney("kenney_input_xbox_series.otf");
+        let font = Face::parse(&bytes, 0).unwrap();
+        let gid = first_glyph(&font, "xbox_button_a");
+        let icons = test_icons(&font, gid);
+        let textures = layer_textures();
+        write_png(
+            &dir.join("switch").join("OcarinaButtonA_00.south.png"),
+            4,
+            4,
+            png::ColorType::Rgba,
+            &[0; 4 * 4 * 4],
+        );
+        let error =
+            note_entries(&icons, &textures, true, &Overrides::new(&dir), "switch").unwrap_err();
+        assert!(error.contains("OcarinaButtonA_00.south.png"), "{error}");
+        assert!(error.contains("is 4x4, the texture 8x8"), "{error}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn runs_are_written_in_the_files_order_not_the_blocks_order() {
+        // (an 8x8 ASTC texture: its four blocks sit at 0, 64, 16 and 80 in
+        // the block-linear file; sorting joins 0+16 and 64+80)
+        let texture = synthetic_texture("OcarinaButtonA_00", 0x2d06, 8, 8);
+        let mut blocks = vec![0u8; 4 * 16];
+        for (i, block) in blocks.chunks_exact_mut(16).enumerate() {
+            block.fill(i as u8);
+        }
+        let runs = runs_blocks(&texture, &blocks);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].0, 0);
+        assert_eq!(runs[0].1, [vec![0u8; 16], vec![2u8; 16]].concat());
+        assert_eq!(runs[1].0, 64);
+        assert_eq!(runs[1].1, [vec![1u8; 16], vec![3u8; 16]].concat());
+    }
+
+    const PY_ASSETS: &str = include_str!("../../../../nx2/prompt_assets.py");
+
+    fn python_list(source: &str, marker: &str) -> Vec<String> {
+        let start = source.find(marker).unwrap() + marker.len();
+        let end = start + source[start..].find(']').unwrap();
+        source[start..end]
+            .split(',')
+            .map(|value| value.trim().trim_matches('"').to_owned())
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
+
+    fn python_dict(source: &str, marker: &str) -> Vec<(String, String)> {
+        let start = source.find(marker).unwrap() + marker.len();
+        let end = start + source[start..].find('}').unwrap();
+        source[start..end]
+            .split(',')
+            .filter_map(|entry| {
+                let (key, value) = entry.split_once(':')?;
+                Some((
+                    key.trim().trim_matches('"').to_owned(),
+                    value.trim().trim_matches('"').to_owned(),
+                ))
+            })
+            .collect()
+    }
+
+    fn code(value: &str) -> u16 {
+        u16::from_str_radix(value.trim().trim_start_matches("0x"), 16).unwrap()
+    }
+
+    #[test]
+    fn the_layer_tables_are_the_python_builds() {
+        assert_eq!(python_list(PY_ASSETS, "PADS = ["), faces::PADS);
+        let switch = python_list(PY_ASSETS, "SWITCH = [")
+            .iter()
+            .map(|value| code(value))
+            .collect::<Vec<_>>();
+        assert_eq!(switch, faces::SWITCH);
+        assert_eq!(python_list(PY_ASSETS, "DEFAULT = ["), faces::DEFAULT);
+        // (the Switch buttons' names, the Python SW table's order)
+        let names = python_list(PY_ASSETS, "enumerate([");
+        assert_eq!(names, faces::SWITCH_NAMES);
+
+        let notes = python_dict(PY_ASSETS, "NOTES = {");
+        assert_eq!(
+            notes,
+            NOTES
+                .iter()
+                .map(|(name, button)| (
+                    (*name).to_owned(),
+                    faces::SWITCH_NAMES[usize::from(*button)].to_owned()
+                ))
+                .collect::<Vec<_>>()
+        );
+        let letters = python_dict(PY_ASSETS, "LETTERS = {");
+        assert_eq!(
+            letters,
+            LETTERS
+                .iter()
+                .map(|(name, button)| (
+                    (*name).to_owned(),
+                    faces::SWITCH_NAMES[usize::from(*button)].to_owned()
+                ))
+                .collect::<Vec<_>>()
+        );
+
+        let icons = python_dict(PY_ASSETS, "SWITCH_ICON = {");
+        assert_eq!(
+            icons,
+            faces::SWITCH_ICON
+                .iter()
+                .map(|(pad, code)| ((*pad).to_owned(), format!("0x{code:04X}")))
+                .collect::<Vec<_>>()
+        );
+        let statics = python_dict(PY_ASSETS, "STATIC = {");
+        assert_eq!(
+            statics,
+            faces::STATIC
+                .iter()
+                .map(|(code, name)| (format!("0x{code:04X}"), (*name).to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn every_controller_face_has_note_and_letter_layers_for_its_icons() {
+        let textures = layer_textures();
+        for spec in &faces::FACES {
+            let bytes = kenney(spec.font);
+            let font = Face::parse(&bytes, 0).unwrap();
+            let icons = Icons::for_face(&font, spec);
+            assert!(!icons.codes.is_empty(), "{} has no icons", spec.name);
+            let notes =
+                note_entries(&icons, &textures, false, &Overrides::none(), spec.name).unwrap();
+            let letters =
+                letter_entries(&icons, &textures, false, &Overrides::none(), spec.name).unwrap();
+            assert_eq!(
+                notes.len(),
+                NOTES.len() * icons.codes.len(),
+                "{}",
+                spec.name
+            );
+            assert_eq!(
+                letters.len(),
+                LETTERS.len() * icons.codes.len(),
+                "{}",
+                spec.name
+            );
+        }
+    }
+
+    fn picture_bytes(plain: &Rgba, tinted: &Rgba) -> (Texture, Texture, Texture, Vec<u8>) {
+        let mut plain_texture = test_texture(8, 8);
+        plain_texture.format = 0x2d06;
+        plain_texture.data = 0;
+        let mut tinted_texture = test_texture(8, 8);
+        tinted_texture.format = 0x2d06;
+        tinted_texture.data = 1024;
+        let mut shadow_texture = test_texture(8, 8);
+        shadow_texture.format = 0x1d01;
+        shadow_texture.data = 2048;
+        let mut bytes = vec![0u8; 4096];
+        for (texture, image) in [(&plain_texture, plain), (&tinted_texture, tinted)] {
+            let blocks = astc::encode(&image.data, image.width, image.height, true).unwrap();
+            for (off, data) in runs_blocks(texture, &blocks) {
+                let at = off as usize;
+                bytes[at..at + data.len()].copy_from_slice(&data);
+            }
+        }
+        (plain_texture, tinted_texture, shadow_texture, bytes)
+    }
+
+    #[test]
+    fn a_hand_made_picture_drives_its_tint_and_shadow() {
+        let dir = scratch("picture");
+        let face = dir.join("xbox");
+        let hand_plain: Vec<u8> = (0..8 * 8)
+            .flat_map(|i| [(i * 11) as u8, (i * 7) as u8, (i * 3) as u8, 255])
+            .collect();
+        write_png(
+            &face.join("Controller_Pro.png"),
+            8,
+            8,
+            png::ColorType::Rgba,
+            &hand_plain,
+        );
+        let hand_tint: Vec<u8> = (0..8 * 8)
+            .flat_map(|i| [20, (i * 5) as u8, 200, 255])
+            .collect();
+        write_png(
+            &face.join("Controller_Pro1.png"),
+            8,
+            8,
+            png::ColorType::Rgba,
+            &hand_tint,
+        );
+        let hand_shadow: Vec<u8> = (0..8 * 8).map(|i| (i * 3) as u8).collect();
+        write_png(
+            &face.join("ControllerSh_Pro1.png"),
+            8,
+            8,
+            png::ColorType::Grayscale,
+            &hand_shadow,
+        );
+        let overrides = Overrides::new(&dir);
+
+        let mut plain = Rgba::new(8, 8);
+        let mut tinted = Rgba::new(8, 8);
+        for y in 0..8 {
+            for x in 0..8 {
+                let level = ((x * 13 + y * 7) & 0xff) as u8;
+                plain.set(x, y, [level, level / 2, 255 - level, 255]);
+                tinted.set(x, y, [level / 2 + 10, 255 - level, level, 255]);
+            }
+        }
+        let (plain_texture, tinted_texture, shadow_texture, bytes) = picture_bytes(&plain, &tinted);
+        let textures = BTreeMap::from([
+            (PICTURES[0].to_owned(), plain_texture.clone()),
+            (PICTURES[1].to_owned(), tinted_texture.clone()),
+            (PICTURE_SHADOW.to_owned(), shadow_texture.clone()),
+        ]);
+        let font_bytes = kenney("kenney_input_xbox_series.otf");
+        let font = Face::parse(&font_bytes, 0).unwrap();
+
+        let layers = picture_layers(&bytes, &textures, &TEST_FACE, &font, None, &overrides)
+            .unwrap()
+            .unwrap();
+        assert_eq!(layers.len(), 3);
+        assert!(
+            layers
+                .iter()
+                .all(|(button, pad, _)| *button == 0xff && *pad == 0)
+        );
+        let hand_plain_rgba = Rgba::from_rgba(hand_plain, 8, 8);
+        assert_eq!(
+            layers[0].2,
+            runs_blocks(
+                &plain_texture,
+                &astc::encode(&hand_plain_rgba.data, 8, 8, true).unwrap()
+            )
+        );
+        assert_eq!(
+            layers[1].2,
+            runs_blocks(
+                &tinted_texture,
+                &astc::encode(&hand_tint, 8, 8, true).unwrap()
+            )
+        );
+        let hand_shadow_mask = overrides
+            .mask("xbox", "ControllerSh_Pro1.png", 8, 8)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            layers[2].2,
+            runs_blocks(&shadow_texture, &encode_bc4(&hand_shadow_mask))
+        );
+
+        // (without a drawing, a hand-made picture still makes the three
+        // layers; without either, the labels stay on the game's pictures)
+        let no_drawing = faces::Face {
+            name: "xbox",
+            font: TEST_FACE.font,
+            prefix: TEST_FACE.prefix,
+            icons: &[],
+            drawing: None,
+        };
+        assert!(
+            picture_layers(
+                &bytes,
+                &textures,
+                &no_drawing,
+                &font,
+                None,
+                &Overrides::none()
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            picture_layers(&bytes, &textures, &no_drawing, &font, None, &overrides)
+                .unwrap()
+                .unwrap()
+                .len(),
+            3
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 }
