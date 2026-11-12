@@ -121,6 +121,23 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **Keyboard button prompts (#2435)**: a sixth prompt face draws the keys and mouse buttons the Controls page binds,
+  with the key glyphs, stick icons and live binding changes, and Auto picks it when no gamepad is present. The Kenney
+  Input Prompts keyboard/mouse font is vendored under `third_party/kenney_input_keyboard` (CC0, provenance
+  recorded). The Rust prompt build generates the keyboard `textures.bin` and `hint.bin`; host and menu source checks
+  cover the face order, glyph codes and live binds.
+- **Graphics tab sections (#2177)**: the Graphics rows are grouped under Resolution and upscaling, Frame generation
+  and latency, Screen, HDR, Detail, and GPU and memory, with the section titles skipped by selection. A game-free
+  source check pins the order and grouping.
+- **A native 5120x2160 widescreen picture (#2120)**: a 21:9 screen at the 4K output gets its native shape instead of
+  a stretched 4416x1864 one; the pixel cap is 5120x2160's, `HOS_WIDE_MAX_PX` lowers it, and a 32:9 screen stays
+  capped. `tests/wide_size_test.c` checks the shapes in CI.
+- **GPU hang watch (#2407)**: submitted work that stops finishing now ends the game with the checkpoint report after
+  `RX_VK_GPU_HANG_SEC` (default 30) instead of hanging; a real device loss keeps its existing path. A compiled
+  fixture cuts the watch out of `vk_replay.cpp` and checks the exit, the reason and the off switch.
+- **Prompt generation perf**: one ASTC context per thread and profile, only the block-aligned button-mark region is
+  re-encoded, and the output digests are read once. Forced generation fell from 3.25 s to 1.60 s with byte-identical
+  `Common.bntx`, note and letter runs; unchanged cache hits are unchanged.
 - **FSR 3.1 on the temporal chain (#2305, upstream `579c6d48`)**: FSR 3.1 is now the chain's third engine, so it
   receives the same colour, depth, jitter and skinned-character motion as DLSS and FSR 4 instead of camera motion
   alone; Link and the other characters keep their outlines while they move. The chain reverses depth for FSR's
@@ -169,8 +186,9 @@ commits, not upstream ancestors. Ported recently:
   terrain/writeback/heap fixes, NUP/Python builder fixes.
 
 Remaining large areas are FSR 3.1's HDR colour (it still takes the chain's LDR pair; upstream lists that as a
-follow-up), Native HDR, Reflex, AV1/dav1d, keyboard prompts, FOV, aspect-ratio/menu features, hardware-specific
-Vulkan fixes, Flutter equivalents of the Tk/WPF UI commits, docs and game-derived pipeline assets.
+follow-up), Native HDR, the guide lines and hand-drawn controller bodies, AV1/dav1d edge cases, aspect-ratio and
+translated-menu features, hardware-specific Vulkan fixes, Flutter equivalents of the Tk/WPF UI commits, docs and
+game-derived pipeline assets.
 Do not port game-derived pipeline lists or generated game data.
 
 ## CI and release
