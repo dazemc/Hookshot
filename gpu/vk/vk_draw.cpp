@@ -55,6 +55,8 @@
 #include "pipeline_cache_file.h"  // (a cache read or written without a cache-sized heap buffer)
 #include "pcache_stamp.h"         // (the cache's files dropped when another translator made them)
 #include "driver_faults.h"
+#include "device_fault_query.h"   // (when a lost device's report asks VK_EXT_device_fault)
+#include "fallback_pipeline_state.h"   // (the fallback's pipeline state and the strides a bind invalidates)
 #include "fallback_size_policy.h"
 #include "translate_wait.h"
 
@@ -2128,10 +2130,12 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
         VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE, VK_DYNAMIC_STATE_LINE_WIDTH,
         VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE};
-    if (!p.mesh) {
+    if (fallback_pipeline_state::dynamic_input_assembly(p.mesh)) {
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY);
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE);
-        dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
+        // (the fallback vertex stage reads records by vertex index, with no vertex buffers bound)
+        if (fallback_pipeline_state::dynamic_vertex_stride(p.mesh, p.fallback))
+            dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
     }
     if (dev.eds3_blend) {
         dyn.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
@@ -3789,19 +3793,26 @@ void checkpoints_report() {
     static bool done;
     if (done) return;
     done = true;
-    if (env_on("RX_VK_FAULT_INFO")) device_fault_report();   // (now, while the process is still alive: the faulting address)
+    const bool fault_forced = device_fault_query::forced(getenv("RX_VK_FAULT_INFO"));
+    if (fault_forced) device_fault_report();   // (now, while the process is still alive: the faulting address)
     {   // (RX_VK_FLASH_RECORD=<program,...>: those programs' last draws, sizes and all)
         const uint64_t f = texture_frame_no();
         draw_records_log(f > 6 ? f - 6 : 0, f);
     }
     // (checkpoints first: on NVIDIA vkGetDeviceFaultInfoEXT has not come back after a fault, which lost the report)
+    // (without either, AMD and Intel ask for the fault info automatically; on NVIDIA it stays off, even with the
+    // checkpoints switched off: device_fault_query.h)
+    const bool fault_auto = device_fault_query::automatic(dev.props.vendorID == 0x10DE, dev.checkpoints,
+                                                          marker_words != nullptr, getenv("RX_VK_FAULT_AUTO"));
     logf("vk: device lost: reading %s", dev.checkpoints ? "the checkpoints"
                                         : marker_words ? "the buffer markers"
-                                                       : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
-    // (and the fault info when there is nothing else to read: AMD's RADV and Intel have neither NVIDIA's checkpoints nor the
-    // buffer markers unless RX_VK_CHECKPOINTS=1, and the report is what a bug report needs. On NVIDIA the checkpoints run
-    // first, and vkGetDeviceFaultInfoEXT can hang after a fault: there it stays opt-in, RX_VK_FAULT_INFO=1)
-    struct FaultLast { ~FaultLast() { if ((!dev.checkpoints && !marker_words) || env_on("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
+                                        : fault_auto ? "the fault info (automatic; RX_VK_FAULT_AUTO=0 turns it off, "
+                                                       "RX_VK_CHECKPOINTS=1 for markers)"
+                                                     : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
+    struct FaultLast {
+        bool wanted;
+        ~FaultLast() { if (wanted) device_fault_report(); }
+    } fault_last{fault_forced || fault_auto};
     const auto watched = [] {
         std::lock_guard lk(watch_mu);
         for (int i = 0; i < 40; i++)
@@ -6789,6 +6800,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_BINDPL);
         FINE_N(FC_BIND_PIPE, 1);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
+        // (a static-stride pipeline invalidates the dynamic strides, even with no vertex buffers bound: the next ordinary
+        // draw must bind them again. The resolved buffer references themselves stay cached)
+        fallback_pipeline_state::after_graphics_bind(p.fallback, last_vb_valid, vertex_set.on);
     }
     if (!same_desc) {
         FINE_SCOPE(FT_BINDDESC);

@@ -48,6 +48,14 @@ on:
       - 'tests/pcache_read_test.cpp'
       - 'third_party/zbic/**'
       - 'nx2/build.py'
+      - 'gpu/vk/fallback_pipeline_state.h'
+      - 'tests/fallback_pipeline_state_test.cpp'
+      - 'gpu/vk/fallback_loaded.h'
+      - 'tests/fallback_loaded_test.cpp'
+      - 'gpu/vk/device_fault_query.h'
+      - 'tests/device_fault_query_test.cpp'
+      - 'gpu/vk/load_default.h'
+      - 'tests/load_default_test.cpp'
       - 'host/hos_wide_size.h'
       - 'tests/wide_size_test.c'
       - 'host/nn_video.c'
@@ -108,6 +116,14 @@ on:
       - 'tests/pcache_read_test.cpp'
       - 'third_party/zbic/**'
       - 'nx2/build.py'
+      - 'gpu/vk/fallback_pipeline_state.h'
+      - 'tests/fallback_pipeline_state_test.cpp'
+      - 'gpu/vk/fallback_loaded.h'
+      - 'tests/fallback_loaded_test.cpp'
+      - 'gpu/vk/device_fault_query.h'
+      - 'tests/device_fault_query_test.cpp'
+      - 'gpu/vk/load_default.h'
+      - 'tests/load_default_test.cpp'
       - 'host/hos_wide_size.h'
       - 'tests/wide_size_test.c'
       - 'host/nn_video.c'
@@ -338,6 +354,32 @@ jobs:
         run: |
           c++ -std=c++20 -Wall -Wextra -Werror tests/shadow_stage_test.cpp -o "$RUNNER_TEMP/shadow-stage"
           "$RUNNER_TEMP/shadow-stage"
+
+  vk-mesh-fault-rules:
+    name: Mesh fallback and device fault rules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile and run the mesh fallback pipeline state
+        run: |
+          c++ -std=c++20 -Wall -Wextra -Werror tests/fallback_pipeline_state_test.cpp -o "$RUNNER_TEMP/fallback-pipeline-state"
+          "$RUNNER_TEMP/fallback-pipeline-state"
+      - name: Compile and run the mesh fallback programs already read in
+        run: |
+          c++ -std=c++20 -Wall -Wextra -Werror tests/fallback_loaded_test.cpp -o "$RUNNER_TEMP/fallback-loaded"
+          "$RUNNER_TEMP/fallback-loaded"
+      - name: Compile and run the automatic fault query rule
+        run: |
+          c++ -std=c++20 -Wall -Wextra -Werror tests/device_fault_query_test.cpp -o "$RUNNER_TEMP/device-fault-query"
+          "$RUNNER_TEMP/device-fault-query"
+      - name: Compile and run the load default's safety net
+        run: |
+          c++ -std=c++20 -Wall -Wextra -Werror tests/load_default_test.cpp -o "$RUNNER_TEMP/load-default"
+          "$RUNNER_TEMP/load-default"
 
   video-uv:
     name: Video UV interleave
