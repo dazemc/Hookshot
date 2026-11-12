@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:fluent_ui/fluent_ui.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'blocs/builder_bloc.dart';
@@ -254,32 +255,74 @@ class _UpdateWorkingPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final stopping = note.toLowerCase().contains('stopping');
     return Column(
       children: [
-        const HsHeader(step: 1),
+        const HsHeader(chip: 'Update'),
         Expanded(
           child: HsPage(
             fill: true,
             child: Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 680),
+                constraints: const BoxConstraints(maxWidth: 720),
                 child: HsCard(
-                  title: 'Update',
-                  child: Row(
+                  padding: const EdgeInsets.fromLTRB(30, 28, 30, 28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      const ProgressRing(),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(title,
-                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: HsColors.ink)),
-                            const SizedBox(height: 6),
-                            HsNote(note),
+                      Container(
+                        width: 68,
+                        height: 68,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(colors: [Color(0xFF3557d6), Color(0xFF4b70f0)]),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: HsColors.brand.withValues(alpha: 0.29),
+                              blurRadius: 26,
+                              offset: const Offset(0, 9),
+                            ),
                           ],
                         ),
+                        child: const Icon(LucideIcons.refreshCw, size: 30, color: Colors.white),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        title,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: HsColors.ink),
+                      ),
+                      const SizedBox(height: 8),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 500),
+                        child: Text(
+                          note,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 13.5, height: 1.45, color: HsColors.inkSoft),
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(99),
+                        child: const SizedBox(
+                          height: 4,
+                          child: ProgressBar(value: null, strokeWidth: 4),
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      const _UpdatePoint(
+                        icon: LucideIcons.circleCheck,
+                        text: 'Every downloaded file is checked before anything is replaced.',
+                      ),
+                      const SizedBox(height: 9),
+                      const _UpdatePoint(
+                        icon: LucideIcons.info,
+                        text: 'Your current game and builder stay usable if the update is cancelled.',
+                      ),
+                      const SizedBox(height: 9),
+                      const _UpdatePoint(
+                        icon: LucideIcons.clock,
+                        text: 'The download and install usually take a few moments.',
                       ),
                     ],
                   ),
@@ -293,15 +336,33 @@ class _UpdateWorkingPage extends StatelessWidget {
             leading: const HsStatusLine('Downloaded files are verified before they are installed.'),
             actions: [
               HsButton.quiet(
-                label: note.toLowerCase().contains('stopping') ? 'Stopping…' : 'Cancel update',
-                onPressed: note.toLowerCase().contains('stopping')
-                    ? null
-                    : () => context.read<UpdateBloc>().add(const CancelUpdate()),
+                label: stopping ? 'Stopping…' : 'Cancel update',
+                onPressed: stopping ? null : () => context.read<UpdateBloc>().add(const CancelUpdate()),
               ),
             ],
           )
         else
           const HsFooter(leading: HsStatusLine('Please keep Hookshot Builder open.')),
+      ],
+    );
+  }
+}
+
+class _UpdatePoint extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _UpdatePoint({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 14, color: HsColors.brand),
+        const SizedBox(width: 9),
+        Expanded(
+          child: Text(text, style: const TextStyle(fontSize: 12.5, height: 1.4, color: HsColors.inkSoft)),
+        ),
       ],
     );
   }
@@ -317,24 +378,55 @@ class _UpdateFailedPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        const HsHeader(step: 1),
+        const HsHeader(chip: 'Update'),
         Expanded(
           child: HsPage(
             fill: true,
             child: Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 720),
+                constraints: const BoxConstraints(maxWidth: 760),
                 child: HsCard(
-                  title: 'The update stopped',
-                  subtitle: 'Your current game and builder files were left in place.',
-                  child: HsBanner(kind: HsBannerKind.warning, title: 'Error details', message: error),
+                  padding: const EdgeInsets.fromLTRB(30, 28, 30, 28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Align(
+                        alignment: Alignment.center,
+                        child: Container(
+                          width: 64,
+                          height: 64,
+                          decoration: BoxDecoration(
+                            color: HsColors.bad.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(color: HsColors.bad.withValues(alpha: 0.4)),
+                          ),
+                          child: const Icon(LucideIcons.triangleAlert, size: 28, color: HsColors.bad),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      const Text(
+                        'The update stopped',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: HsColors.ink),
+                      ),
+                      const SizedBox(height: 7),
+                      const Text(
+                        'Nothing was replaced. Your current game and builder are still usable.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 13.5, height: 1.45, color: HsColors.inkSoft),
+                      ),
+                      const SizedBox(height: 20),
+                      HsBanner(kind: HsBannerKind.warning, title: 'Error details', message: error),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
         ),
         HsFooter(
-          leading: const HsStatusLine('You can return and try the update again.'),
+          leading: const HsStatusLine('You can return and try the update again.', icon: LucideIcons.info),
           actions: [
             HsButton.primary(
               label: returnToBuilder ? 'Back to builder' : 'Back to game',
