@@ -79,10 +79,21 @@ pub fn all_json_with(
     }
     say_stage("finish", "Putting the game folder together")?;
     let package = crate::package::package_json(work, out, romfs, vk, assets, language)?;
+    // The game's shader list, as Python's finish stage makes it: the first
+    // start translates it instead of compiling each program as it meets it.
+    // A failure leaves that work to the first start, never stops the build.
+    let shaders = match crate::shader::census(
+        std::path::Path::new(romfs),
+        Some(&std::path::Path::new(out).join("hookshot_shaders.bin")),
+    ) {
+        Ok(value) => value,
+        Err(error) => json!({"error": error}),
+    };
     Ok(json!({
         "stage": "packaged",
         "driver": driver,
         "host": host,
         "package": package,
+        "shaders": shaders,
     }))
 }
