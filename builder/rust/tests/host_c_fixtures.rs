@@ -176,3 +176,67 @@ int main(void) {{
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "ok");
 }
+
+#[test]
+fn native_mouse_look_holds_the_camera_angles() {
+    if cfg!(windows) {
+        // (host/posix's windows.h stands in for Windows here; the fixture is built on the POSIX host)
+        return;
+    }
+    let Some(cc) = compiler() else {
+        eprintln!("skipping the native mouse fixture: no C compiler (CC, cc, gcc or clang)");
+        return;
+    };
+    let repo = root();
+    let dir = scratch("mouse-native");
+    // (beside the stand-in hos.h, so mouse_native.c's #include "hos.h" finds that one)
+    fs::write(
+        dir.join("hos.h"),
+        r#"#pragma once
+#include <stdint.h>
+#include <stddef.h>
+extern uint8_t *fake_heap;
+#define HOS_HEAP_BASE 0x1000000000ULL
+#define GP(a) ((void *)(fake_heap + ((uint64_t)(a) - HOS_HEAP_BASE)))
+extern uint64_t hos_heap_size;
+void hos_log(const char *fmt, ...);
+int64_t hos_now_ns(void);
+"#,
+    )
+    .expect("write the stand-in hos.h");
+    fs::copy(repo.join("host/mouse_native.c"), dir.join("mouse_native.c"))
+        .expect("copy mouse_native.c");
+    fs::copy(repo.join("tests/mouse_native_test.c"), dir.join("t.c")).expect("copy the fixture");
+    let exe = dir.join("t");
+    let build = Command::new(&cc)
+        .args(["-std=gnu11", "-include"])
+        .arg(repo.join("gpu/vk/compat/hookshot_env.h"))
+        .args(["-Wall", "-O1", "-g"])
+        .arg(format!("-I{}", dir.display()))
+        .arg(format!("-I{}", repo.join("host/posix").display()))
+        .arg(dir.join("t.c"))
+        .arg(dir.join("mouse_native.c"))
+        .arg("-o")
+        .arg(&exe)
+        .arg("-lm")
+        .output()
+        .expect("run the C compiler");
+    assert!(
+        build.status.success(),
+        "{cc}: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&exe).output().expect("run the mouse fixture");
+    let _ = fs::remove_dir_all(dir);
+    assert!(
+        run.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).contains("PASS"),
+        "{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
