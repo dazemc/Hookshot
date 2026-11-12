@@ -1776,21 +1776,88 @@ pub fn write_json(
         }
         env.extend(after.finalize());
     }
-    let keys = crate::timing::Stage::new("lift.keys");
+    let hash_keys = crate::timing::Stage::new("lift.hash_keys");
+    let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16)
+        .max(1)
+        .min(entries.len().max(1));
+    let keys: Vec<[u8; 20]> = if workers <= 1 {
+        entries
+            .iter()
+            .map(|entry| function_key(&lift, &image, *entry, &codegen, &env))
+            .collect()
+    } else {
+        let per = entries.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = entries
+                .chunks(per)
+                .map(|chunk| {
+                    let lift = &lift;
+                    let image = &image;
+                    let codegen = &codegen;
+                    let env = &env;
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|entry| function_key(lift, image, *entry, codegen, env))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut keys = Vec::with_capacity(entries.len());
+            for handle in handles {
+                keys.extend(handle.join().unwrap_or_default());
+            }
+            keys
+        })
+    };
+    hash_keys.done();
+    let lookup = crate::timing::Stage::new("lift.cache_lookup");
     let mut emitted: Vec<Option<String>> = vec![None; entries.len()];
     let mut misses: Vec<(usize, u64, [u8; 20])> = Vec::new();
     let mut hits = 0usize;
-    for (index, entry) in entries.iter().copied().enumerate() {
-        let key = function_key(&lift, &image, entry, &codegen, &env);
-        if let Some(text) = cache.get(&key) {
+    let looked_up: Vec<(usize, Option<String>)> = if workers <= 1 {
+        keys.iter()
+            .enumerate()
+            .map(|(index, key)| (index, cache.get(key)))
+            .collect()
+    } else {
+        let per = keys.len().div_ceil(workers);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = keys
+                .chunks(per)
+                .enumerate()
+                .map(|(part, chunk)| {
+                    let cache = &cache;
+                    let base = part * per;
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .enumerate()
+                            .map(|(index, key)| (base + index, cache.get(key)))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            let mut out = Vec::with_capacity(keys.len());
+            for handle in handles {
+                out.extend(handle.join().unwrap_or_default());
+            }
+            out
+        })
+    };
+    for (index, text) in looked_up {
+        if let Some(text) = text {
             emitted[index] = Some(text);
             hits += 1;
         } else {
-            misses.push((index, entry, key));
+            misses.push((index, entries[index], keys[index]));
         }
     }
-    keys.mark(&format!("{hits} cache hits, {} misses", misses.len()));
-    keys.done();
+    lookup.mark(&format!("{hits} cache hits, {} misses", misses.len()));
+    lookup.done();
     let texts = crate::timing::span("lift.shared_texts", || {
         shared_texts(&lift, &image, &misses)
     })?;

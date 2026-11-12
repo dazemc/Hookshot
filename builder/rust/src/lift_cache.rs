@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"HSLC";
@@ -19,6 +19,35 @@ const VERSION: u32 = 1;
 const ENTRY_BYTES: usize = 20 + 8 + 4;
 
 pub type Key = [u8; 20];
+
+/// Fill `buf` from `at` without using or moving the file's cursor.
+fn read_exact_at(file: &File, mut at: u64, mut buf: &mut [u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        while !buf.is_empty() {
+            let read = file.read_at(buf, at)?;
+            if read == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            at += read as u64;
+            buf = &mut buf[read..];
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        while !buf.is_empty() {
+            let read = file.seek_read(buf, at)?;
+            if read == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            at += read as u64;
+            buf = &mut buf[read..];
+        }
+    }
+    Ok(())
+}
 
 pub struct Cache {
     dir: PathBuf,
@@ -76,12 +105,18 @@ impl Cache {
         })
     }
 
-    pub fn get(&mut self, key: &Key) -> Option<String> {
+    /// Read a function's C without moving the file's cursor, so several
+    /// lookups can run at once on the same open data file.
+    pub fn get(&self, key: &Key) -> Option<String> {
         let (offset, len) = *self.index.get(key)?;
-        self.data.seek(SeekFrom::Start(offset)).ok()?;
         let mut bytes = vec![0u8; len as usize];
-        self.data.read_exact(&mut bytes).ok()?;
-        Some(String::from_utf8_lossy(&bytes).into_owned())
+        read_exact_at(&self.data, offset, &mut bytes).ok()?;
+        Some(match String::from_utf8(bytes) {
+            Ok(text) => text,
+            // (a corrupt entry keeps the old lossy answer instead of becoming
+            // a miss: the next lift rewrites it)
+            Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+        })
     }
 
     pub fn put(&mut self, key: Key, text: &str) -> Result<(), String> {
@@ -135,7 +170,7 @@ mod tests {
             cache.put(key, "void f_1(Ctx *c) { return; }\n").unwrap();
             cache.save().unwrap();
         }
-        let mut cache = Cache::open(&dir).unwrap();
+        let cache = Cache::open(&dir).unwrap();
         assert_eq!(
             cache.get(&key).as_deref(),
             Some("void f_1(Ctx *c) { return; }\n")
