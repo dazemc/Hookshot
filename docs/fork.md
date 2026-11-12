@@ -121,6 +121,15 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **Bug report (#2347, upstream `6f7ab2a7`)**: Gameplay's **System → Bug report** row (before Restart) writes
+  `bug-reports/<date>_<time>` in the game folder with `report.txt`, this run's and the previous run's logs (home folder
+  and user name redacted), and the game's next frame as `picture.png`. The report answers the game-problem form's
+  fields, lists the changed menu rows and the `RX_`/`HOS_`/`HOOKSHOT_`/`EDEN_`/`NVN_`/`SDL_` switches (a value only
+  when it is a number, a size or on/off, and never for a secret-like name), and ends with a pre-filled issue link. The
+  host logs `map: <Sequence_CurrentBanc> (child|adult)` when the map or age changes, which supplies "Where in the game".
+  `gpu/vk/vk_bug_report.cpp` is compiled alone by `builder/rust/tests/bug_report.rs` with `tests/bug_report_test.cpp`;
+  the menu row, host map line and picture wiring are source-checked there too. The fork has no separate System/About
+  tab, so the row sits under a System section heading with Restart and Quit on Gameplay.
 - **FSR 3.1 on the temporal chain (#2305, upstream `579c6d48`)**: FSR 3.1 is now the chain's third engine, so it
   receives the same colour, depth, jitter and skinned-character motion as DLSS and FSR 4 instead of camera motion
   alone; Link and the other characters keep their outlines while they move. The chain reverses depth for FSR's
