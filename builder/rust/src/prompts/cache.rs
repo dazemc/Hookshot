@@ -28,7 +28,11 @@ const SCHEME: u32 = 1;
 
 /// The parts generation reads, each named for the log's reason. The source
 /// modules are compiled in: a code change is a new key.
-pub fn inputs(romfs: &Path, kenney: &Path) -> Result<BTreeMap<String, String>, String> {
+pub fn inputs(
+    romfs: &Path,
+    kenney: &Path,
+    keyboard: &Path,
+) -> Result<BTreeMap<String, String>, String> {
     let mut parts = BTreeMap::new();
     let source = [
         ("mod.rs", include_str!("mod.rs")),
@@ -38,6 +42,7 @@ pub fn inputs(romfs: &Path, kenney: &Path) -> Result<BTreeMap<String, String>, S
         ("cmap.rs", include_str!("cmap.rs")),
         ("faces.rs", include_str!("faces.rs")),
         ("font.rs", include_str!("font.rs")),
+        ("keys.rs", include_str!("keys.rs")),
         ("layout.rs", include_str!("layout.rs")),
         ("restbl.rs", include_str!("restbl.rs")),
         ("bntx.rs", include_str!("bntx.rs")),
@@ -65,6 +70,7 @@ pub fn inputs(romfs: &Path, kenney: &Path) -> Result<BTreeMap<String, String>, S
     }
     parts.insert("restbl".to_owned(), hash_restbl(romfs)?);
     parts.insert("kenney".to_owned(), hash_tree(kenney)?);
+    parts.insert("kenney_keyboard".to_owned(), hash_tree(keyboard)?);
     Ok(parts)
 }
 
