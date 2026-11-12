@@ -61,7 +61,7 @@ VARIANTS = [
 # reversed and the motion is at the render extent -- because the inputs are the ones the upscaler is
 # already given (gpu/vk/vk_fsr3fi.cpp). The names are interpolation's own, not the upscaler's: its
 # low-resolution motion option is LOW_RES_, where the upscaler's is LOW_RESOLUTION_. A name the SDK
-# does not read is dropped without a word, so tests/test_fsr3_shader_options.py checks each one.
+# does not read is dropped without a word, so builder/rust/tests/fsr3_shader_options.rs checks each one.
 FI_OPTIONS = [
     "-DFFX_GPU=1",
     "-DFFX_GLSL=1",
