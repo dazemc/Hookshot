@@ -79,9 +79,9 @@ fn the_row_and_the_counter_use_one_name_per_engine() {
     );
     let tick = block(&menu, "void menu_tick() {");
     assert!(
-        tick.contains("snprintf(fps_sub, sizeof fps_sub, \"Base %.0f, %s\", game, who)")
-            && tick.contains("snprintf(fps_sub, sizeof fps_sub, \"Base %.0f\", game)"),
-        "the FPS counter's second line does not say Base and the maker"
+        tick.contains("snprintf(fps_sub, sizeof fps_sub, \"game %.0f, %s\", game, who)")
+            && tick.contains("snprintf(fps_sub, sizeof fps_sub, \"game %.0f\", game)"),
+        "the FPS counter's second line does not say the game rate and the maker"
     );
     assert!(
         !tick.contains("\"Built-in\""),
