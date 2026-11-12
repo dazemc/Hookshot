@@ -89,12 +89,16 @@ pub fn build(romfs: &Path, out: &Path) -> Result<Written, String> {
             return Err(error);
         }
     };
-    let complete = cache::outputs(&new)
-        .map(|outputs| {
-            outputs.contains_key("External.bfotf")
-                && written.faces.iter().all(|face| outputs.contains_key(face))
-        })
-        .unwrap_or(false);
+    let outputs = match cache::outputs(&new) {
+        Ok(outputs) => outputs,
+        Err(_) => {
+            remove(&temporary);
+            remove(out);
+            return Err("prompts: incomplete generated output".to_owned());
+        }
+    };
+    let complete = outputs.contains_key("External.bfotf")
+        && written.faces.iter().all(|face| outputs.contains_key(face));
     if !complete {
         remove(&temporary);
         remove(out);
@@ -103,7 +107,7 @@ pub fn build(romfs: &Path, out: &Path) -> Result<Written, String> {
     // (certify only output made from the inputs it was started with)
     match cache::inputs(romfs, &kenney) {
         Ok(again) if again == inputs => {
-            if let Err(error) = cache::write(&new, &inputs, &written) {
+            if let Err(error) = cache::write_outputs(&new, &inputs, &written, &outputs) {
                 reason = format!("{reason}; not stamped: {error}");
             }
         }
