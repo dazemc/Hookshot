@@ -118,7 +118,7 @@ fn stand_in_damaged_files(out: &Path, romfs: &Path) -> Result<(Vec<String>, usiz
     }
     check_cache_paths(out, &[&good, &checked, romfs])?;
     let stamp = read_stamp(&good);
-    let checked_stamp = format!("resolved-v1\n{stamp}");
+    let checked_stamp = format!("resolved-v2\n{stamp}"); // (v2: also files still in the .nup's zstd frame, #2361)
     if read_stamp(&checked) == checked_stamp {
         return Ok((Vec::new(), 0));
     }
@@ -533,6 +533,44 @@ mod tests {
         assert_eq!(
             fs::read(base.join("out/hookshot_pipelines.bin")).unwrap(),
             b"STAMP123grown"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_older_damaged_texture_check_runs_once_more() {
+        let base = std::env::temp_dir().join(format!(
+            "hookshot-rust-damaged-stamp-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let out = base.join("out");
+        let romfs = out.join("romfs");
+        fs::create_dir_all(&romfs).unwrap();
+        let unpacked = "unpacked by this builder: game.nup 1";
+        fs::write(out.join(".hookshot_romfs"), unpacked).unwrap();
+        fs::write(
+            out.join(".hookshot_romfs_checked"),
+            format!("resolved-v1\n{unpacked}"),
+        )
+        .unwrap();
+        fs::write(romfs.join("a_Nrm.zs"), vec![0u8; 16]).unwrap();
+        fs::write(
+            romfs.join("b_Nrm.zs"),
+            zstd::bulk::compress(b"BNTX wall", 3).unwrap(),
+        )
+        .unwrap();
+        let (damaged, unresolved) = stand_in_damaged_files(&out, &romfs).unwrap();
+        assert_eq!(damaged, vec!["a_Nrm.zs"]);
+        assert_eq!(unresolved, 0);
+        assert!(
+            read_stamp(&out.join(".hookshot_romfs_checked")).starts_with("resolved-v2\n"),
+            "an older check is not trusted"
+        );
+        // (the new stamp is trusted: nothing is read again)
+        assert_eq!(
+            stand_in_damaged_files(&out, &romfs).unwrap(),
+            (Vec::new(), 0)
         );
         let _ = fs::remove_dir_all(base);
     }

@@ -142,6 +142,16 @@ fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
             if let Some(message) = value["vk"]["message"].as_str() {
                 let _ = protocol.say(message);
             }
+            if let Some(prompts) = value["package"]["prompts"].as_object() {
+                let text = match prompts.get("reason").and_then(Value::as_str) {
+                    Some("unchanged, kept") => "button prompts: unchanged, kept".to_owned(),
+                    Some(reason) => format!("button prompts: regenerated ({reason})"),
+                    None => String::new(),
+                };
+                if !text.is_empty() {
+                    let _ = protocol.say(&text);
+                }
+            }
             let _ = protocol.done(&folder);
             0
         }

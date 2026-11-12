@@ -1535,6 +1535,49 @@ mod tests {
     }
 
     #[test]
+    fn a_build_files_folder_with_a_comma_keeps_its_map_and_order_paths_whole() {
+        let base = temp("link-comma");
+        let mut options = link_options(&base);
+        let out = base.join("Games, Zelda");
+        let hot = out.join("hot_order.txt");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(&hot, "f_001\n").unwrap();
+        options.hot_order = Some(hot.clone());
+        let exe = out.join("bin/hookshot.exe");
+        let map = exe.with_extension("map");
+        let prefix = windows_link_prefix(&exe, &map);
+        // (each link option that names a file goes as one argument after -Xlinker: -Wl, would split it at the comma)
+        let map_pair = prefix
+            .windows(2)
+            .find(|pair| pair[1].starts_with("-Xlink=/map:"))
+            .expect("the game's link map");
+        assert_eq!(map_pair[0], "-Xlinker");
+        assert_eq!(map_pair[1], format!("-Xlink=/map:{}", map.display()));
+        let suffix = windows_link_suffix(&out.join("hookshot_manifest.res"), None, &options);
+        let order_pair = suffix
+            .windows(2)
+            .find(|pair| pair[1].starts_with("-Xlink=/order:@"))
+            .expect("the hot order file");
+        assert_eq!(order_pair[0], "-Xlinker");
+        assert_eq!(
+            order_pair[1],
+            format!(
+                "-Xlink=/order:@{}",
+                hot.to_string_lossy().replace('\\', "/")
+            )
+        );
+        for argument in prefix.iter().chain(suffix.iter()) {
+            if argument.starts_with("-Wl,") {
+                assert!(
+                    !argument.contains("Games, Zelda"),
+                    "a path through -Wl, would split at the comma: {argument}"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn ffmpeg_comes_from_a_cpm_cache_and_skips_linux_builds() {
         let base = temp("ffmpeg");
         let win = base.join("cpm/ffmpeg/win64");

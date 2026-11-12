@@ -169,13 +169,15 @@ pub fn all_json_with(
         .as_ref()
         .map(|sdk| sdk.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // (with no language asked for, a launcher's first build takes the system's: make_game's rule)
+    let language = crate::package::build_language(std::path::Path::new(out), language, prepare);
     let package = crate::package::package_json(
         work_text,
         out,
         romfs,
         prebuilt.as_deref().unwrap_or(""),
         assets,
-        language,
+        &language,
         &ngx_text,
     )?;
     // (a DLSS build whose runtime did not land in <out>/ngx is not a DLSS build)
