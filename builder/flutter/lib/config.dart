@@ -47,8 +47,8 @@ String get _home => Platform.environment['HOME'] ?? Platform.environment['USERPR
 const portableMarker = '.hookshot-portable';
 const portableMarkerText = 'Hookshot Builder portable home v1';
 
-/// The game's own, relative link to its Builder (host/hos_update.c and
-/// builder/setup/portable_home.h read the same file).
+/// The game's own, relative link to its Builder (the game launcher,
+/// builder/setup/portable_home.h, and the packager read the same file).
 const gameHomeMarker = '.hookshot_builder_home';
 
 /// A resolved Builder home. [portable] is true only for a marked folder.

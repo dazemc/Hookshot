@@ -2099,6 +2099,7 @@ mod tests {
             (
                 "Resolution and upscaling",
                 &[
+                    "Aspect ratio",
                     "Output resolution",
                     "Profile",
                     "Upscaler",
@@ -2124,7 +2125,6 @@ mod tests {
                     "Fullscreen",
                     "V-Sync",
                     "Window scaling filter",
-                    "Ultrawide",
                     "Ultrawide menus",
                 ][..],
             ),
@@ -2138,7 +2138,7 @@ mod tests {
                     "HDR tone mapper",
                 ][..],
             ),
-            ("Detail", &["Anisotropic filtering"][..]),
+            ("Detail", &["Texture detail", "Anisotropic filtering"][..]),
             (
                 "GPU and memory",
                 // (no Mesh shaders row: a launch switch now, RX_VK_MESH_SHADERS, gpu/vk/mesh_mode.h)

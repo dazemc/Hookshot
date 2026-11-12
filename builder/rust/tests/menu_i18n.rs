@@ -262,6 +262,40 @@ fn table_of<'a>(tables: &'a BTreeMap<String, Table>, lang: &Lang) -> &'a Table {
         .unwrap_or_else(|| panic!("{}: its table {} is missing", lang.code, lang.table))
 }
 
+/// Texts ported with the Texture detail (#2557) and Skip opening (#2827) rows are English-only for now: the
+/// thirteen tables predate them, and a machine translation without a speaker's check would be worse than the
+/// English. Remove a text here when its row is added to every table.
+const ENGLISH_ONLY: &[&str] = &[
+    "Full",
+    "Texture detail",
+    "How much of the big textures (ground, walls, buildings) is kept in video memory. Lower uses less, for a softer picture up close: for 6 and 8 GB cards that slow down after a while. Applies to textures made after the change; a restart applies it to all.",
+    "Full detail, but on a card with 4.5 GB or less at the Minimum preset: as Medium.",
+    "Every texture at the game's own size (the very largest still trimmed to fit).",
+    "The big textures' largest level left out above 1024 texels: about a quarter of their memory.",
+    "The big textures down to 512 texels: the least memory, the softest picture.",
+    "Skip opening",
+    "Skips the new-game opening (the story movie and Navi waking Link) and leaves later cutscenes, the Deku Tree meeting, and the title screen alone.",
+];
+
+#[test]
+fn the_ported_rows_are_english_only_by_decision() {
+    let (tables, _) = catalog();
+    let drawn = drawn_texts();
+    for text in ENGLISH_ONLY {
+        assert!(
+            drawn.contains(*text),
+            "{text:?} is allowlisted as English-only but no longer drawn"
+        );
+        for table in tables.values() {
+            assert!(
+                !table.entries.iter().any(|(en, _)| en == text),
+                "{}: {text:?} is translated now: remove it from ENGLISH_ONLY",
+                table.name
+            );
+        }
+    }
+}
+
 #[test]
 fn the_languages_are_listed_with_their_tables() {
     let (tables, langs) = catalog();
@@ -355,8 +389,13 @@ fn every_key_is_a_text_the_menu_draws() {
     for table in tables.values() {
         for (en, _) in &table.entries {
             // (the Mesh shaders row became RX_VK_MESH_SHADERS; its old labels stay translated for saved help)
-            if en == "Automatic" || en == "Built-in" || en == "Compute" || en.to_lowercase().contains("mesh") || en.to_lowercase().contains("compute path")
-                || en.contains("on each axis") {
+            if en == "Automatic"
+                || en == "Built-in"
+                || en == "Compute"
+                || en.to_lowercase().contains("mesh")
+                || en.to_lowercase().contains("compute path")
+                || en.contains("on each axis")
+            {
                 continue;
             }
             assert!(

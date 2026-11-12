@@ -113,8 +113,8 @@ fn a_second_gamepad_binding_is_wired_through_the_api_and_the_menu() {
 
     // The renderer ABI changed: slot 1 of HOS_BIND_PAD is a binding now, and the paddles have positions.
     assert!(
-        api.contains("#define MKWVK_API_VERSION 19"),
-        "the second gamepad binding changes MkwVkHost::binding and must bump the API version"
+        api.contains("#define MKWVK_API_VERSION 20"),
+        "the second gamepad binding changes MkwVkHost::binding and must bump the API version (20: the display modes' screen_size)"
     );
     assert!(api.contains("HOS_PAD_RTRIGGER, HOS_PAD_RPADDLE1, HOS_PAD_LPADDLE1,"));
     assert!(api.contains("HOS_PAD_RPADDLE2, HOS_PAD_LPADDLE2, HOS_PAD_N"));

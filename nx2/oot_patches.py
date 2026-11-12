@@ -56,6 +56,15 @@ TEXT_DECL = "extern volatile float hos_text_scale;\nextern void hos_oot_text_pan
 LIFE_BUILD_ID = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
 LIFE_HEAD = "void f_804bd8c0(Ctx *__restrict A64_NOESC c) {\n"
 MOVE_HEAD = "void f_82c415e0(Ctx *__restrict A64_NOESC c) {\n"
+# The new-game opening (host/hos_main.c hos_oot_opening), this build's functions only. The request is still sent.
+# The two movies are not started, and the opening's skip query is answered yes.
+OPENING_REQUEST_HEAD = "void f_80d9a820(Ctx *__restrict A64_NOESC c) {\n"
+OPENING_TIMELINE_HEAD = "void f_83b5bfb0(Ctx *__restrict A64_NOESC c) {\n"
+OPENING_QUERY_HEAD = "void f_80de6cb0(Ctx *__restrict A64_NOESC c) {\n"
+OPENING_REQUEST = "    hos_oot_opening(c, 0);   /* (nx2/oot_patches.py: skip the new-game opening) */\n"
+OPENING_TIMELINE = "    if (hos_oot_opening(c, 1)) return;   /* (nx2/oot_patches.py: the opening's movies) */\n"
+OPENING_QUERY = "    if (hos_oot_opening(c, 2)) return;   /* (nx2/oot_patches.py: the opening's skip edge) */\n"
+OPENING_DECL = "extern int hos_oot_opening(Ctx *c, int mode);\n"
 MOVE_ANCHOR = ("if (((c->x[8] >> 1) & 1)) { goto L_82c41748; }\n")
 MOVE_MATRIX = "L_82c41778:;\n"
 WARP_HEAD = "void f_806d2530(Ctx *__restrict A64_NOESC c) {\n"
@@ -179,6 +188,27 @@ def patch_cct_speed(source):
 # its camera to the host before anything else, on the game's thread, once a frame; with the menu's Mouse camera on the mouse's
 # motion turns the camera's yaw (+0x1a4) and pitch (+0x18c) there, before the camera reads its input.
 CAM_HEAD = "void f_80644c80(Ctx *__restrict A64_NOESC c) {\n"
+
+
+def patch_opening(source):
+    """The supported build's three functions (a request, the timeline start, the skip query). None when this file has
+    none of them. A file patched before is left as it is."""
+    heads = ((OPENING_REQUEST_HEAD, OPENING_REQUEST), (OPENING_TIMELINE_HEAD, OPENING_TIMELINE),
+             (OPENING_QUERY_HEAD, OPENING_QUERY))
+    found = 0
+    for head, line in heads:
+        start = source.find(head)
+        if start < 0:
+            continue
+        found += 1
+        if line not in source:
+            at = start + len(head)
+            source = source[:at] + line + source[at:]
+    if not found:
+        return None
+    if OPENING_DECL not in source:
+        source = source.replace('#include "a64.h"\n', '#include "a64.h"\n' + OPENING_DECL, 1)
+    return source
 
 
 def patch_mouse_camera(source):
@@ -764,6 +794,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["disable camera centering"] = 0
         done["ocarina note wait"] = 0
         done["scene format"] = 0
+        done["opening skip"] = 0
     speed_hooks = 0   # (SPEED_PLACES', in one file or several)
     camera_speed = 0   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
@@ -853,6 +884,13 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = center
             done["disable camera centering"] += 1
             print("oot_patches: disable camera centering switch in", os.path.basename(path))
+        opening = patch_opening(out) if protect_hearts else None
+        if opening is not None:
+            n = opening.count(OPENING_REQUEST) + opening.count(OPENING_TIMELINE) + opening.count(OPENING_QUERY)
+            done["opening skip"] += n
+            if opening != out:
+                print("oot_patches: the opening skip at %d function(s) in %s" % (n, os.path.basename(path)))
+            out = opening
         speed = patch_cct_speed(out) if protect_hearts else None
         if speed is not None:
             if speed[0] != out:
@@ -907,6 +945,8 @@ def apply(gen, *, protect_hearts=False, required=False):
         print("oot_patches: WARNING: the OptimizeChangeBank allocations were found %s times, not once each: a full heap is "
               "not tried again" % heap_sites)
     for what, n in done.items():
+        if what == "opening skip":   # (three functions, checked below)
+            continue
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
     if protect_hearts and speed_hooks != len(SPEED_PLACES):
@@ -914,6 +954,8 @@ def apply(gen, *, protect_hearts=False, required=False):
     if protect_hearts and camera_speed != len(CAMERA_SPEED_HEADS):
         print("oot_patches: WARNING: the camera's turn speed was found in %d of %d functions (the Camera speed row turns only "
               "those)" % (camera_speed, len(CAMERA_SPEED_HEADS)))
+    if protect_hearts and done["opening skip"] != 3:
+        print("oot_patches: WARNING: the opening skip was found at %d of 3 functions" % done["opening skip"])
     if step_sites != len(STEP_SITES):
         # (both or neither: with one divide timed and the other stepping 1/60 s the two clocks of the game would run apart. Without
         # the hook the host keeps the rate up to the cap, as before: host/nn_vi.c, hos_step_probe)

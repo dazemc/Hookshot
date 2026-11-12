@@ -19,6 +19,7 @@ MANIFEST = b"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
     </windowsSettings>
   </application>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">

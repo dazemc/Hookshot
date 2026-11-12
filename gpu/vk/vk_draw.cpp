@@ -1778,6 +1778,7 @@ void state_list_prepare(void (*progress)(size_t done, size_t total), bool open_s
          variants_made.load(), noted_n, noted_mesh, noted_fallback, no_variant,
          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (open_seed && !env_on("RX_VK_SEED_CHECK")) seed_close();
+    if (env_on("HOOKSHOT_DECK_PREPARE")) program_cache_release_loaded();
 }
 
 // ---- (hookshot) Stage libraries, as TotK Recomp's runtime/vk_pipeline.c: the part of a pipeline that costs is its shaders, and with
@@ -7618,13 +7619,18 @@ bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     return typed_upscale(cmd, dw().imgs[0].imageView, dw().imgs[ntex].imageView, out, level, p.key, keys, true);
 }
 
+static bool portable_cache_ready();
 bool precompile_wanted() {
 #if defined(HOOKSHOT_RELEASE)
     bool on = true;
 #else
     bool on = false;
 #endif
-    if (const char* e = getenv("RX_VK_PRECOMPILE")) on = atoi(e) != 0;
+    if (const char* e = getenv("RX_VK_PRECOMPILE")) return atoi(e) != 0;
+    if (on && portable_cache_ready()) {
+        logf("vk: prepared portable cache: programs and pipelines are loaded when drawn");
+        return false;
+    }
     return on;
 }
 namespace {
@@ -7773,6 +7779,27 @@ PrepareWhy prepare_check(const std::string& path, const std::string& seed, uint6
 /// to choose), with the stage libraries or without, and what warm_libraries builds of them (kWarmRecipe, to be counted up when that
 /// changes: vk_draw.cpp is not in the translator's stamp)
 constexpr uint32_t kWarmRecipe = 2;   // (2: the libraries are in our pipeline cache)
+uint64_t warmed_stamp(bool libraries);
+static bool portable_cache_ready() {
+#ifdef _WIN32
+    return false;
+#else
+    if (env_on("RX_VK_PREPARE_AGAIN")) return false;
+    const std::string record = prepared_path();
+    const std::string folder = record.substr(0, record.find_last_of("\\/") + 1) + "hookshot_steamdeck_cache";
+    const DWORD attrs = GetFileAttributesA(folder.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    PreparedFor prepared;
+    double hash_ms = 0;
+    if (prepare_check(record, seed_path(), program_cache_stamp(), &prepared, &hash_ms) != PrepareWhy::None ||
+        !prepared.seed_size || prepared.warmed != warmed_stamp(gpl_wanted() && !env_on("RX_VK_NO_WARM"))) return false;
+    // The ready record alone is not enough if the program cache was removed.
+    return GetFileAttributesA((record.substr(0, record.find_last_of("\\/") + 1) + "hookshot_programs.bin").c_str()) !=
+               INVALID_FILE_ATTRIBUTES &&
+           GetFileAttributesA((record.substr(0, record.find_last_of("\\/") + 1) + "mkw_vk_pipelines.bin").c_str()) !=
+               INVALID_FILE_ATTRIBUTES;
+#endif
+}
 uint64_t warmed_stamp(bool libraries) {
     uint64_t h = program_cache_stamp();
     const auto add = [&h](const void* d, size_t n) {
@@ -7835,7 +7862,7 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
     std::atomic<size_t> next{0}, done{0}, libs{0}, variants{0};
     const auto warm = [&](Program& p) {
         // (a fallback program's pipelines are never linked from libraries: graphics_pipeline)
-        if (p.failed || p.compute || p.fallback || p.stages.empty()) return;
+        if (p.failed || p.compute || p.fallback || p.stages.empty() || !prepare_key_selected(p.key)) return;
         ensure_layout(p);
         Targets at{};
         for (int part = 1; part <= 2; part++)
@@ -8040,7 +8067,10 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     const unsigned cpus = usable_cpus();
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
-    const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
+    const unsigned workers = background ? std::min(quarter, cpus) : prepare_cpus();
+    if (!background)
+        logf("vk: preparation: %u workers for the shader programs (%u CPUs usable; %s)", workers, cpus,
+             segment_heap() ? "the segment heap: as many as the free memory allows" : "half the CPUs");
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -8126,6 +8156,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     struct Done { const std::string& path; ~Done() { remove(path.c_str()); } } done_marker{running};
     pcache_init();
     std::vector<std::unique_ptr<PipeNote>> notes = pipe_notes_read();
+    if (env_on("HOOKSHOT_DECK_PREPARE")) std::erase_if(notes, [](const auto& note) { return !prepare_key_selected(note->prog); });
     // (the notes file and the state list opened now, before play, with the notes just read: pipeline_note and state_record opened
     // them at the first new pipeline in play, on the thread replaying, 150 ms and more)
     if (!env_on("RX_VK_NO_PROGRAM_CACHE")) {
@@ -8143,6 +8174,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
     const std::unordered_set<uint64_t> used = computes_read();
     const bool all_computes = which ? !strcmp(which, "all") : used.empty();
     if (!all_computes && !(which && !strcmp(which, "none"))) wanted.insert(used.begin(), used.end());
+    if (env_on("HOOKSHOT_DECK_PREPARE")) std::erase_if(wanted, [](uint64_t key) { return !prepare_key_selected(key); });
     std::vector<Program*> computes, fallbacks;
     const size_t programs_n = program_cache_load_some(wanted, [&](Program& p) {
         ensure_layout(p);
@@ -8343,6 +8375,7 @@ void predict_run(void (*progress)(size_t done, size_t total)) {
     size_t programs = 0;
     PredictCounts left_out;
     std::vector<std::unique_ptr<PipeNote>> predicted = predict_pipelines(notes, &programs, &left_out);
+    std::erase_if(predicted, [](const auto& note) { return !prepare_key_selected(note->prog); });
     const double decide_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const size_t notes_n = notes.size(), predicted_n = predicted.size();
     // (the workers' state on the heap, as precompile_run's: a pipeline the driver never finishes (builds stuck after "vertex format

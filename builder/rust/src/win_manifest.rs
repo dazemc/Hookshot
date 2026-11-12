@@ -12,6 +12,7 @@ pub const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8" standalone=
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
     </windowsSettings>
   </application>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
@@ -79,6 +80,10 @@ mod tests {
         let data = fs::read(&path).unwrap();
         assert_eq!(data, res_bytes());
         assert!(data.windows(5).any(|window| window == b"UTF-8"));
+        assert!(
+            data.windows(11).any(|window| window == b"SegmentHeap"),
+            "the manifest asks for the segment heap (gpu/vk/prepare_workers.h)"
+        );
         write(&path).unwrap();
         let _ = fs::remove_file(path);
     }

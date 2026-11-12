@@ -97,11 +97,13 @@ fn the_menu_reaches_auto_and_keeps_a_saved_preset() {
     ] {
         assert!(auto.contains(needle), "apply_auto misses: {needle}");
     }
-    // (the Output resolution Auto chose is one of the menu's fixed choices; the player's custom size is never taken)
+    // (the Output resolution Auto chose is one of the menu's choices, now the screen's display modes; the player's custom
+    // size is never taken)
     assert!(
-        auto.contains("for (int i = 1; i < kCustomOutput; i++)")
-            && auto.contains("(int)kOutputs[i].w == c.output_w"),
-        "apply_auto does not find the chosen output among kOutputs"
+        auto.contains("for (int i = 1; i < custom_index(); i++)")
+            && auto.contains("outputs()[i].w == c.output_w")
+            && auto.contains("outputs()[i].h == c.output_h"),
+        "apply_auto does not find the chosen output among the display modes"
     );
 
     // (the CPU holding the frame rate ends the tuning for this run only: no auto_tuned for it)

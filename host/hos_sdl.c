@@ -181,6 +181,9 @@ void hos_sdl_relative_mouse(void *window, int on) {
     else CALL(int (*)(int), SetRelativeMouseMode)(on);
 }
 int hos_sdl_desktop_size(int *width, int *height) {
+    /* (hookshot) no SDL loaded (a windowless start: HOS_HEADLESS), so the screen is unknown. The menu asks while it runs
+       (MkwVkHost.screen_size, rx_backend.c), and SDL2's branch below would call an empty slot */
+    if (!version) return 0;
     if (version == 3) {   /* (SDL_DisplayMode: displayID, format, w and h at 8 and 12 in screen units, pixel_density at
                              16: in pixels, as SDL2 gave them) */
         const uint8_t *m = CALL(const uint8_t *(*)(uint32_t), GetDesktopDisplayMode)(CALL(uint32_t (*)(void), GetPrimaryDisplay)());

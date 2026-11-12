@@ -1,5 +1,5 @@
 // The portable layout is shared by four places that cannot call each other in a
-// game-free test: the native setup, the game's update offer, the Rust packager
+// game-free test: the native setup, the game launcher, the Rust packager
 // and the Flutter app. This check reads their production sources and requires
 // the same marker, relative association and home wiring in each. No game data,
 // no Windows executable and no Builder launch.
@@ -69,16 +69,23 @@ fn the_native_setup_creates_and_reuses_one_marked_home() {
 }
 
 #[test]
-fn the_update_offer_uses_the_game_relative_launcher_and_ignores_absolute_arguments() {
-    let update = source("host/hos_update.c");
-    let local = function(&update, "static int local_builder(");
-    assert!(local.contains("\"builder_local\""));
-    assert!(local.contains("L\"%ls\\\\hookshot.exe\""));
-    assert!(local.contains("GetFileAttributesW(out)"));
-    let check = function(&update, "void hos_update_check(");
-    assert!(check.contains("const int portable = read_value(file, \"builder_local\""));
-    assert!(check.contains("portable ? local_builder(file, dir, wbuilder, MAX_PATH)"));
-    assert!(check.contains("!portable && read_value(file, \"builder_args\""));
+fn the_game_launcher_uses_the_game_relative_home_and_ignores_absolute_builder_paths() {
+    // (#2926: the game no longer offers updates itself. The folder's launcher owns them, and a portable game's
+    // launcher still resolves its Builder from the game-relative association, never from a stored absolute path.)
+    let header = source("builder/setup/portable_home.h");
+    let game = function(&header, "static int hb_home_game(");
+    assert!(game.contains("HB_GAME_HOME"));
+    assert!(game.contains("\"builder_local=1\""));
+    assert!(game.contains("relative[0] == L'\\\\' || relative[0] == L'/'"));
+    assert!(game.contains("hb_home_marked(resolved) != 1"));
+    let portable = source("builder/rust/src/portable.rs");
+    assert!(portable.contains("\"builder_local=1\\n\""));
+    let package = source("builder/rust/src/package.rs");
+    assert!(package.contains("crate::portable::write_game_home(out, association.as_deref())"));
+    assert!(package.contains("stage_game_launcher(platform, &root, out)"));
+    let make_game = source("nx2/make_game.py");
+    assert!(make_game.contains("builder_local=1"));
+    assert!(make_game.contains("write_game_home(out, portable_home)"));
 }
 
 #[test]

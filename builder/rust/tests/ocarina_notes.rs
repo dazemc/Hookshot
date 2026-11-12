@@ -316,7 +316,7 @@ fn the_controls_page_and_the_api_carry_the_five_note_rows() {
     let docs = source("docs/development.md");
     let readme = source("readme.md");
 
-    assert!(api.contains("#define MKWVK_API_VERSION 19"));
+    assert!(api.contains("#define MKWVK_API_VERSION 20"));
     assert!(api.contains("HOS_KEY_OC_NOTE_L, HOS_KEY_OC_NOTE_R"));
     assert!(api.contains("HOS_KEY_OC_NOTE_A, HOS_KEY_OC_NOTE_Y, HOS_KEY_OC_NOTE_X, HOS_KEY_N"));
     assert!(api.contains("version 19: HOS_BIND_PAD takes the ocarina's note rows"));

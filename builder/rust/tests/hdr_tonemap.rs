@@ -69,8 +69,8 @@ fn native_hdr_tone_mapper_is_a_saved_menu_row() {
     assert!(host.contains("volatile int hos_scene_rgba16f = 0;"));
     assert!(host.contains("hos_scene_rgba16f = rx_option(HOS_OPT_HDR_TONEMAP, 0) != 0;"));
 
-    // (the option is an enum value: no MkwVkHost or MkwVkRenderer field changed, so the ABI version stays)
-    assert!(api.contains("#define MKWVK_API_VERSION 19"));
+    // (the option is an enum value: no MkwVkHost or MkwVkRenderer field changed; 20 is the display modes' screen_size)
+    assert!(api.contains("#define MKWVK_API_VERSION 20"));
     assert!(
         !api.contains("hdr_tonemap"),
         "an option value must not become an ABI field"

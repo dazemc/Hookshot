@@ -226,9 +226,9 @@ and git describe's `v2.1.0-rc.1-3-g1a2b3c4` the nightly (named with `--long`, so
 | Release candidate | the newest of the release candidates and releases (semver: `rc.2` > `rc.1`, `2.1.0` > `2.1.0-rc.2`) | it is newer: never an older release, and the release of its own version once that ships |
 | Nightly | the `nightly` release's build (its list's `tag` line) | it is another build |
 
-Choosing another track installs that track's newest build, an older version too (the builder asks first). The game's
-own update check (`host/hos_update.c`) follows the track of the folder's version. The same rules are in
-`builder/HookshotBuilder/Updater.cs` and `builder/linux/linux_update.py`. A release
+Choosing another track installs that track's newest build, an older version too (the builder asks first). The folder's
+launcher checks for updates, following the track of the folder's version; the game itself never asks. The same rules are
+in `builder/HookshotBuilder/Updater.cs` and `builder/linux/linux_update.py`. A release
 candidate's and the nightly's `HookshotBuilder.exe` are built with `HOOKSHOT_SETUP_RELEASE`, so started with no `--tag`
 they install their own release (`builder/setup/setup.c`).
 

@@ -22,6 +22,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -40,6 +43,7 @@
 #include "vk_internal.h"
 #include "progcache_zstd.h"
 #include "vk_progcache.h"
+#include "prepare_workers.h"
 
 namespace mkwvk {
 
@@ -588,16 +592,56 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
 }
 
 /// (hookshot) Program key's kept variants made for fn, then let go (modules and layouts): the records stay for play
+static void program_cache_release(Program& p) {
+    if (p.compute_pipeline) vkDestroyPipeline(dev.device, p.compute_pipeline, nullptr);
+    for (VkPipeline pipeline : p.fallback_compute)
+        if (pipeline) vkDestroyPipeline(dev.device, pipeline, nullptr);
+    for (Stage& st : p.stages)
+        if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
+    if (p.layout) vkDestroyPipelineLayout(dev.device, p.layout, nullptr);
+    if (p.set_layout) vkDestroyDescriptorSetLayout(dev.device, p.set_layout, nullptr);
+}
+
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn) {
     std::vector<std::unique_ptr<Program>> variants;
     program_cache_load(key, variants, true);
     for (auto& p : variants) {
         fn(*p);
-        for (Stage& st : p->stages)
-            if (st.module) vkDestroyShaderModule(dev.device, st.module, nullptr);
-        if (p->layout) vkDestroyPipelineLayout(dev.device, p->layout, nullptr);
-        if (p->set_layout) vkDestroyDescriptorSetLayout(dev.device, p->set_layout, nullptr);
+        program_cache_release(*p);
     }
+}
+
+void program_cache_release_loaded() {
+    // Called only after the preparation's workers joined, never while a game draws.
+    {
+        std::lock_guard lk(shader_mu);
+        for (auto& kv : programs)
+            for (auto& p : kv.second) program_cache_release(*p);
+        programs.clear();
+    }
+    std::lock_guard lk(disk_mu);
+    for (auto& kv : disk_taken) {
+        auto& records = disk_records[kv.first];
+        records.insert(records.end(), kv.second.begin(), kv.second.end());
+    }
+    disk_taken.clear();
+#if defined(__GLIBC__)
+    // The state list can load gigabytes before this release. Give freed arena pages
+    // back before the driver compiles, rather than retaining both working sets.
+    malloc_trim(0);
+#endif
+}
+
+std::vector<uint64_t> program_cache_precompile_keys(const std::unordered_set<uint64_t>& wanted, bool computes, bool fallbacks) {
+    disk_init();
+    std::unordered_set<uint64_t> keys;
+    std::lock_guard lk(disk_mu);
+    for (const auto* records : {&disk_records, &disk_taken})
+        for (const auto& kv : *records)
+            if (wanted.count(kv.first) || (!kv.second.empty() &&
+                ((computes && (kv.second[0].kind & 1)) || (fallbacks && (kv.second[0].kind & 4)))))
+                keys.insert(kv.first);
+    return {keys.begin(), keys.end()};
 }
 
 /// (hookshot, the prepare's driver part: vk_draw.cpp warm_libraries) the key of every kept graphics and mesh program, whoever made
@@ -690,8 +734,18 @@ void program_cache_each(const std::function<void(const KeptProgram&)>& fn) {
     for (std::thread& t : threads) t.join();
 }
 
+bool prepare_key_selected(uint64_t key) {
+    if (!env_on("HOOKSHOT_DECK_PREPARE")) return true;
+    const char* count = getenv("HOOKSHOT_DECK_BATCH_COUNT");
+    const char* index = getenv("HOOKSHOT_DECK_BATCH_INDEX");
+    const unsigned n = count ? (unsigned)atoi(count) : 1;
+    const unsigned i = index ? (unsigned)atoi(index) : 0;
+    return n <= 1 || key % n == i;
+}
+
 unsigned usable_cpus() {
-    const unsigned all = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned all = std::min(std::max(1u, std::thread::hardware_concurrency()),
+                                  env_on("HOOKSHOT_DECK_PREPARE") ? 4u : ~0u);
     DWORD_PTR proc = 0, sys = 0;
     if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) return all;
     unsigned n = 0;
@@ -701,6 +755,21 @@ unsigned usable_cpus() {
 }
 unsigned half_cpus() {
     return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));
+}
+bool segment_heap() {
+#ifdef _WIN32
+    return prepare_workers::segment_heap_signature(GetProcessHeap());
+#else
+    return false;
+#endif
+}
+unsigned prepare_cpus() {
+    uint64_t avail_mb = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX m{sizeof m};
+    if (GlobalMemoryStatusEx(&m)) avail_mb = m.ullAvailPhys >> 20;
+#endif
+    return prepare_workers::count(half_cpus(), usable_cpus(), avail_mb, segment_heap());
 }
 
 } // namespace mkwvk

@@ -254,7 +254,6 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
     call_guest_args(c, addr, sp, what);
 }
 
-void hos_update_check(void);   /* (host/hos_update.c) */
 #ifndef _WIN32
 /* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
@@ -1464,6 +1463,82 @@ void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix) {
 #endif
 }
 
+/* The new-game opening, build e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348. Sequence/Opening.module.ainb requests
+   Opening_Introduction and Opening_LoadingKokiriForest (SeqOneShotRequestEvent, f_80d9a820; the event name is the
+   pointer at the request arg + 6800, which that function reads). Opening_Introduction's flowchart writes the state
+   on both paths: the clock at 6:00, Meet_DekuTree's challenge Step01, the forest terrain pin, then
+   EventTransition of the timeline Dm_Kokiri_0030. Its own skip query (IsEventSkipedMostRecent, f_80de6cb0) then
+   takes the short edge: Navi warped to the position that edge names, the in-game music, Navi's talked flag, the
+   camera handed back, and an autosave. Opening_LoadingKokiriForest's flowchart plays the timeline Dm_Kokiri_0000
+   and then waits until the forest banc has loaded. Neither timeline writes save data. Meet_DekuTree is a later
+   flow and is not one of these names.
+
+   With Skip opening on, the request is still sent, so the flowchart applies that edge. The two timelines are not
+   started: f_83b5bfb0 is their only starter (EventTransition at 0x80eaba00). Leaving bit 0 of the timeline player
+   + 0xf25 clear makes that caller take its own exit at 0x80eac5e0, which finishes the action node, instead of the
+   exit at 0x80eac640 that leaves the timeline running. The skip query is answered yes only while one of these two
+   requests is the current one, so the short edge runs and a title demo that uses the same query does not. The
+   cutscene frame counter is not moved. mode 0 observes a request, 1 a timeline start (return 1: do not start it),
+   2 the skip query (return 1: x0 is 1), 3 Link is updating and no event is playing (the opening has let him go). */
+int hos_oot_opening(Ctx *c, int mode) {
+    int rx_option(int id, int otherwise);
+    static int armed;
+    static char logged[64];
+    char name[80];
+    uint64_t p = 0;
+    if (mode == 3) {
+        armed = 0;
+        logged[0] = 0;
+        return 0;
+    }
+    if (!c || rx_option(HOS_OPT_SKIP_OPENING, 0) <= 0) {
+        armed = 0;
+        return 0;
+    }
+    name[0] = 0;
+    if (mode == 0) {
+        const uint64_t arg = c->x[1];
+        p = arg ? recomp_load64(c, arg + 6800) : 0;
+    } else if (mode == 1 && c->x[1]) {
+        p = recomp_load64(c, c->x[1]);   /* EventTransition passes a pointer to the timeline's name */
+    }
+    if (p) {
+        size_t i = 0;
+        for (; i + 1 < sizeof name; i++) {
+            name[i] = (char)recomp_load8(c, p + i);
+            name[i + 1] = 0;
+            if (!name[i]) break;
+        }
+    }
+    if (mode == 0) {
+        if (!strcmp(name, "Opening_Introduction") || !strcmp(name, "Opening_LoadingKokiriForest")) {
+            armed = 1;
+            if (strcmp(logged, name)) {
+                size_t i = 0;
+                for (; name[i] && i + 1 < sizeof logged; i++) logged[i] = name[i];
+                logged[i] = 0;
+                hos_log("opening skip: %s request sent", name);
+            }
+        } else if (name[0]) {
+            /* a different event (Meet_DekuTree included) is not skipped and drops the arm */
+            armed = 0;
+            logged[0] = 0;
+        }
+        return 0;   /* the request is still sent */
+    }
+    if (!armed) return 0;
+    if (mode == 2) {
+        c->x[0] = 1;
+        return 1;
+    }
+    if (mode == 1 && (!strcmp(name, "Dm_Kokiri_0000") || !strcmp(name, "Dm_Kokiri_0030"))) {
+        const uint64_t player = c->x[0];
+        if (player) recomp_store8(c, player + 0xf25, recomp_load8(c, player + 0xf25) & ~(uint64_t)1);
+        return 1;
+    }
+    return 0;
+}
+
 void hos_oot_lift_player(Ctx *c, uint64_t actor) {
 #if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
     flight_pose_actor = 0;
@@ -1472,6 +1547,7 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
     const uint64_t movement = components ? recomp_load64(c, components + 800) : 0;
     if (movement < HOS_HEAP_BASE + 0x1d50 || recomp_load64(c, movement + 24) != actor ||
         !hos_oot_is_player(c, movement - 0x1d50)) return;
+    if (!oot_event_playing(c)) hos_oot_opening(c, 3);   /* the opening has let Link go: later events keep their own skip */
 
     // Link can be updated by different guest workers on successive frames.
     static SRWLOCK cheats_lock = SRWLOCK_INIT;
@@ -1762,9 +1838,12 @@ static int game_main(int argc, char **argv) {
 #else
                 if (!hos_user_dir) hos_user_dir = beside_user;
 #endif
-                /* (a game folder from the builder: is a newer release out? host/hos_update.c. After the saves' place is known:
-                   on Linux the check keeps its "Skip this version" there) */
-                hos_update_check();
+                /* (hookshot) The folder's launcher owns update checks (builder/linux/hookshot-folder, the Windows launcher).
+                   A game started without it still starts, and says where updates come from: no network wait, no hang. */
+                if (!getenv("HOOKSHOT_NO_UPDATE_CHECK") || !strcmp(getenv("HOOKSHOT_NO_UPDATE_CHECK"), "0"))
+                    hos_log("updates: this game was started without its folder's launcher; start the folder's launcher "
+                            "(hookshot on Linux, hookshot.exe on Windows) to check for a newer release. Updates are never "
+                            "checked from inside the game.");
             }
         }
     }
@@ -1816,9 +1895,9 @@ static int game_main(int argc, char **argv) {
     }
     hos_mem_init(hos_image_end);
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
-           Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
+           Aspect ratio (ultrawide=1 takes the main monitor's shape) shapes the picture. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
-           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and Ultrawide, matching the menu's picture. Wider
+           An output that is not 16:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
            than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
            constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
@@ -1846,8 +1925,9 @@ static int game_main(int argc, char **argv) {
         extern volatile float hos_wide_ratio, hos_wide_squeeze, hos_wide_margin;
         uint32_t hos_output_size(int height);
         const uint32_t output_w = hos_output_size(0), output_h = hos_output_size(1);
-        /* A custom surround output explicitly requests that shape, even if the OS reports one monitor. */
-        if (hos_output_is_surround(output_w, output_h)) want = (float)output_w / (float)output_h;
+        /* An output of a shape of its own (the Insert menu's Aspect ratio: 21:9, 16:10, 4:3, a 32:9 surround...) asks for that
+           shape, over HOS_ASPECT and the Aspect ratio, even if the OS reports one monitor (host/hos_wide_size.h) */
+        if (hos_output_own_shape(output_w, output_h)) want = (float)output_w / (float)output_h;
         const double game = 16.0 / 9.0;
         /* (a screen narrower than 16:9 too, 16:10 to 5:4: the picture keeps the game's height and is narrower, the
            cameras take its ratio, and the HUD fills its width instead of a middle 16:9 wider than the screen. A 4:3 CRT

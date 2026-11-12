@@ -61,14 +61,20 @@ const FIXTURE: &str = r#"
 #include <cstdio>
 #include <cstdlib>
 #include <iterator>
+#include <string>
 #include <utility>
 #include "hos_wide_size.h"
+#include "display_modes.h"
 #include "upscaler_rows.h"
 namespace ur = mkwvk::upscaler_rows;
+using namespace mkwvk;
+static bool host_screen_size(uint32_t* w, uint32_t* h) { *w = 1920; *h = 1080; return true; }
+static bool screen_size(uint32_t* w, uint32_t* h) { return host_screen_size(w, h); }
+static std::vector<mkwvk::display_modes::Size> screen_modes() { return {}; }
+struct { int output_res = 0, ultrawide = 0, handheld = 0; } opts;
 
 #define CHECK(x, ...) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s: ", __LINE__, #x); std::fprintf(stderr, __VA_ARGS__); std::fputc('\n', stderr); failed = 1; } } while (0)
 /* OUTPUTS */
-/* STEP_OUTPUT */
 /* WALK */
 
 // (set_row's next value for the three rows, as vk_menu.cpp has it: the Upscaler by engine, the Render resolution through
@@ -100,18 +106,29 @@ bool set(Row& r, int want) {   // (menu_setting_set's call)
     if (r.value == &dlss) resolution = dlss == was ? render : ur::snap_render(upscaler(), render);
     return ok;
 }
+bool set_output(int want) {   // (menu_setting_set: a size of another shape moves the Aspect ratio first, then walks)
+    if (output_choice(want) != want) return false;   // (the player's own size with none chosen: no such row value)
+    if (ratio_name(size_of(output_at(want))) != ratio_name(size_of(output_at(output)))) {
+        opts.ultrawide = aspect_for_choice(want);
+        output = output_for_aspect(opts.ultrawide);
+        opts.output_res = output;
+    }
+    Row r{&output, 0, last_choice()};
+    return set(r, want);
+}
 
 int main() {
     int failed = 0;
+    setenv("HOS_DISPLAY_MODES", "1920x1080,2560x1080,3440x1440", 1);
     // (the output sizes: every size from every size, with and without a size of the player's own)
     for (int custom = 0; custom < 2; custom++) {
-        custom_output = custom ? Out{3440, 1440} : Out{0, 0};
-        Row r{&output, 0, kLastOutput};
-        for (int from = 0; from <= kLastOutput; from++) {
+        custom_output = Out{0, 0};
+        if (custom) output_choice_of(1600, 1024);   // (25:16: not one of the common sizes)
+        for (int from = 0; from <= last_choice(); from++) {
             if (output_choice(from) != from) continue;
-            for (int want = 0; want <= kLastOutput; want++) {
+            for (int want = 0; want <= last_choice(); want++) {
                 output = from;
-                const bool ok = set(r, want);
+                const bool ok = set_output(want);
                 if (output_choice(want) == want) CHECK(ok && output == want, "custom %d: %d to %d gave %d", custom, from, want, output);
                 else CHECK(!ok && output == from, "custom %d: %d to the missing %d gave %d", custom, from, want, output);
             }
@@ -188,7 +205,7 @@ fn option_set_walks_the_list_rows_in_the_arrows_order() {
     let menu = fs::read_to_string(repo.join("gpu/vk/vk_menu.cpp")).expect("gpu/vk/vk_menu.cpp");
     let outputs_from = menu.find("struct Out {").expect("struct Out");
     let outputs_to = menu[outputs_from..]
-        .find("// (the choices from smallest to largest")
+        .find("// The size the game draws the 3D at")
         .expect("the output choices' end")
         + outputs_from;
     let walk = menu
@@ -205,10 +222,6 @@ fn option_set_walks_the_list_rows_in_the_arrows_order() {
     let mut fixture = FIXTURE.to_string();
     for (marker, value) in [
         ("/* OUTPUTS */", menu[outputs_from..outputs_to].to_string()),
-        (
-            "/* STEP_OUTPUT */",
-            definition(&menu, "int step_output_choice(int id, int dir)"),
-        ),
         ("/* WALK */", block(&menu, walk)),
     ] {
         fixture = fixture.replace(marker, &value);

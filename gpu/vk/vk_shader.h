@@ -116,6 +116,10 @@ struct KeptProgram {
 };
 void program_cache_each(const std::function<void(const KeptProgram&)>& fn);   // (fn: on several threads at once, in no order)
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn);   // (made for fn, then let go; still kept)
+/// Preparation without play: release loaded GPU objects and retain their disk records.
+void program_cache_release_loaded();
+bool prepare_key_selected(uint64_t key);
+std::vector<uint64_t> program_cache_precompile_keys(const std::unordered_set<uint64_t>& wanted, bool computes, bool fallbacks);
 /// (hookshot) Every kept graphics and mesh program's key, in the file's order, no record read; *loaded: the variants in memory already
 std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded);
 const Program* program_find(uint64_t key, uint64_t variant);

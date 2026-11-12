@@ -22,8 +22,7 @@ use crate::platform::Platform;
 const WINDOWS_TARGET: &str = "x86_64-w64-mingw32";
 const FFMPEG_LIBRARIES: [&str; 4] = ["avcodec", "swscale", "swresample", "avutil"];
 /// nx2/build.py's HOST_LIBS for Windows, in its order.
-const WINDOWS_HOST_LIBRARIES: [&str; 8] = [
-    "-lwinhttp",
+const WINDOWS_HOST_LIBRARIES: [&str; 7] = [
     "-luser32",
     "-lwinmm",
     "-ladvapi32",
@@ -375,24 +374,6 @@ fn link_linux_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> 
             &deps_file,
             &work.join("build/objcache"),
         ));
-    }
-    // (build.py puts the version on hos_main and the repository on hos_update)
-    if let Some(pos) = jobs.iter().position(|job| {
-        job["obj"]
-            .as_str()
-            .is_some_and(|name| name.ends_with("host_hos_update.o"))
-    }) {
-        let flags = jobs[pos]["flags"].as_array().cloned().unwrap_or_default();
-        let mut flags: Vec<String> = flags
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect();
-        flags.push(format!(
-            "-DHOOKSHOT_REPOSITORY=\"{}\"",
-            crate::version::repository(&root)
-        ));
-        jobs[pos]["flags"] = json!(flags);
     }
     jobs.extend(opus_jobs(
         &cc,
@@ -1283,12 +1264,6 @@ fn link_windows_inner(
         if stem == "hos_main" {
             flags.push(crate::version::define(&root));
         }
-        if stem == "hos_update" {
-            flags.push(format!(
-                "-DHOOKSHOT_REPOSITORY=\"{}\"",
-                crate::version::repository(&root)
-            ));
-        }
         let obj = obj_dir.join(format!(
             "{}{}.o",
             if generated { "gen_" } else { "host_" },
@@ -1435,7 +1410,6 @@ mod tests {
             "msvc_oldnames.c",
             "rx_nowgpu.c",
             "hos_main.c",
-            "hos_update.c",
             "a64_stubs.c",
             "hos_image.c",
             "nvn2_exports.c",
@@ -1575,7 +1549,6 @@ mod tests {
                     || arg == &format!("-Xlink=/map:{}", map.display()))
         );
         for wanted in [
-            "-lwinhttp",
             "-luser32",
             "-lwinmm",
             "-ladvapi32",

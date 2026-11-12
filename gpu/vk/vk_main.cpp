@@ -1203,7 +1203,11 @@ bool started_up() {
             printf("@@progress %.3f\n", at / 1000.0);
             fflush(stdout);
         };
-        printf("@@stage shaders Preparing shaders\n");
+        if (env_on("HOOKSHOT_DECK_PREPARE") && getenv("HOOKSHOT_DECK_BATCH_COUNT"))
+            printf("@@stage shaders Preparing Steam Deck shaders (%d of %d)\n",
+                   (getenv("HOOKSHOT_DECK_BATCH_INDEX") ? atoi(getenv("HOOKSHOT_DECK_BATCH_INDEX")) : 0) + 1,
+                   atoi(getenv("HOOKSHOT_DECK_BATCH_COUNT")));
+        else printf("@@stage shaders Preparing shaders\n");
         fflush(stdout);
         {
             size_t guess[3];
@@ -1461,6 +1465,28 @@ void mkwvk_close_asked(void) {
     dlss_fg_close();   // (NVIDIA DLSS Frame Generation through NGX: its feature let go before the process exits, vk_dlss.cpp)
 }
 
+// The builder's successful offline Deck preparation includes Mesa's disk cache.
+// Select it before the driver creates a physical device, including when a folder moved.
+static void portable_driver_cache() {
+#ifndef _WIN32
+    char exe[MAX_PATH];
+    const DWORD n = mkwvk::game_module_path(exe, MAX_PATH);
+    if (!n || n >= MAX_PATH) return;
+    std::string path(exe, n);
+    path.resize(path.find_last_of("\\/") + 1);
+    path += "hookshot_steamdeck_cache";
+    const DWORD attrs = GetFileAttributesA(path.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        // Steam can select its own cache directory and backend. The prepared
+        // files use Mesa's multi-file backend and must keep that selection.
+        setenv("MESA_SHADER_CACHE_DIR", path.c_str(), 1);
+        setenv("MESA_DISK_CACHE_SINGLE_FILE", "0", 1);
+        setenv("MESA_DISK_CACHE_DATABASE", "0", 1);
+        setenv("MESA_DISK_CACHE_MULTI_FILE", "1", 1);
+    }
+#endif
+}
+
 extern "C"
 #ifdef _WIN32
 __declspec(dllexport)
@@ -1475,6 +1501,7 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
         return nullptr;
     }
     host = h;
+    portable_driver_cache();
     if (!load_global()) {
         logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)");
         return nullptr;

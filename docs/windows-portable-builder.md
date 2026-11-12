@@ -60,11 +60,11 @@ publishes its complete staged directory before discarding the replaced one. If W
 failed rename, the preserved old directory remains beside it as `<version>.rollback-*`; close programs using these
 folders before recovering it.
 
-The game's update offer uses `<game>\hookshot.exe` when `hookshot_version.txt` says `builder_local=1`; it never follows
-a stored absolute Builder path or `builder_args` in that mode. A missing or invalid `.hookshot_builder_home` stops
-portable update discovery rather than silently using another Builder. The game can still be played without the
-Builder, using its game launcher. Rebuilding a portable game with a standard Builder removes the association after
-successful output finalization, so the game launcher and update offer use the standard Builder again.
+The game launcher (`<game>\hookshot.exe`) uses the game-relative `.hookshot_builder_home` when
+`hookshot_version.txt` says `builder_local=1`; it never follows a stored absolute Builder path in that mode. A missing or invalid `.hookshot_builder_home` stops portable Builder discovery rather than silently using another
+Builder. The game itself never checks for updates: started directly it starts at once and logs where updates come from.
+Rebuilding a portable game with a standard Builder removes the association after successful output finalization, so the
+launcher uses the standard Builder again.
 
 Portable mode requires the packaged setup launcher; a source checkout without that launcher cannot produce a
 relocatable portable game's update association. For an incomplete installed version, use **Repair** through the

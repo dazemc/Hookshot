@@ -701,7 +701,7 @@ mod tests {
             "a64_table.c".to_owned(),
             "ui_fonts.cpp".to_owned(),
         ];
-        assert!(keeps_lift(&["hos_update.c".to_owned()], &generated));
+        assert!(keeps_lift(&["hos_main.c".to_owned()], &generated));
         assert!(keeps_lift(
             &["hos_main.c".to_owned(), "vk_texture.cpp".to_owned()],
             &generated
@@ -714,7 +714,7 @@ mod tests {
         let generated = vec!["hos_image.c".to_owned(), "a64_rt.c".to_owned()];
         for name in ["code_021.c", "code_hot_3.c", "hos_image.c", "a64_rt.c"] {
             assert!(
-                !keeps_lift(&["hos_update.c".to_owned(), name.to_owned()], &generated),
+                !keeps_lift(&["hos_main.c".to_owned(), name.to_owned()], &generated),
                 "{name}"
             );
         }
@@ -739,8 +739,7 @@ mod tests {
         ] {
             fs::write(game_gen.join(name), "").unwrap();
         }
-        let source =
-            json!([{"index": 0, "src": "/repo/host/hos_update.c", "error": "error: nope"}]);
+        let source = json!([{"index": 0, "src": "/repo/host/hos_main.c", "error": "error: nope"}]);
         assert!(settle_failure(&work, source.as_array().unwrap()));
         assert!(game_gen.join("code_000.c").is_file());
 

@@ -38,6 +38,16 @@ const LIFE_CAS: &str = "{ uint64_t _a = c->x[13]; uint32_t _e = (uint32_t)c->x[1
 const LIFE_GUARD: &str = "    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] && hos_oot_hearts_enabled() &&\n        hos_oot_is_player(c, c->x[19]) &&\n        c->x[13] == recomp_load64(c,c->x[19] + 7184) + 8)\n        c->x[12] = c->x[11];\n";
 const LIFE_DECL: &str = "extern int hos_oot_hearts_enabled(void);\nextern int hos_oot_is_player(Ctx *c, uint64_t actor);\n";
 const MOVE_HEAD: &str = "void f_82c415e0(Ctx *__restrict A64_NOESC c) {\n";
+// --- the new-game opening (host/hos_main.c hos_oot_opening) -----------------
+const OPENING_REQUEST_HEAD: &str = "void f_80d9a820(Ctx *__restrict A64_NOESC c) {\n";
+const OPENING_TIMELINE_HEAD: &str = "void f_83b5bfb0(Ctx *__restrict A64_NOESC c) {\n";
+const OPENING_QUERY_HEAD: &str = "void f_80de6cb0(Ctx *__restrict A64_NOESC c) {\n";
+const OPENING_REQUEST: &str =
+    "    hos_oot_opening(c, 0);   /* (nx2/oot_patches.py: skip the new-game opening) */\n";
+const OPENING_TIMELINE: &str =
+    "    if (hos_oot_opening(c, 1)) return;   /* (nx2/oot_patches.py: the opening's movies) */\n";
+const OPENING_QUERY: &str = "    if (hos_oot_opening(c, 2)) return;   /* (nx2/oot_patches.py: the opening's skip edge) */\n";
+const OPENING_DECL: &str = "extern int hos_oot_opening(Ctx *c, int mode);\n";
 const MOVE_ANCHOR: &str = "if (((c->x[8] >> 1) & 1)) { goto L_82c41748; }\n";
 const MOVE_MATRIX: &str = "L_82c41778:;\n";
 const MOVE_DECL: &str = "extern void hos_oot_lift_player(Ctx *c, uint64_t actor);\nextern void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix);\n";
@@ -719,6 +729,29 @@ fn patch_view(s: &str) -> Option<String> {
     Some(add_decl(&out, VIEW_DECL))
 }
 
+fn patch_opening(s: &str) -> Option<String> {
+    let mut out = s.to_owned();
+    let mut found = 0;
+    for (head, line) in [
+        (OPENING_REQUEST_HEAD, OPENING_REQUEST),
+        (OPENING_TIMELINE_HEAD, OPENING_TIMELINE),
+        (OPENING_QUERY_HEAD, OPENING_QUERY),
+    ] {
+        let Some(start) = out.find(head) else {
+            continue;
+        };
+        found += 1;
+        if !out.contains(line) {
+            let at = start + head.len();
+            out.insert_str(at, line);
+        }
+    }
+    if found == 0 {
+        return None;
+    }
+    Some(add_decl(&out, OPENING_DECL))
+}
+
 fn patch_mouse_camera(s: &str) -> Option<String> {
     let start = s.find(CAM_HEAD)?;
     if s.contains("hos_mouse_camera(c->x[0]);") {
@@ -871,6 +904,7 @@ fn fresh_done(protect_hearts: bool) -> BTreeMap<&'static str, u32> {
             "mouse camera",
             "disable camera centering",
             "scene format",
+            "opening skip",
         ] {
             done.insert(what, 0);
         }
@@ -1002,6 +1036,18 @@ fn patch_one(path: &Path, protect_hearts: bool) -> Result<FilePatch, String> {
             log.push(format!(
                 "oot_patches: disable camera centering switch in {base}"
             ));
+        }
+        if let Some(t) = patch_opening(&out) {
+            let n = t.matches(OPENING_REQUEST).count()
+                + t.matches(OPENING_TIMELINE).count()
+                + t.matches(OPENING_QUERY).count();
+            *done.get_mut("opening skip").unwrap() += n as u32;
+            if t != out {
+                log.push(format!(
+                    "oot_patches: the opening skip at {n} function(s) in {base}"
+                ));
+            }
+            out = t;
         }
         if let Some((t, n)) = patch_cct_speed(&out) {
             if t != out {
@@ -1163,11 +1209,20 @@ pub fn apply_folder(
         ));
     }
     for (what, n) in &done {
+        if *what == "opening skip" {
+            continue; // (three functions, checked below)
+        }
         if *n != 1 {
             log.push(format!(
                 "oot_patches: WARNING: the {what} was found {n} times"
             ));
         }
+    }
+    if protect_hearts && *done.get("opening skip").unwrap_or(&0) != 3 {
+        log.push(format!(
+            "oot_patches: WARNING: the opening skip was found at {} of 3 functions",
+            done.get("opening skip").unwrap_or(&0)
+        ));
     }
     if protect_hearts && speed_hooks != SPEED_PLACES.len() as u32 {
         log.push(format!(
@@ -1538,5 +1593,19 @@ mod tests {
             patch_ocarina_wait(&gone).is_none(),
             "a file without the action's start changed"
         );
+    }
+    #[test]
+    fn the_opening_skip_hooks_three_functions_once() {
+        let fake = format!(
+            "#include \"a64.h\"\n{OPENING_REQUEST_HEAD}    c->x[0] = 0;\n}}\n{OPENING_TIMELINE_HEAD}    c->x[0] = 0;\n}}\n{OPENING_QUERY_HEAD}    c->x[0] = 0;\n}}\n"
+        );
+        let once = patch_opening(&fake).expect("the three opening functions");
+        assert_eq!(once.matches(OPENING_REQUEST).count(), 1);
+        assert_eq!(once.matches(OPENING_TIMELINE).count(), 1);
+        assert_eq!(once.matches(OPENING_QUERY).count(), 1);
+        assert!(once.contains(OPENING_DECL));
+        let twice = patch_opening(&once).expect("already patched");
+        assert_eq!(twice, once, "a second run inserted the hooks again");
+        assert!(patch_opening("#include \"a64.h\"\nvoid f_1(Ctx *c) {\n}\n").is_none());
     }
 }

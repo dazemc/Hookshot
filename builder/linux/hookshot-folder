@@ -36,6 +36,8 @@ if [ -n "$run" ]; then
 fi
 if [ -x "$HERE/bin/hookshot" ]; then
     cd "$HERE"
+    # (this is the folder's launcher: the game's update notice stays quiet, as it does when the builder launches Play)
+    export HOOKSHOT_NO_UPDATE_CHECK=1
     exec ./bin/hookshot
 fi
 echo "Hookshot: the game (bin/hookshot) is missing from this folder. Build it again with Hookshot Builder." >&2

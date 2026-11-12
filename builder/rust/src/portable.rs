@@ -1,7 +1,7 @@
 //! The relocatable Builder home: its marker, the game's relative association,
 //! and the path rules a portable build keeps. The Windows setup
 //! (`builder/setup/portable_home.h`) writes the same marker and association;
-//! `host/hos_update.c` reads the association through the game's launcher.
+//! The game launcher (`builder/setup/portable_home.h`) reads the association.
 //!
 //! A portable home is never inferred from the current directory. It is either
 //! named by the setup (`HOOKSHOT_SETUP_BASE`) or found by walking up from the

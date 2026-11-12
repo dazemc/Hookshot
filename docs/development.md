@@ -43,6 +43,22 @@ The dump can also come from `OOT_DUMP` (its folder) or `OOT_EXEFS`; `OOT_WORK` m
 The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the README's
 [Running the game from the command line](../readme.md#running-the-game-from-the-command-line).
 
+### Steam Deck shaders on a Linux PC (opt-in)
+
+A Steam Deck's RADV driver can prepare the shaders for a folder on an x86-64 Linux PC, so the Deck's first start is not
+minutes of compiles. It is opt-in, needs SSH to the Deck configured without a password prompt, and reads only a built
+game folder (never a game dump):
+
+```sh
+python -I nx2/steamdeck_shaders.py --game ~/Games/Hookshot --deck deck@steamdeck
+```
+
+`nx2/make_game.py --steamdeck deck@steamdeck` does the same at the end of a Linux build (it cannot be combined with
+`--no-prepare-shaders`). The Deck's driver and Mesa disk cache stay in the builder cache; only the resulting game caches
+travel in the folder, under `hookshot_steamdeck_cache`. The preparation runs in memory-limited `systemd-run` workers and
+publishes caches only after they verify against the Deck's GPU and pipeline-cache UUID. On the Deck the game finds the
+cache beside itself and uses it before the title; `RX_VK_PREPARE_AGAIN=1` ignores it for one run.
+
 Scripted test input (`HOS_INPUT_SCRIPT` and `HOS_INPUT_LIVE`) is applied before the window-focus check. A log saying
 the game window is not in front does not mean those presses were discarded. `HOS_HEADLESS` and
 `HOS_WINDOW_NOACTIVATE` change window creation, not this input routing. The game must still reach a state that reads
@@ -99,17 +115,26 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_AUDIO=0` | No sound device is opened (the mixer still runs); `scripts/run-vk.ps1` sets it unless `-Sound` |
 | `HOS_LANGUAGE=<code>` | The game's language for this run, a code from `language.txt` |
 | `HOS_OUTPUT_RES=<width>x<height>`, `HOS_HANDHELD=1`, `HOS_ASPECT=<ratio>` | Over the options file: the output resolution (a size, as `output_res`), the handheld profile, a picture wider than 16:9 (2.3889 for 3440x1440) |
+| `HOS_DISPLAY_MODES=<w>x<h>,<w>x<h>,...` | The screen's display modes for this run, in place of Windows' (`gpu/vk/display_modes.h`): the Insert menu's Aspect ratio and Output resolution rows offer these sizes and the common sizes of their shapes (`display_modes.h` `common_sizes`), for checking a screen you do not have |
 | `HOS_WIDE_MAX_PX=<pixels>` | The most pixels a picture wider or narrower than 16:9 takes (`host/hos_wide_size.h`): 5120x2160's by default; 8294400 is 3840x2160's, the cap before |
-| `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
+| `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>`, `HOS_SKIP_OPENING=1` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed, Skip opening for one run |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
-| `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
+| `HOOKSHOT_NO_UPDATE_CHECK=1` | The folder's launcher set it: the game does not look for a newer release itself (it never does; the launcher owns updates) |
 | `HOOKSHOT_PROFILE=<32 hex digits>` | The profile played: its saves are `save/<those digits>` in the user folder (the Linux launcher sets it). Unset, or a profile not in `profiles.txt` there: the default profile |
 | `HOOKSHOT_GAMESCOPE=0`, `=1` | Overrides the Linux launcher's gamescope choice (`gamescope=…` in `builder.ini`) for one start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |
+
+### Updates belong to the folder's launcher
+
+The folder's launcher (`hookshot` on Linux, `hookshot.exe` on Windows) asks GitHub and offers Update before the game
+starts. The game never makes that request itself: a folder started without its launcher (`bin/hookshot` directly) starts
+at once, logs one line saying where updates come from, and does not wait on the network. This is the safe fallback for a
+shortcut, a file manager or a script that skipped the launcher. The launchers set `HOOKSHOT_NO_UPDATE_CHECK=1`, which
+silences the line; older launchers set it too.
 
 ### Input for scripted runs
 
@@ -315,7 +340,7 @@ range is clamped when it is read. Where the number is not the obvious one:
 | `gpu_device` | 0 Auto, n the n-th card with Vulkan 1.3 as the row lists them |
 | `frame_generation` | 0 Off, 2 to 8 the multiplier |
 | `resolution` | 0 Auto, 1 100%, 2 75%, 3 67%, 4 50% |
-| `output_res` | A size, `<width>x<height>`: 2048x1152 (the game's own), 1920x1080, 2560x1440, 3840x2160, 5120x1440, 5120x2880, or any other with each side a multiple of 8 (rounded down), at least 640x360, at most 5120x2880's pixels, 5:4 to 32:9; anything else is the game's own. The numbers saved before (0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440, 5 5120x2880) are still read |
+| `output_res` | A size, `<width>x<height>`: 2048x1152 (the game's own), one of the screen's display modes (the menu's Aspect ratio and Output resolution rows), or any other with each side a multiple of 8 (rounded down), at least 640x360, at most 5120x2880's pixels, 5:4 to 48:9; anything else is the game's own. A size more than 1% off 16:9 sets the picture's shape (`host/hos_wide_size.h` `hos_output_own_shape`). The Aspect ratio row saves `ultrawide=` 1 for the monitor's own shape, else 0; another shape is `output_res`'s own. The numbers saved before (0 2048x1152, 1 2560x1440, 2 3840x2160, 3 1920x1080, 4 5120x1440, 5 5120x2880) are still read |
 | `upscaling` | 0 Off, 1 Catmull-Rom, 2 Lanczos |
 | `sharpness`, `rumble_strength`, `motion_sensitivity_x`, `motion_sensitivity_y` | percent |
 | `mouse_sensitivity` | hundredths: 100 is 1.00 |

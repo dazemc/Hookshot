@@ -43,8 +43,8 @@ REPOSITORY = _repository()
 LATEST_LIST = "https://github.com/%s/releases/latest/download/%s" % (REPOSITORY, LIST_NAME)
 LATEST_API = "https://api.github.com/repos/%s/releases/latest" % REPOSITORY
 RELEASES_API = "https://api.github.com/repos/%s/releases?per_page=100" % REPOSITORY
-# (the update tracks: the builder's Track choice, by default the track of the build installed. The game's own check,
-# host/hos_update.c, and the Windows builder, Updater.cs, use the same rules)
+# (the update tracks: the builder's Track choice, by default the track of the build installed. The setup,
+# builder/setup/setup.c, and the Windows builder, Updater.cs, use the same rules)
 TRACKS = ("release", "rc", "nightly")
 
 
