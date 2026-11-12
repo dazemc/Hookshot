@@ -218,6 +218,42 @@ void main() {
     });
   });
 
+  group('updates', () {
+    test('a kept game folder is updated by build.all in place', () {
+      final request = jsonDecode(
+        rustUpdateRequest(
+          folder: '/games/Hookshot',
+          language: 'de',
+          prepare: true,
+        ),
+      );
+      expect(request, {
+        'command': 'build.all',
+        'exefs': '/games/Hookshot/.hookshot_exefs',
+        'romfs': '/games/Hookshot/romfs',
+        'out': '/games/Hookshot',
+        'work': request['work'],
+        'assets': '',
+        'vk': '',
+        'language': 'de',
+        'prepare': true,
+      });
+    });
+
+    test('a kept folder is recognised and its language read', () {
+      final tmp = Directory.systemTemp.createTempSync('hookshot-update-');
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      Directory(p.join(tmp.path, '.hookshot_exefs')).createSync();
+      Directory(p.join(tmp.path, 'romfs')).createSync();
+      File(p.join(tmp.path, 'language.txt')).writeAsStringSync('# the language\n\nfr\n\n# de  German\n');
+      expect(rustUpdateReady(tmp.path), isTrue);
+      expect(folderLanguage(tmp.path), 'fr');
+      Directory(p.join(tmp.path, '.hookshot_exefs')).deleteSync(recursive: true);
+      expect(rustUpdateReady(tmp.path), isFalse);
+      expect(folderLanguage(tmp.path), 'fr');
+    });
+  });
+
   test('the request names build.all and every folder', () {
     final request = jsonDecode(
       rustBuildRequest(

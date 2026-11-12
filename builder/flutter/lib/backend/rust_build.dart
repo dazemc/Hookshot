@@ -74,6 +74,38 @@ bool rustNupBuildApplies({
 }) =>
     !dlss && cli != null;
 
+/// A game folder keeps the exefs and romfs an update builds from again.
+bool rustUpdateReady(String folder) =>
+    Directory(p.join(folder, '.hookshot_exefs')).existsSync() && Directory(p.join(folder, 'romfs')).existsSync();
+
+/// The language a built folder was made in (language.txt's code line).
+String folderLanguage(String folder) {
+  final file = File(p.join(folder, 'language.txt'));
+  if (!file.existsSync()) return 'en-US';
+  for (final line in file.readAsLinesSync()) {
+    final code = line.trim();
+    if (code.isNotEmpty && !code.startsWith('#')) return code;
+  }
+  return 'en-US';
+}
+
+/// The build.all request for an update: the folder's kept exefs/romfs, in place.
+String rustUpdateRequest({
+  required String folder,
+  required String language,
+  required bool prepare,
+  String vk = '',
+}) =>
+    rustBuildRequest(
+      exefs: p.join(folder, '.hookshot_exefs'),
+      romfs: p.join(folder, 'romfs'),
+      out: folder,
+      work: rustBuildWork(),
+      language: language,
+      prepare: prepare,
+      vk: vk,
+    );
+
 /// The build.all request for what build.prepare left: work/exefs and out/romfs.
 String rustNupBuildRequest({
   required String out,

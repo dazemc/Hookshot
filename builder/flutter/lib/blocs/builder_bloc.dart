@@ -709,6 +709,29 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     final s = state;
     final prepare = s is BuilderForm ? s.prepare : true;
     final dlss = s is BuilderForm ? s.dlss : _folderHasDlss(e.folder);
+    final rust = rustEngineCli();
+    if (rust != null && !dlss) {
+      if (!rustUpdateReady(e.folder)) {
+        emit(const BuildFailed(
+            'This game folder has no copy of the game files to update from: it was built before updates came in. '
+            'Choose your game files in Hookshot Builder and build into the same folder once; updates after that work '
+            'by themselves.'));
+        return;
+      }
+      _startProcess(
+        emit,
+        [rust, '--stream'],
+        stdinText: rustUpdateRequest(
+          folder: e.folder,
+          language: folderLanguage(e.folder),
+          prepare: prepare,
+          vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
+        ),
+        title: 'Updating your game',
+      );
+      return;
+    }
+    // (only the NVIDIA DLSS SDK download still needs Python)
     final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', '--update', e.folder];
     if (!prepare) cmd.add('--no-prepare-shaders');
     if (dlss) cmd.addAll(['--fetch-ngx-sdk', '--accept-nvidia-license']);
