@@ -372,6 +372,51 @@ pub fn eta_left(pending: &[f64], jobs: usize) -> f64 {
     longest.max(pending.iter().sum::<f64>() / jobs.max(1) as f64)
 }
 
+/// The memory a compile takes at its peak, in MB: fitted to a cold build of
+/// the lifted code (clang 23, x86-64). A chunk of ordinary functions is
+/// ~1.4 GB for 25 MB; a compile unit of 6 MB ~0.45 GB; a single giant function
+/// adds ~250 MB for each of its megabytes (a 6 MB function alone took 2.2 GB).
+/// 120 MB is clang's own and the object writer's.
+pub fn compile_need_mb(source: &Path) -> u64 {
+    let Ok(text) = fs::read_to_string(source) else {
+        return 1500;
+    };
+    let mb = text.len() as f64 / (1u64 << 20) as f64;
+    let largest = crate::lifted_c::spans_noted(&text)
+        .iter()
+        .map(|span| (span.end - span.start) as f64)
+        .fold(0.0, f64::max)
+        / (1u64 << 20) as f64;
+    (120.0 + 55.0 * mb + 250.0 * largest).ceil() as u64
+}
+
+/// The memory kept free for the rest of the PC, in MB.
+pub const RESERVE_MB: u64 = 1024;
+
+/// How many compiles to run at once: the most whose peaks, largest first, fit
+/// in the memory available (less RESERVE_MB), at most one a core. The peaks
+/// are a conservative bound: the n jobs a build starts first are its n
+/// biggest. None for the memory (not known): every core.
+pub fn parallel_for(needs: &[u64], available_mb: Option<u64>, cores: usize) -> usize {
+    let cores = cores.max(1);
+    let Some(available) = available_mb else {
+        return cores;
+    };
+    let budget = available.saturating_sub(RESERVE_MB);
+    let mut peaks = needs.to_vec();
+    peaks.sort_unstable_by(|a, b| b.cmp(a));
+    let mut sum = 0u64;
+    let mut count = 0usize;
+    for need in peaks.iter().take(cores) {
+        sum += need;
+        if sum > budget {
+            break;
+        }
+        count += 1;
+    }
+    count.max(1).min(cores)
+}
+
 /// Compile a list of jobs, longest first, up to `jobs` at once.
 pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
     let jobs: Vec<Value> = request
@@ -732,6 +777,53 @@ mod tests {
         assert_eq!(eta_left(&[], 4), 0.0);
         assert_eq!(eta_left(&[10.0, 2.0, 2.0], 2), 10.0);
         assert_eq!(eta_left(&[4.0, 4.0, 4.0], 2), 6.0);
+    }
+
+    #[test]
+    fn the_job_count_is_what_the_memory_holds() {
+        // (unknown memory: every core)
+        assert_eq!(parallel_for(&[500, 500], None, 8), 8);
+        // (6 MB compile units: 0.45 GB each, 13 GB free: every core)
+        let units = vec![460u64; 300];
+        assert_eq!(parallel_for(&units, Some(14_000), 16), 16);
+        // (25 MB chunks: 1.45 GB each, 12 GB free: seven)
+        let chunks = vec![1450u64; 59];
+        assert_eq!(parallel_for(&chunks, Some(12_000), 16), 7);
+        // (a giant function's unit: two of 3 GB fit in 8 GB, less the reserve)
+        assert_eq!(parallel_for(&[3000, 3000], Some(8_000), 16), 2);
+        // (never zero, never more than the cores)
+        assert_eq!(parallel_for(&[9000], Some(4_000), 16), 1);
+        assert_eq!(parallel_for(&[], Some(14_000), 16), 1);
+        assert_eq!(parallel_for(&[100; 10], Some(64_000), 4), 4);
+    }
+
+    #[test]
+    fn a_compile_need_grows_with_the_file_and_its_largest_function() {
+        let base = std::env::temp_dir().join(format!("hookshot-need-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let small = base.join("small.c");
+        let mut text = String::from("#include \"a64.h\"\n");
+        for i in 0..100 {
+            text.push_str(&format!(
+                "void f_{:08x}(Ctx *__restrict A64_NOESC c) {{\n{}\n}}\n",
+                0x80000000u32 + i * 16,
+                "x".repeat(10_000)
+            ));
+        }
+        fs::write(&small, &text).unwrap();
+        let unit = compile_need_mb(&small);
+        assert!(unit > 120 && unit < 700, "{unit} MB");
+        let giant = base.join("giant.c");
+        let mut one = String::from("#include \"a64.h\"\n");
+        one.push_str("void f_80000000(Ctx *__restrict A64_NOESC c) {\n");
+        one.push_str(&"x".repeat(4 << 20));
+        one.push_str("\n}\n");
+        fs::write(&giant, &one).unwrap();
+        let huge = compile_need_mb(&giant);
+        assert!(huge > 1000, "{huge} MB for a 4 MB function");
+        assert!(compile_need_mb(&base.join("missing.c")) >= 400);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
