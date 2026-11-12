@@ -1430,11 +1430,12 @@ def shader_census_cmd(romfs, out):
 LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
 
 
-def lift_key(exefs, work, env):
+def lift_key(exefs, work, env, planning=True):
     """What the lift's output depends on: the game's code, the translator (nx2/, the vendored a64-kit), the HLE functions host/ defines
     (hooked in the lift; the rest of host/ is compiled after it, so a change there alone does not lift again), the hot list and chunk
     boundaries, the lift's environment and the Python running it. A file the lift never reads may be in it (a new build then lifts
-    again); one it reads must be"""
+    again); one it reads must be. planning=False: all of it but the files the lift itself writes for the next one (image/chunks.txt), to
+    tell whether anything else it reads changed while it ran"""
     import kit  # noqa: F401  (a64-kit on the path, for standalone)
     import standalone
     h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
@@ -1445,7 +1446,9 @@ def lift_key(exefs, work, env):
         for d, dirs, fs in os.walk(top):
             dirs[:] = sorted(x for x in dirs if x != "__pycache__")
             files += [(ROOT, os.path.join(d, f)) for f in sorted(fs) if f.endswith((".py", ".c", ".h", ".cpp", ".hpp", ".txt", ".json"))]
-    files += [(work, os.path.join(work, "hot_funcs.txt")), (work, os.path.join(work, "image", "chunks.txt"))]
+    files += [(work, os.path.join(work, "hot_funcs.txt"))]
+    if planning:
+        files += [(work, os.path.join(work, "image", "chunks.txt"))]
     for base, f in files:
         if os.path.isfile(f):
             h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
@@ -1508,6 +1511,39 @@ def lifted_before(work, key):
     if len(lines) != 2 or lines[0] != key or lines[1] != gen_print(gen):
         return False
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
+
+
+def generated_names(work):
+    """The names of the files the lift and build.py write (sa/gen, the runtime in sa/build/rt64, the build's generated C in sa/build/gen)"""
+    names = set()
+    for d in (os.path.join(work, "sa", "gen"), os.path.join(work, "sa", "build", "rt64"), os.path.join(work, "sa", "build", "gen")):
+        with contextlib.suppress(OSError):
+            names.update(os.listdir(d))
+    return names
+
+
+def forget_failed_build(work, linked, failed=()):
+    """(hookshot) After a compile or link that failed. It forgets the lift: the next build translates the game again. A lifted file
+    cut short (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder
+    left (20 undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching.
+    Its compiled objects go too: a cached runtime object from another version linked with every object "compiled in 0s" and
+    a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined, at every try (issue 1197, Linux, v2.0.10).
+    failed: the files build.py could not compile, alone too (its "FAILED <name>" lines). When every one is a source of the
+    repository (host/, gpu/, third_party/), none the lift's or build.py's own, the translation is not what failed: it is kept, and
+    the next build compiles the files not compiled yet without translating the game again (a typo in a host file cost a whole lift,
+    ~5 minutes on Windows). A build stopped without such a line, or one with a generated file among them, forgets it as before"""
+    if not linked and failed:
+        generated = generated_names(work)
+        if not any(name.startswith("code_") or name in generated for name in failed):
+            print("the build failed in %s, not in the translated game: the next one keeps the translation and compiles only the "
+                  "files not compiled yet" % ", ".join(sorted(failed)[:6]), flush=True)
+            return
+    key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+    if os.path.exists(key_file):
+        os.remove(key_file)
+    for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
+        shutil.rmtree(sub, ignore_errors=True)
+    print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
 
 
 def ngx_script():
@@ -1928,9 +1964,20 @@ def main(a=None):
                         except OSError as e:
                             fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
                                  (os.path.join(gen_dir, f), e))
+            # (the lift writes inputs of the next one: chunks.py saves image/chunks.txt, which the key hashes. Its key is taken again
+            # now, from what the next build reads: taken before, in a fresh work folder (no chunks.txt yet) it never matched the next
+            # build's, which translated the game again for nothing, and a player's first update after a new install did not keep the
+            # translation. Only when nothing else it reads changed while it ran: a translator file edited during the lift would
+            # otherwise stamp C made from the old one with the new one's key, and the next build would skip a lift it needs. The key
+            # is taken before that comparison: a file edited between the two is caught by it, and one edited after it is in no key
+            # that is kept)
+            inputs = lift_key(exefs, work, env, planning=False)   # (what the lift reads and does not write, as it starts)
             run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
             if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
                 run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+            after = lift_key(exefs, work, env)
+            if lift_key(exefs, work, env, planning=False) == inputs:
+                key = after
             write_lift_key(work, key)
         cut = lifted_cut_short(gen_dir)
         if not cut:
@@ -1949,6 +1996,8 @@ def main(a=None):
     # rebuilds and how long the rest will take, and reports each module's seconds; they go into the record below)
     env["HOOKSHOT_TIMES"] = times_path(work)
     run_files, plan = {}, [0, 0]
+    linked = []   # (build.py's "compiled in Ns, 0 failed": every object made, the link next)
+    failed = []   # (build.py's "FAILED <name> (...": a file that did not compile, alone too)
     say("stage", "compile", "Compiling")
     compile_started = time.time()
     done = {"n": 0.0, "of": 1.0}
@@ -1967,6 +2016,11 @@ def main(a=None):
         return 23.5 * mb if name.startswith("code_hot") else 3.4 * mb + 1 if name.startswith("code_") else 1.3
 
     def compiled(line):
+        if re.match(r"compiled in \d+s, 0 failed$", line):
+            linked.append(line)
+        failed_file = re.match(r"FAILED (\S+) \(", line)
+        if failed_file:
+            failed.append(failed_file.group(1))
         m = re.match(r"(\d+) files, ", line)
         if m:
             try:
@@ -1995,17 +2049,7 @@ def main(a=None):
     try:
         run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
     except SystemExit:
-        # (hookshot) a compile or link that failed forgets the lift: the next build translates the game again. A lifted file cut short
-        # (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder left (20
-        # undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching
-        key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
-        if os.path.exists(key_file):
-            os.remove(key_file)
-        # (and its compiled objects go too: a cached runtime object from another version linked with every object "compiled in 0s"
-        # and a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined, at every try (issue 1197, Linux, v2.0.10))
-        for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
-            shutil.rmtree(sub, ignore_errors=True)
-        print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
+        forget_failed_build(work, bool(linked), failed)
         raise
     compile_seconds = time.time() - compile_started
 

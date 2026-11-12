@@ -173,8 +173,16 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
         match result {
             Ok(value) if value["compiled"] == Value::Bool(true) => compiled += 1,
             Ok(value) if value["cached"] == Value::Bool(true) => cached += 1,
-            Ok(value) => failed.push(json!({"index": index, "error": value["error"]})),
-            Err(error) => failed.push(json!({"index": index, "error": error})),
+            Ok(value) => failed.push(json!({
+                "index": index,
+                "src": jobs[index]["src"],
+                "error": value["error"],
+            })),
+            Err(error) => failed.push(json!({
+                "index": index,
+                "src": jobs[index]["src"],
+                "error": error,
+            })),
         }
     }
     Ok(json!({

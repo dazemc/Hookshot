@@ -57,6 +57,60 @@ mod windows {
     }
 }
 
+/// The tuning target for the host CPU: a Steam Deck's APU (0405 on the LCD,
+/// 0932 on the OLED) is Zen 2, and clang does not schedule a generic -march
+/// level for it. None elsewhere: an unknown CPU is left to its -march level.
+pub fn mtune() -> Option<String> {
+    let deck = std::env::var("RX_STEAMDECK").ok().as_deref() == Some("1");
+    #[cfg(target_os = "linux")]
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok();
+    #[cfg(not(target_os = "linux"))]
+    let cpuinfo: Option<String> = None;
+    mtune_with(deck, cpuinfo.as_deref())
+}
+
+fn mtune_with(deck: bool, cpuinfo: Option<&str>) -> Option<String> {
+    if deck {
+        return Some("znver2".into());
+    }
+    cpuinfo.and_then(mtune_text).map(str::to_owned)
+}
+
+/// The APU names a Steam Deck reports in /proc/cpuinfo's model name.
+fn mtune_text(cpuinfo: &str) -> Option<&'static str> {
+    if cpuinfo.contains("Custom APU 0405") || cpuinfo.contains("Custom APU 0932") {
+        Some("znver2")
+    } else {
+        None
+    }
+}
+
+/// RX_MTUNE when the player named one, else what this PC's CPU asks for.
+pub fn mtune_flag() -> Option<String> {
+    mtune_flag_with(std::env::var("RX_MTUNE").ok().as_deref(), mtune())
+}
+
+fn mtune_flag_with(named: Option<&str>, detected: Option<String>) -> Option<String> {
+    named
+        .filter(|tune| !tune.is_empty())
+        .map(str::to_owned)
+        .or(detected)
+}
+
+/// The CPU flags a compiler gets: the level this PC runs, and the tune its
+/// cores ask for when one is known.
+pub fn cpu_flags() -> Vec<String> {
+    cpu_flags_with(&march(), mtune_flag().as_deref())
+}
+
+fn cpu_flags_with(level: &str, tune: Option<&str>) -> Vec<String> {
+    let mut flags = vec![format!("-march={level}")];
+    if let Some(tune) = tune {
+        flags.push(format!("-mtune={tune}"));
+    }
+    flags
+}
+
 pub fn cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -89,9 +143,11 @@ pub fn chosen_jobs(given: Option<usize>, environment: Option<&str>) -> Result<us
 pub fn json() -> Value {
     json!({
         "march": march(),
+        "mtune": mtune(),
         "cpus": cpus(),
         "prebuilt_vulkan": crate::kit::env_on("HOOKSHOT_VK_PREBUILT"),
         "march_override": std::env::var("RX_MARCH").ok(),
+        "mtune_override": std::env::var("RX_MTUNE").ok(),
     })
 }
 
@@ -135,5 +191,56 @@ mod tests {
             level.as_str(),
             "x86-64" | "x86-64-v2" | "x86-64-v3"
         ));
+    }
+
+    #[test]
+    fn a_steam_deck_apu_is_tuned_for_zen_two() {
+        assert_eq!(mtune_with(true, None), Some("znver2".into()));
+        assert_eq!(
+            mtune_with(false, Some("model name\t: AMD Custom APU 0405\n")),
+            Some("znver2".into())
+        );
+        assert_eq!(
+            mtune_with(false, Some("model name\t: AMD Custom APU 0932\n")),
+            Some("znver2".into())
+        );
+        assert_eq!(
+            mtune_with(false, Some("model name\t: AMD Ryzen 9 7900X\n")),
+            None
+        );
+        assert_eq!(mtune_with(false, None), None);
+    }
+
+    #[test]
+    fn a_tune_is_zen_two_or_absent() {
+        let tune = mtune();
+        assert!(
+            tune.is_none() || tune.as_deref() == Some("znver2"),
+            "{tune:?}"
+        );
+    }
+
+    #[test]
+    fn rx_mtune_is_the_players_choice() {
+        assert_eq!(
+            mtune_flag_with(Some("skylake"), Some("znver2".into())).as_deref(),
+            Some("skylake")
+        );
+        assert_eq!(
+            mtune_flag_with(Some(""), Some("znver2".into())).as_deref(),
+            Some("znver2")
+        );
+        assert_eq!(mtune_flag_with(None, None), None);
+    }
+
+    #[test]
+    fn the_cpu_flags_name_the_level_and_any_tune() {
+        assert_eq!(cpu_flags_with("x86-64-v3", None), vec!["-march=x86-64-v3"]);
+        assert_eq!(
+            cpu_flags_with("x86-64-v3", Some("znver2")),
+            vec!["-march=x86-64-v3", "-mtune=znver2"]
+        );
+        let flags = cpu_flags();
+        assert!(flags[0].starts_with("-march="), "{flags:?}");
     }
 }

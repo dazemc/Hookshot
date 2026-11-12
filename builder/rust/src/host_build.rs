@@ -146,11 +146,13 @@ fn link_linux_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> 
     let cc = crate::toolchain::find("clang", false)
         .to_string_lossy()
         .into_owned();
-    let cpu = [
-        format!("-march={}", crate::host::march()),
+    let mut cpu = crate::host::cpu_flags();
+    cpu.extend([
+        // (no contraction: a C expression is rounded as written, as the
+        // lifted code's exact bodies assume)
         "-ffp-contract=off".to_owned(),
         "-mcx16".to_owned(),
-    ];
+    ]);
     let (ffmpeg_flags, ffmpeg_libs) =
         pkg_config(&["libavcodec", "libswscale", "libswresample", "libavutil"]);
     let mut deps = Vec::new();

@@ -193,6 +193,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_RELEASE=1` | A release build (`make_game.py` sets it): no console window, the shaders prepared before the title |
 | `RX_PGO=gen` or `RX_PGO=<file>` | The hot code counting its branches for a profile, or built with one (`make_game.py` passes the shipped profile) |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
+| `RX_MTUNE=<tune>`, `RX_STEAMDECK=1` | clang's instruction scheduling for this CPU (default: `znver2` on a Steam Deck's APU, whose Zen 2 cores it schedules better; elsewhere the `-march` level's) |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 

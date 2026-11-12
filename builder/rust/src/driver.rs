@@ -20,6 +20,80 @@ fn take_function(source: &str, signature: &str) -> Option<String> {
     Some(source[a..b].to_owned())
 }
 
+/// The names the lift and the build write into the work folder: the files a
+/// compile failure can blame on the translation, not on a repository source.
+pub fn generated_names(work: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    for folder in [
+        work.join("sa").join("gen"),
+        work.join("rt64"),
+        work.join("build").join("gen"),
+    ] {
+        if let Ok(entries) = fs::read_dir(folder) {
+            names.extend(
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned()),
+            );
+        }
+    }
+    names
+}
+
+/// Whether a failed build keeps its translation (#2675): when every file that
+/// did not compile is a repository source, the translation is not what failed,
+/// and the next build compiles only the files not compiled yet. A lifted
+/// `code_*` or a generated file that failed may be a lift cut short (issue
+/// 1197): the next build translates the game again.
+pub fn keeps_lift(failed: &[String], generated: &[String]) -> bool {
+    !failed
+        .iter()
+        .any(|name| name.starts_with("code_") || generated.iter().any(|owned| owned == name))
+}
+
+/// Forget the lift: its C and the tables made from it. The next build finds no
+/// translated chunk and translates the game again.
+pub fn forget_lift(game_gen: &Path) {
+    let Ok(entries) = fs::read_dir(game_gen) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if (name.starts_with("code_") && name.ends_with(".c"))
+            || matches!(name.as_str(), "a64_table.c" | "a64_hooks.c" | "a64_fpx.h")
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// A compile result's failed entries as the names Python's build.py prints
+/// ("FAILED <name>"): the source's file name. None when a failure says no
+/// source, which is no repository source either.
+fn failure_names(failed: &[Value]) -> Option<Vec<String>> {
+    failed
+        .iter()
+        .map(|failure| {
+            Path::new(failure["src"].as_str()?)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
+/// Apply the rule to a stage's failed list: keep the translation for a
+/// repository source that did not compile, forget it for a lifted or generated
+/// file. Says whether it was kept.
+pub fn settle_failure(work: &Path, failed: &[Value]) -> bool {
+    let keep = failure_names(failed)
+        .map(|names| keeps_lift(&names, &generated_names(work)))
+        .unwrap_or(false);
+    if !keep {
+        forget_lift(&work.join("sa").join("gen"));
+    }
+    keep
+}
+
 fn suyu_c() -> Result<String, String> {
     let rc = crate::emitter::runtime_text(1)?;
     let aes_start = rc
@@ -116,17 +190,7 @@ pub fn plan_json_with(
         let hooks = fs::read_to_string(game_gen.join("a64_hooks.c")).unwrap_or_default();
         if !hooks.contains("TAILCALL(") {
             if lift_all || lift_limit > 0 {
-                for entry in fs::read_dir(&game_gen)
-                    .map(|entries| entries.flatten().collect::<Vec<_>>())
-                    .unwrap_or_default()
-                {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if (name.starts_with("code_") && name.ends_with(".c"))
-                        || matches!(name.as_str(), "a64_table.c" | "a64_hooks.c" | "a64_fpx.h")
-                    {
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
+                forget_lift(&game_gen);
                 lift_needed = true;
             } else {
                 return Err(format!(
@@ -221,6 +285,7 @@ pub fn plan_json_with(
         .unwrap_or(0);
     let mut stage = if chunks == 0 { "lift" } else { "compile" };
     let mut compiled = Value::Null;
+    let mut lift_kept = Value::Null;
     if compile && chunks > 0 {
         say_stage("compile", "Compiling")?;
         let cc = crate::toolchain::find("clang", false);
@@ -254,20 +319,26 @@ pub fn plan_json_with(
             fs::write(&path, deps).map_err(|e| format!("{}: {e}", path.display()))?;
             path
         };
-        let code_flags = vec![
-            "-O1".to_owned(),
-            "-g0".to_owned(),
-            "-fPIC".to_owned(),
-            "-Wno-everything".to_owned(),
-            "-ffp-contract=off".to_owned(),
-            "-mcx16".to_owned(),
-            "-DA64_POLLING".to_owned(),
-            "-DA64_WRITE_TRACK".to_owned(),
-            format!("-march={}", crate::host::march()),
-            format!("-I{}", rt64.display()),
-            format!("-I{}", gen_dir.display()),
-            format!("-I{}", game_gen.display()),
-        ];
+        let code_flags = {
+            let mut flags = vec![
+                "-O1".to_owned(),
+                "-g0".to_owned(),
+                "-fPIC".to_owned(),
+                "-Wno-everything".to_owned(),
+                "-ffp-contract=off".to_owned(),
+                "-mcx16".to_owned(),
+                "-DA64_POLLING".to_owned(),
+                "-DA64_WRITE_TRACK".to_owned(),
+            ];
+            // (the level this PC runs, and a Steam Deck's Zen 2 tune: #2492)
+            flags.extend(crate::host::cpu_flags());
+            flags.extend([
+                format!("-I{}", rt64.display()),
+                format!("-I{}", gen_dir.display()),
+                format!("-I{}", game_gen.display()),
+            ]);
+            flags
+        };
         let mut jobs: Vec<Value> = fs::read_dir(&game_gen)
             .map(|entries| {
                 entries
@@ -320,11 +391,8 @@ pub fn plan_json_with(
             &json!({"jobs": jobs, "cache": work.join("objcache").to_string_lossy()}),
             &root,
         )?;
-        if compiled["failed"]
-            .as_array()
-            .map(|failed| failed.is_empty())
-            .unwrap_or(false)
-        {
+        let failed = compiled["failed"].as_array().cloned().unwrap_or_default();
+        if failed.is_empty() {
             let objects: Vec<String> = fs::read_dir(work.join("obj"))
                 .map(|entries| {
                     entries
@@ -356,10 +424,18 @@ pub fn plan_json_with(
                 )
                 .map_err(|e| e.to_string())?;
                 stage = "package";
-                compiled["link"] = link;
+                lift_kept = json!(true);
             } else {
-                compiled["link"] = link;
+                // (lifted C another builder left, or a cached runtime object
+                // from another version: the next build translates again)
+                forget_lift(&game_gen);
+                lift_kept = json!(false);
             }
+            compiled["link"] = link;
+        } else {
+            // (a host/ source that did not compile is no reason to translate
+            // the game again; a lifted code_* that did is: #2675)
+            lift_kept = json!(settle_failure(&work, &failed));
         }
     }
     Ok(json!({
@@ -374,6 +450,7 @@ pub fn plan_json_with(
         "chunks": chunks,
         "standalone": standalone,
         "standalone_info": standalone_info,
+        "lift_kept": lift_kept,
         "compiled": compiled,
         "romfs_entries": romfs_files,
         "ready": stage == "compile",
@@ -383,6 +460,198 @@ pub fn plan_json_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dump(base: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let exefs = base.join("exefs");
+        let romfs = base.join("romfs");
+        fs::create_dir_all(&exefs).unwrap();
+        fs::create_dir_all(&romfs).unwrap();
+        let mut main = vec![0u8; 0x60];
+        main[..4].copy_from_slice(b"NSO0");
+        main[0x40..0x48].copy_from_slice(&[0xe0, 0xf3, 0xcc, 0xfa, 0, 0, 0, 0]);
+        fs::write(exefs.join("main"), main).unwrap();
+        (exefs, romfs)
+    }
+
+    fn base(name: &str) -> std::path::PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "hookshot-rust-driver-{}-{name}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    /// A compile-only run writes the suyu runtime, which needs the vendored
+    /// translator built (`python -I third_party/a64-kit/lift/build_emit.py`).
+    fn has_emitter() -> bool {
+        crate::emitter::runtime_text(0).is_ok()
+    }
+
+    #[test]
+    fn a_repository_source_that_failed_keeps_the_lift() {
+        let generated = vec![
+            "hos_image.c".to_owned(),
+            "a64_rt.c".to_owned(),
+            "a64_table.c".to_owned(),
+            "ui_fonts.cpp".to_owned(),
+        ];
+        assert!(keeps_lift(&["hos_update.c".to_owned()], &generated));
+        assert!(keeps_lift(
+            &["hos_main.c".to_owned(), "vk_texture.cpp".to_owned()],
+            &generated
+        ));
+        assert!(keeps_lift(&[], &generated));
+    }
+
+    #[test]
+    fn a_lifted_or_generated_file_that_failed_forgets_it() {
+        let generated = vec!["hos_image.c".to_owned(), "a64_rt.c".to_owned()];
+        for name in ["code_021.c", "code_hot_3.c", "hos_image.c", "a64_rt.c"] {
+            assert!(
+                !keeps_lift(&["hos_update.c".to_owned(), name.to_owned()], &generated),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_stage_forgets_the_lift_unless_a_repository_source_failed() {
+        let base = base("settle-failure");
+        let work = base.join("work");
+        let game_gen = work.join("sa").join("gen");
+        fs::create_dir_all(&game_gen).unwrap();
+        fs::create_dir_all(work.join("rt64")).unwrap();
+        fs::create_dir_all(work.join("build").join("gen")).unwrap();
+        for name in [
+            "code_000.c",
+            "code_hot_1.c",
+            "a64_table.c",
+            "a64_hooks.c",
+            "a64_fpx.h",
+            "a64_suyu.c",
+            "notes.txt",
+        ] {
+            fs::write(game_gen.join(name), "").unwrap();
+        }
+        let source =
+            json!([{"index": 0, "src": "/repo/host/hos_update.c", "error": "error: nope"}]);
+        assert!(settle_failure(&work, source.as_array().unwrap()));
+        assert!(game_gen.join("code_000.c").is_file());
+
+        let lifted = json!([{
+            "index": 0,
+            "src": game_gen.join("code_000.c").to_string_lossy(),
+            "error": "error: nope",
+        }]);
+        assert!(!settle_failure(&work, lifted.as_array().unwrap()));
+        for gone in [
+            "code_000.c",
+            "code_hot_1.c",
+            "a64_table.c",
+            "a64_hooks.c",
+            "a64_fpx.h",
+        ] {
+            assert!(!game_gen.join(gone).exists(), "{gone} was not forgotten");
+        }
+        // (the driver's own generated runtime is not the lift)
+        for kept in ["a64_suyu.c", "notes.txt"] {
+            assert!(game_gen.join(kept).is_file(), "{kept} was removed");
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_failure_that_names_no_source_forgets_the_lift() {
+        let base = base("unnamed-failure");
+        let work = base.join("work");
+        let game_gen = work.join("sa").join("gen");
+        fs::create_dir_all(&game_gen).unwrap();
+        fs::write(game_gen.join("code_000.c"), "").unwrap();
+        let failure = json!([{"index": 0, "error": "the compiler could not start"}]);
+        assert!(!settle_failure(&work, failure.as_array().unwrap()));
+        assert!(!game_gen.join("code_000.c").exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_completed_lift_is_not_translated_again() {
+        if !has_emitter() {
+            return; // (no vendored translator here: the compile stage cannot run)
+        }
+        let base = base("second-build");
+        let (exefs, romfs) = dump(&base);
+        let work = base.join("work");
+        let game_gen = work.join("sa").join("gen");
+        fs::create_dir_all(&game_gen).unwrap();
+        fs::write(game_gen.join("code_000.c"), "/* authored lifted C */\n").unwrap();
+        fs::write(game_gen.join("a64_hooks.c"), "/* TAILCALL */\n").unwrap();
+        fs::write(game_gen.join("a64_table.c"), "/* authored table */\n").unwrap();
+        let answer = plan_json(
+            exefs.to_str().unwrap(),
+            romfs.to_str().unwrap(),
+            base.join("out").to_str().unwrap(),
+            work.to_str().unwrap(),
+            0,
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(answer["stage"], "compile");
+        assert_eq!(
+            fs::read_to_string(game_gen.join("code_000.c")).unwrap(),
+            "/* authored lifted C */\n"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_lifted_chunk_that_does_not_compile_is_translated_again() {
+        if !has_emitter() {
+            return; // (no vendored translator here: the compile stage cannot run)
+        }
+        let base = base("failed-chunk");
+        let (exefs, romfs) = dump(&base);
+        let work = base.join("work");
+        let game_gen = work.join("sa").join("gen");
+        fs::create_dir_all(&game_gen).unwrap();
+        fs::write(
+            game_gen.join("code_000.c"),
+            "#error \"authored lift failure\"\n",
+        )
+        .unwrap();
+        fs::write(game_gen.join("a64_hooks.c"), "/* TAILCALL */\n").unwrap();
+        fs::write(game_gen.join("a64_table.c"), "/* authored table */\n").unwrap();
+        let answer = plan_json(
+            exefs.to_str().unwrap(),
+            romfs.to_str().unwrap(),
+            base.join("out").to_str().unwrap(),
+            work.to_str().unwrap(),
+            0,
+            false,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(answer["stage"], "compile");
+        assert_eq!(answer["lift_kept"], false);
+        assert!(!game_gen.join("code_000.c").exists());
+        let again = plan_json(
+            exefs.to_str().unwrap(),
+            romfs.to_str().unwrap(),
+            base.join("out").to_str().unwrap(),
+            work.to_str().unwrap(),
+            0,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(again["stage"], "lift");
+        let _ = fs::remove_dir_all(base);
+    }
 
     #[test]
     fn stops_at_the_lift_and_writes_the_assets() {

@@ -56,8 +56,26 @@ pub fn all_json_with(
     }
     say_stage("compile", "Compiling the host")?;
     let host = crate::host_build::link_json(exefs, work, out)?;
+    // (the driver's work folder: the one it used, which is kit's when none was given)
+    let work_folder = std::path::Path::new(driver["work"].as_str().unwrap_or(work));
+    if let Some(failed) = host["compiled"]["failed"]
+        .as_array()
+        .filter(|failed| !failed.is_empty())
+    {
+        // (a host/ source that did not compile keeps the lift; a generated
+        // file among them may be a bad lift, and the next build translates
+        // again: #2675)
+        let kept = crate::driver::settle_failure(work_folder, failed);
+        return Ok(
+            json!({"stage": "host-compile", "driver": driver, "host": host, "lift_kept": kept}),
+        );
+    }
     if !host["link"]["ok"].as_bool().unwrap_or(false) {
-        return Ok(json!({"stage": "host-link", "driver": driver, "host": host}));
+        // (as Python's forget_failed_build: a link that failed forgets the lift)
+        crate::driver::forget_lift(&work_folder.join("sa").join("gen"));
+        return Ok(
+            json!({"stage": "host-link", "driver": driver, "host": host, "lift_kept": false}),
+        );
     }
     say_stage("finish", "Putting the game folder together")?;
     let package = crate::package::package_json(work, out, romfs, vk, assets, language)?;
