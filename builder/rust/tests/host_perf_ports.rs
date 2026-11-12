@@ -532,3 +532,101 @@ void hos_log(const char *fmt, ...);
     }
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_short_command_buffer_skips_the_dry_pass() {
+    let replay = source("gpu/vk/vk_replay.cpp");
+    let header = source("gpu/render/rx_nvn.h");
+    let ops_at = header
+        .find("typedef struct { uint32_t op, size; } nvn_op_hdr;")
+        .expect("nvn_op_hdr is gone");
+    let ops_end = header[ops_at..]
+        .find("typedef struct { int32_t n;")
+        .expect("the command op enum's end is gone")
+        + ops_at;
+    let ops = &header[ops_at..ops_end];
+    let work = definition(&replay, "bool op_is_work(uint32_t op) {");
+    let count = definition(&replay, "int64_t stream_work(const uint8_t* p, int64_t most) {");
+    // (the dry pass counts with the same op test, and the short decision comes before it)
+    let handle_at = replay
+        .find("const uint8_t* replay_handle(")
+        .expect("replay_handle is gone");
+    let handle = &replay[handle_at..];
+    let short_at = handle
+        .find("stream_work(h, 2 * per) < 2 * per")
+        .expect("a short command buffer is not counted before the dry pass");
+    let dry_at = handle
+        .find("dry_marks_begin();")
+        .expect("the dry pass is gone");
+    assert!(
+        short_at < dry_at,
+        "the dry pass still runs before the short command buffer is decided"
+    );
+    let short = &handle[short_at..dry_at];
+    for part in ["replay(cmd, state, h);", "split_off = true;", "split_off = was_split;"] {
+        assert!(
+            short.contains(part),
+            "the short command buffer's recording misses {part}"
+        );
+    }
+    assert!(
+        replay.contains("env_on(\"RX_VK_NO_DRY_SHORT\")"),
+        "RX_VK_NO_DRY_SHORT is gone"
+    );
+    let split = definition(&replay, "void maybe_split(VkCommandBuffer& cmd) {");
+    assert!(
+        split.contains("if (split_off ||"),
+        "maybe_split no longer leaves a short command buffer whole"
+    );
+    let dry = &replay[replay.find("if (op_is_work(h.op)) {").expect("the dry pass's op test is gone")..];
+    assert!(
+        dry[..dry.find("p += h.size;").expect("the dry pass's end is gone")].contains("++dry_work"),
+        "the dry pass no longer counts its work with op_is_work"
+    );
+
+    let fixture = format!(
+        r#"#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+{ops}
+#define CHECK(x) do {{ if (!(x)) {{ std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); }} }} while (0)
+{work}
+{count}
+static uint8_t s[4096];
+static size_t at;
+static void op(uint32_t o, uint32_t payload = 0) {{
+    const nvn_op_hdr h{{o, 8 + payload}};
+    std::memcpy(s + at, &h, sizeof h);
+    at += sizeof h + payload;
+}}
+int main() {{
+    op(NOP_DRAW), op(NOP_POLY_OFFSET, 24), op(NOP_DRAW_IDX), op(NOP_DRAW_INDIRECT), op(NOP_DRAW_MESH, 16);
+    op(NOP_STENCIL, 8), op(NOP_DISPATCH), op(NOP_DISPATCH_INDIRECT), op(NOP_BARRIER);
+    op(NOP_END), op(NOP_DRAW), op(NOP_DRAW);
+    CHECK(stream_work(s, 1000) == 6);   // (ops past the end are not counted)
+    CHECK(stream_work(s, 4) == 4);      // (enough: stops there)
+    CHECK(stream_work(s, 6) == 6);
+    CHECK(stream_work(s, 7) == 6);
+    at = 0;
+    op(NOP_POLY_OFFSET, 4), op(NOP_END);
+    CHECK(stream_work(s, 2) == 0);      // (state alone: no segments)
+    std::puts("PASS: a short command buffer is counted without the dry pass");
+    return 0;
+}}
+"#
+    );
+    let Some((dir, exe)) = compile("parallel-small-cb", &fixture, "cpp", &[]) else {
+        eprintln!("skipping the short command buffer fixture: no C++ compiler (CXX, c++, g++ or clang++)");
+        return;
+    };
+    let out = run(&exe, &[]);
+    let _ = fs::remove_dir_all(dir);
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("PASS: a short command buffer"));
+}

@@ -813,6 +813,12 @@ bool buf_unchanged(int32_t stage, int32_t index, uint64_t addr, uint64_t size, i
     return stage == nstage && index == nindex && addr == naddr && size == nsize;
 }
 
+/// A draw or a dispatch: what a segment is a count of (dry_work, RX_VK_PARALLEL_SEG)
+bool op_is_work(uint32_t op) {
+    return op == NOP_DRAW || op == NOP_DRAW_IDX || op == NOP_DRAW_INDIRECT || op == NOP_DRAW_MESH || op == NOP_DISPATCH ||
+           op == NOP_DISPATCH_INDIRECT;
+}
+
 void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* end = nullptr) {
     const Mode mode = rmode;
     const bool dry = mode == Mode::Dry, worker = mode == Mode::Worker;
@@ -1342,8 +1348,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         default: break;
         }
-        if (h.op == NOP_DRAW || h.op == NOP_DRAW_IDX || h.op == NOP_DRAW_INDIRECT || h.op == NOP_DRAW_MESH ||
-            h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT) {
+        if (op_is_work(h.op)) {
             if (dry) {
                 const bool compute = h.op == NOP_DISPATCH || h.op == NOP_DISPATCH_INDIRECT;
                 if (s.render_enabled && (compute || !s.raster_discard)) dry_mark_written(s, compute, dry_work == 0);
@@ -1369,10 +1374,12 @@ int64_t part_work = 0;
 // at once, kMaxBatch of them at most: fewer than the slots)
 constexpr int kMaxParts = 32;
 constexpr int kMaxBatch = 6;   // (three recording threads: more segments only took slots and submits)
+// (a short command buffer a parallel replay records on this thread: one segment's worth, and a segment is not split)
+thread_local bool split_off = false;
 
 void maybe_split(VkCommandBuffer& cmd) {
     static const int64_t every = getenv("RX_VK_CHUNK") ? atoll(getenv("RX_VK_CHUNK")) : 120;
-    if (!rec_cur || every <= 0 || ++part_work < every || rec_parts + 1 >= kMaxParts || dump_on()) return;
+    if (split_off || !rec_cur || every <= 0 || ++part_work < every || rec_parts + 1 >= kMaxParts || dump_on()) return;
     end_pass(cmd);
     flush_ub_updates(cmd);
     memory_end_submission(cmd, rec_cur->part);
@@ -1476,9 +1483,22 @@ void record_segment(VkCommandBuffer& cmd, const Segment& g) {
 }
 std::recursive_mutex par_mu;
 
+/// The draws and dispatches from p to its stream's end, counted without applying anything (the dry pass's dry_work);
+/// stops at `most`, when how many more there are is not asked.
+int64_t stream_work(const uint8_t* p, int64_t most) {
+    int64_t n = 0;
+    for (;;) {
+        nvn_op_hdr h;
+        std::memcpy(&h, p, sizeof h);
+        if (h.op == NOP_END) return n;
+        if (op_is_work(h.op) && ++n >= most) return n;
+        p += h.size;
+    }
+}
+
 /// A command buffer of the submission from h (its start, or where it stopped at a wait): on the replay thread alone
-/// (RX_VK_PARALLEL off, a small one, dumps and profiles), or its dry pass there and its segments on the threads.
-/// may_stop: up to a wait not met, which it returns (null: the command buffer done)
+/// (RX_VK_PARALLEL off, one too short for two segments, dumps and profiles), or its dry pass there and its segments on
+/// the threads. may_stop: up to a wait not met, which it returns (null: the command buffer done)
 const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_stop = false) {
     const int threads = par_threads();
     NvnState& state = *cur_state;
@@ -1487,6 +1507,24 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         suspend_ok = may_stop;
         replay(cmd, state, h);
         suspend_ok = false;
+        return suspend_at;
+    }
+    // (segments of ~RX_VK_PARALLEL_SEG draws and dispatches (default 160), taken in order by the threads and submitted
+    // as each is done with those before it: the GPU starts on the first while the rest are recorded)
+    static const int64_t per = getenv("RX_VK_PARALLEL_SEG") ? std::max(32, atoi(getenv("RX_VK_PARALLEL_SEG"))) : 160;
+    // (too little work for two segments: recorded here, as with parallel replay off. The dry pass would apply the stream's
+    // state for nothing, and its one segment would walk the stream again here on this thread. RX_VK_NO_DRY_SHORT=1: as
+    // before, the dry pass and the segment)
+    static const bool no_short = env_on("RX_VK_NO_DRY_SHORT");
+    static int64_t shorts;
+    if (!no_short && stream_work(h, 2 * per) < 2 * per) {
+        shorts++;
+        const bool was_split = split_off;
+        split_off = true;   // (the segment the dry pass would have recorded is one, and a segment is not split)
+        suspend_ok = may_stop;
+        replay(cmd, state, h);
+        suspend_ok = false;
+        split_off = was_split;
         return suspend_at;
     }
     // the dry pass: the state at every 64 draws and dispatches, the render conditions, the uniform updates
@@ -1506,9 +1544,6 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     static double dry_ms, seg_ms, segs_n;
     static int64_t timed;
     dry_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_dry0).count();
-    // (segments of ~RX_VK_PARALLEL_SEG draws and dispatches (default 160), taken in order by the threads and submitted
-    // as each is done with those before it: the GPU starts on the first while the rest are recorded)
-    static const int64_t per = getenv("RX_VK_PARALLEL_SEG") ? std::max(32, atoi(getenv("RX_VK_PARALLEL_SEG"))) : 160;
     const int nseg = (int)std::clamp<int64_t>(total / per, 1, kMaxBatch);
     std::vector<Segment> seg;
     seg.push_back({h, nullptr, &start, ub0, 0});
@@ -1667,8 +1702,10 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     wait_ms += (par_lock_wait_ns.load() - wait0) / 1e6, locks_n += (double)(par_locks.load() - locks0);
     if (++timed % 240 == 0) {
         logf("vk: parallel replay, a command buffer: dry pass %.2f ms, segments %.2f ms (%.1f of them), lock taken %.0f "
-             "times, waited for %.2f ms (all threads)", dry_ms / 240, seg_ms / 240, segs_n / 240, locks_n / 240, wait_ms / 240);
+             "times, waited for %.2f ms (all threads); %lld short ones recorded here", dry_ms / 240, seg_ms / 240,
+             segs_n / 240, locks_n / 240, wait_ms / 240, (long long)shorts);
         dry_ms = seg_ms = segs_n = wait_ms = locks_n = 0;
+        shorts = 0;
     }
     // what follows, after them all (the uniform updates are written to guest memory at the submission's end)
     texture_set_segment(++seq);
