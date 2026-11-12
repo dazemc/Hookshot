@@ -116,8 +116,12 @@ frame generation on, **Frame generation by** and the FPS counter name who makes 
 Controls page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`,
 unset by default: until you bind one, the game's own button plays it, and a bound note answers only its own key or
 gamepad input while the game waits for a note. With HDR set to Native, the HDR section's tone mapper row chooses the
-game's vanilla tone mapping or PsychoV35. The in-game controls and the full option list are in the
-[technical reference](docs/fork.md) and in the builder's own help.
+game's vanilla tone mapping or PsychoV35. The menu itself speaks English, Português (Brasil), Español (Latinoamérica and
+España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文 and 繁體中文:
+**Gameplay → Menu language** (Auto follows the game's language). The game's own language is the separate
+**Game language** row, which writes `language.txt` and applies after a restart; English is the fallback where a text has
+no translation. The in-game controls and the full option list are in the [technical reference](docs/fork.md) and in the
+builder's own help.
 
 **Gameplay → System → Bug report** saves what an issue needs into `bug-reports/<date>_<time>` in the game folder in one press:
 `report.txt` (the version, the map you are in, your graphics card and driver, CPU, RAM and system, the menu options and

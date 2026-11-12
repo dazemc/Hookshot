@@ -49,6 +49,7 @@
 #include "upscaler_rows.h"
 #include "auto_settings.h"
 #include "menu_restart.h"
+#include "vk_menu_i18n.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -273,6 +274,18 @@ const char* hn_dlss_model(int v, int variant) {
     if (variant == 2) return env;
     return variant == 0 ? t[std::clamp(v, 0, ur::kModels - 1)] : nullptr;
 }
+/// The Game language row (opts.game_lang): language.txt's language, written once the row is left (game_lang_tick); the game
+/// reads it at its start
+const char* tx_game_lang(int v) { return i18n::game_lang_name(v); }
+/// The Menu language row (opts.menu_lang): Auto, then each language by its own name (vk_menu_i18n.h)
+const char* tx_menu_lang(int v) {
+    if (v <= 0) return "Auto (game's language)";
+    return i18n::lang_name(v - 1);
+}
+const char* hn_menu_lang(int v, int variant) {
+    if (variant > 0) return nullptr;
+    return v <= 0 ? "Follows the game's language (language.txt in the game folder)." : "The language of this menu.";
+}
 const char* tx_percent(int v) {
     static char b[8];
     snprintf(b, sizeof b, "%d%%", v);
@@ -437,13 +450,13 @@ bool row_fixed(const int* value) {
            (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8"));   // (set for the run: vk_texture.cpp reads it first)
 }
 const char* tx_output_res(int v) {
-    static char b[40];
+    static char b[64];
     v = output_choice(v);
     // (the picture this choice makes (picture_for: at the monitor's shape with Ultrawide on), "(native)"
     // when it is the screen's own size; the game's own choice (0) keeps its name)
     bool native = false;
     const Out o = picture_for(v, &native);
-    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, native ? " (native)" : v ? "" : " (game's)");
+    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, i18n::tr(native ? " (native)" : v ? "" : " (game's)"));
     return b;
 }
 /// Anisotropic filtering: the game's own, or 2x to 16x (vk_draw.cpp aniso_override)
@@ -518,10 +531,11 @@ const char* tx_mic(int v) {
     if (v <= 0) return "Off";
     if (v == 1) return "Default";
     if (mic_missing && v == 2 + mic_listed) {
-        const int room = (int)sizeof buf - (int)sizeof " (not connected)";
+        const char* suffix = i18n::tr(" (not connected)");
+        const int room = (int)sizeof buf - (int)strlen(suffix) - 1;
         snprintf(buf, (size_t)room + 1, "%s", mic_want.c_str());
         utf8_whole(buf);
-        strcat(buf, " (not connected)");
+        strcat(buf, suffix);
         return buf;
     }
     const char* n = can_mic() ? host->mic_name(v - 2) : "";
@@ -995,6 +1009,10 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
+    {TAB_GAMEPLAY, "Game language", &opts.game_lang, 0, i18n::game_lang_count() - 1, 1, tx_game_lang,
+     "The game's own language, its text. Applies after a restart.", nullptr, true, true},
+    {TAB_GAMEPLAY, "Menu language", &opts.menu_lang, 0, i18n::lang_count(), 1, tx_menu_lang, "The language of this menu.",
+     hn_menu_lang, false, true},
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
@@ -1296,6 +1314,7 @@ void restart_init() {
     static bool done = false;
     if (done) return;
     done = true;
+    opts.game_lang = i18n::game_lang_index();   // (language.txt's, the language the game started in)
     for (int i = 0; i < kRows; i++) {
         restart_slot[i] = rows[i].restart && rows[i].value ? restart_state.add(*rows[i].value) : -1;
         if (restart_slot[i] >= 0) restart_names[restart_slot[i]] = rows[i].name;
@@ -1323,8 +1342,14 @@ bool restart_ask() {
     restart_values(now);
     return app_window() && restart_state.ask(now);
 }
+/// The rows' names in the menu's language, for the restart line and question
+const char* const* tr_names() {
+    static const char* t[mr::kMax];
+    for (int i = 0; i < restart_state.n; i++) t[i] = i18n::tr(restart_names[i]);
+    return t;
+}
 std::string restart_list(const char* last) {
-    return mr::names(restart_names, restart_state.n, restart_pending(), ", ", last);
+    return mr::names(tr_names(), restart_state.n, restart_pending(), ", ", last);
 }
 int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 
@@ -1560,7 +1585,7 @@ void save() {
                 const int v = saved_value(r.value);
                 const Out o = v == kCustomOutput && player_custom_output.w && env_holds(r.value) ? player_custom_output : output_at(v);
                 fprintf(f, "%s=%ux%u\n", ini_key(r), o.w, o.h);
-            } else if (r.value) {
+            } else if (r.value && r.value != &opts.game_lang) {   // (game_lang: language.txt's)
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
             }
         }
@@ -2040,8 +2065,14 @@ std::string restart_line(ui::Ctx& c, float px, float width) {
         int named = 0, more = 0;
         for (int i = 0; i < restart_state.n; i++)
             if ((all >> i) & 1) (named < keep ? (shown |= 1u << i, named++) : more++);
-        line = "Restart needed: " + mr::names(restart_names, restart_state.n, shown);
-        if (more) line += (named ? " and " : "") + std::to_string(more) + (named ? " more" : more > 1 ? " settings" : " setting");
+        const char* names[mr::kMax];
+        for (int i = 0; i < restart_state.n; i++) names[i] = i18n::tr(restart_names[i]);
+        line = i18n::tr("Restart needed: ") + mr::names(names, restart_state.n, shown);
+        if (more) {   // (" settings (many)": the form Russian and Polish take for 5 and up, i18n::plural; never asked in English)
+            const int form = i18n::plural(more);
+            line += std::string(named ? i18n::tr(" and ") : "") + std::to_string(more) +
+                    i18n::tr(named ? " more" : form == 0 ? " setting" : form == 1 ? " settings" : " settings (many)");
+        }
         if (ui::size_of(c.f.strong, px, line.c_str()).x <= width) break;
     }
     return line;
@@ -2238,9 +2269,10 @@ const char* bug_report_cell() {
 /// Under its help once saved: where the report is and what to do with it (the game opens nothing: no browser or file manager is
 /// sure to be there, as on a Steam Deck in Game Mode)
 std::string bug_report_saved_text(const std::string& folder) {
-    return "Saved in the game folder as " + folder + ". To send it, open github.com/NotRexed/Hookshot/issues, choose New issue and "
-           "Game problem, copy report.txt's answers into the form and drag the folder's files into it: on Windows from File "
-           "Explorer, on Linux from a file manager (on a Steam Deck, in Desktop Mode).";
+    return i18n::tr("Saved in the game folder as ") + folder +
+           i18n::tr(". To send it, open github.com/NotRexed/Hookshot/issues, choose New issue and Game problem, copy report.txt's "
+                    "answers into the form and drag the folder's files into it: on Windows from File Explorer, on Linux from a file "
+                    "manager (on a Steam Deck, in Desktop Mode).");
 }
 /// Under its help once pressed: how the report goes
 const char* bug_report_hint() {
@@ -2248,7 +2280,7 @@ const char* bug_report_hint() {
     switch (bug_report::state()) {
     case bug_report::kSaving: text = "Saving: the logs are copied and the picture taken."; break;
     case bug_report::kSaved: text = bug_report_saved_text(bug_report::shown()); break;
-    case bug_report::kFailed: text = "Not saved: " + bug_report::shown() + "."; break;
+    case bug_report::kFailed: text = i18n::tr("Not saved: ") + bug_report::shown() + "."; break;
     default: return nullptr;
     }
     return text.c_str();
@@ -2774,7 +2806,7 @@ void draw_ask(ui::Ctx& c) {
     c.d->AddRectFilledMultiColor(p, ImVec2(q.x, p.y + hb), ui::kBannerTop, ui::kBannerTop, ui::kBanner, ui::kBanner);
     c.d->AddRectFilled(ImVec2(p.x, p.y + hb - 3 * s), ImVec2(q.x, p.y + hb), ui::kBannerEdge);
     ui::text_mid_centre(c, c.f.heading, 23 * s, (p.x + q.x) * 0.5f, p.y + hb * 0.5f, ui::kBannerInk, "Restart Needed");
-    const std::string ask = "Restart to apply " + restart_list(" and ") + "?";
+    const std::string ask = i18n::tr("Restart to apply ") + restart_list(i18n::tr(" and ")) + "?";
     ui::para(c, c.f.body, 19 * s, ImVec2(p.x + 28 * s, p.y + 64 * s), ui::kInk, ask.c_str(), W - 56 * s);
     ui::text_mid(c, c.f.body, 16 * s, p.x + 28 * s, p.y + 124 * s, ui::kSoft, "Progress since your last save is lost.");
     const float bw = 210 * s, bh = 46 * s, gap = 24 * s, by = p.y + 160 * s, x0 = (p.x + q.x) * 0.5f - bw - gap * 0.5f;
@@ -2931,7 +2963,8 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const ImU32 green = ui::rgba(72, 255, 110), ink = ui::kInkBright, dim = ui::kSoft, soft = ui::kInk;
     const Tab num(c.f.strong, big), tab(c.f.strong, small), lab(c.f.strong, label);
     const float nw = num.width(fps_text), lw = ui::size_of(c.f.strong, small, "FPS").x;
-    const float sw = fps_sub[0] ? tab.width(fps_sub) : 0;
+    const char* sub_text = i18n::tr(fps_sub);   // ("game 60" in the menu's language)
+    const float sw = fps_sub[0] ? tab.width(sub_text) : 0;
     const float gw = 208 * s;   // (the column's width from the graph on)
     // (while the menu is open: the top right under the banner, the number and the frame time only, unless the window is so much
     // wider than 16:9 that the column fits beside the menu's, in its own corner)
@@ -2980,14 +3013,15 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
         c.d->AddText(c.f.strong, small, ImVec2(x + nw + 4 * s, top + 14 * s), num_col, "FPS");
     }
     float y = top + 32 * s;
-    if (fps_sub[0]) tab.draw(c.d, at(sw), y, soft, fps_sub, s), y += row;
+    if (fps_sub[0]) tab.draw(c.d, at(sw), y, soft, sub_text, s), y += row;
     if (level < fs::kFrameTime) return;
     if (fps_ms_text[0]) {   // ("16.7 ms" in the colour of its distance from the cap's frame time, "1% low 58" beside it)
         const ImU32 ms_col = grade_col[fps_ms_now > 0 ? fs::rate_grade(1000.0 / fps_ms_now, target) : 0];
-        const float mw = tab.width(fps_ms_text), gap = 10 * s, low_w = tab.width(fps_low_text);
+        const char* low_text = i18n::tr(fps_low_text);   // ("1% low 58" in the menu's language)
+        const float mw = tab.width(fps_ms_text), gap = 10 * s, low_w = tab.width(low_text);
         const float x = at(mw + gap + low_w);
         tab.draw(c.d, x, y, ms_col, fps_ms_text, s);
-        tab.draw(c.d, x + mw + gap, y, soft, fps_low_text, s);
+        tab.draw(c.d, x + mw + gap, y, soft, low_text, s);
         y += row;
     }
     if (level < fs::kGraph) return;
@@ -3100,7 +3134,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
             c.d->AddCircleFilled(ImVec2(x0 + 4 * s, by + lh * 0.5f), 2.6f * s, dot);
             nx += 12 * s;
         }
-        lab.draw(c.d, nx, by + 1 * s, soft, name, s);
+        lab.draw(c.d, nx, by + 1 * s, soft, i18n::tr(name), s);
         tab.draw(c.d, x1 - tab.width(value), by, value_col, value, s);
         by += lh;
     };
@@ -3134,10 +3168,9 @@ void draw_startup(ui::Ctx& c) {
     ui::text_centre(c, c.f.body, 14.5f * k, ImVec2(cx, y + 78 * k), ui::kDim, v.version.c_str());
     if (!v.title.empty()) {
         y += 120 * k;
-        if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2")
-            std::string step = v.step;
-            for (size_t i = 1; i < step.size(); i++) step[i] = (char)tolower((unsigned char)step[i]);
-            ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, step.c_str());
+        if (!v.step.empty()) {   // ("STEP 2 OF 2" as "Step 2 of 2", in the menu's language)
+            const char* step = v.step == "STEP 1 OF 2" ? "Step 1 of 2" : v.step == "STEP 2 OF 2" ? "Step 2 of 2" : v.step.c_str();
+            ui::text_centre(c, c.f.body, 15 * k, ImVec2(cx, y), ui::kAccent, step);
         }
         ui::text_centre(c, c.f.heading, 24 * k, ImVec2(cx, y + 20 * k), ui::kInk, v.title.c_str());
         const float x0 = cx - 270 * k, x1 = cx + 270 * k, by = y + 64 * k;
@@ -3238,7 +3271,7 @@ void menu_init() {
             if (!eq) continue;
             *eq = 0;
             for (Row& r : rows) {
-                if (!r.value || strcmp(line, ini_key(r))) continue;
+                if (!r.value || r.value == &opts.game_lang || strcmp(line, ini_key(r))) continue;
                 const int v = atoi(eq + 1);
                 *r.value = r.value == &opts.output_res ? parse_output(eq + 1) : std::min(std::max(v, r.lo), r.hi);
             }
@@ -3729,9 +3762,30 @@ void cheat_press(int i, const bool* press, bool& changed) {
     }
 }
 
+/// (hookshot) The Game language row's choice written to language.txt once the player leaves the row (another row, page or
+/// tab, or the menu closed), not at each step on the way to it. When it cannot be written (a read-only folder) the row goes
+/// back to what language.txt says, so it never shows a language that was not saved
+void game_lang_tick() {
+    static const int row = [] {
+        for (int i = 0; i < kRows; i++)
+            if (rows[i].value == &opts.game_lang) return i;
+        return -1;
+    }();
+    if (row < 0 || opts.game_lang == i18n::game_lang_index()) return;
+    const bool on_row = open_now.load() && page == 0 && cur_tab == rows[row].tab &&
+                        tab_row_to_global(cur_tab, tab_selected[cur_tab]) == row;
+    if (on_row) return;
+    if (!i18n::set_game_language(opts.game_lang)) {
+        logf("menu: language.txt could not be written: the game language stays %s", i18n::game_lang_code(i18n::game_lang_index()));
+        opts.game_lang = i18n::game_lang_index();
+        menu_refresh = true;
+    }
+}
+
 void menu_tick() {
     std::lock_guard lk(menu_mu);   // (the control bridge's settings: menu_setting_set)
     fullscreen_tick();
+    game_lang_tick();
     enum { K_N = 17 };
     static bool held[K_N];
     static const int keys[K_N] = {VK_INSERT, VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_ESCAPE, VK_F1,   // (F1: for keyboards without Insert)
