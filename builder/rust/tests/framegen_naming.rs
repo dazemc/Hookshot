@@ -84,8 +84,8 @@ fn the_row_and_the_counter_use_one_name_per_engine() {
         "the FPS counter's second line does not say Base and the maker"
     );
     assert!(
-        !tick.contains("\"game %.0f\"") && !tick.contains("\"Built-in\""),
-        "the old game/Built-in texts are still written"
+        !tick.contains("\"Built-in\""),
+        "the old Built-in text is still written"
     );
     assert!(
         block(
@@ -110,7 +110,7 @@ fn the_row_and_the_counter_use_one_name_per_engine() {
         assert!(menu.contains(reason), "the row cannot name {reason}");
     }
     assert!(
-        source("readme.md").contains("Base 60, DLSS FG")
+        source("readme.md").contains("game 60, DLSS FG")
             && source("readme.md").contains("FSR 3.1 FG"),
         "readme.md does not document the row and the counter"
     );

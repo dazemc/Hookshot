@@ -112,7 +112,7 @@ line says what it chose and why. A preset or row you saved is never changed by i
 Mesh shaders is not a row: `RX_VK_MESH_SHADERS=native` or `compute` in `hookshot_env.txt` (or the environment) chooses
 it for a launch, and an existing `mesh_shaders=` line in `hookshot_options.ini` still chooses as its old row did. With
 frame generation on, **Frame generation by** and the FPS counter name who makes the frames: `DLSS FG`, `FSR 3.1 FG` or
-`Built-in FG` (the FPS counter's second line is `Base 60, DLSS FG`). The
+`Built-in FG` (the FPS counter's second line is `game 60, DLSS FG`). The
 Controls page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`,
 unset by default: until you bind one, the game's own button plays it, and a bound note answers only its own key or
 gamepad input while the game waits for a note. With HDR set to Native, the HDR section's tone mapper row chooses the
