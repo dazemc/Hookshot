@@ -796,6 +796,7 @@ impl<'a, C: Code> Lifter<'a, C> {
         )];
         let pcs: Vec<u64> = body.keys().copied().collect();
         let dead = self.dead_flags(entry, body, &pcs, texts);
+        let dirty = self.dirty_regs(entry, body, &pcs, texts);
         for (index, pc) in pcs.iter().copied().enumerate() {
             let kind = body[&pc];
             let word = self.code.word(pc).unwrap_or(0);
@@ -901,7 +902,85 @@ impl<'a, C: Code> Lifter<'a, C> {
             }
         }
         out.push("}".to_owned());
-        crate::text::strip_sync(&(out.join("\n") + "\n"))
+        crate::text::localize_regs(
+            &(out.join("\n") + "\n"),
+            crate::text::local_count(),
+            (&dirty.0, &dirty.1),
+        )
+    }
+
+    fn dirty_regs(
+        &self,
+        entry: u64,
+        body: &BTreeMap<u64, Kind>,
+        pcs: &[u64],
+        texts: &[String],
+    ) -> (Vec<u32>, Vec<u32>) {
+        let n = pcs.len();
+        let at: std::collections::HashMap<u64, usize> =
+            pcs.iter().enumerate().map(|(i, pc)| (*pc, i)).collect();
+        let mut writes = vec![0u32; n];
+        let mut sync = vec![false; n];
+        let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, pc) in pcs.iter().copied().enumerate() {
+            let kind = body[&pc];
+            let mut targets = Vec::new();
+            let mut falls = true;
+            match kind {
+                Kind::Op => {
+                    let text = texts.get(i).map(String::as_str).unwrap_or("");
+                    if text.is_empty() {
+                        falls = false;
+                    } else {
+                        writes[i] = crate::text::reg_writes(text);
+                    }
+                }
+                Kind::B(target) => {
+                    targets.push(target);
+                    falls = false;
+                }
+                Kind::BCond(target, _)
+                | Kind::Cbz(target, _, _, _)
+                | Kind::Tbz(target, _, _, _) => targets.push(target),
+                Kind::Bl(_) | Kind::Blr(_) | Kind::Svc(_) => sync[i] = true,
+                Kind::Ret(_) | Kind::Trap => falls = false,
+                Kind::Br(_) => {
+                    targets.extend(self.jt.get(&pc).into_iter().flatten().copied());
+                    falls = false;
+                }
+                _ => {}
+            }
+            if falls {
+                targets.push(pc + 4);
+            }
+            for target in targets {
+                if (target != entry && body.contains_key(&target)) || target == entry {
+                    if let Some(j) = at.get(&target) {
+                        succ[i].push(*j);
+                    }
+                }
+            }
+        }
+        let mut dirty = vec![0u32; n];
+        loop {
+            let mut changed = false;
+            for i in 0..n {
+                let out = if sync[i] { 0 } else { dirty[i] | writes[i] };
+                for j in &succ[i] {
+                    if out & !dirty[*j] != 0 {
+                        dirty[*j] |= out;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let after = (0..n)
+            .map(|i| if sync[i] { 0 } else { dirty[i] | writes[i] })
+            .collect();
+        (dirty, after)
     }
 
     fn dead_flags(

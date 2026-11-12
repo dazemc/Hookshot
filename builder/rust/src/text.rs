@@ -119,6 +119,98 @@ pub fn strip_sync(text: &str) -> String {
     marker.replace_all(text, "").into_owned()
 }
 
+pub fn local_count() -> usize {
+    std::env::var("A64_LOCAL_REGS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Expand the context marks. With `local` the most used guest registers
+/// become C locals; each mark writes back what may have changed or reloads.
+pub fn localize_regs(text: &str, local_count: usize, dirty: (&[u32], &[u32])) -> String {
+    if local_count == 0 {
+        return strip_sync(text);
+    }
+    let mut uses = std::collections::HashMap::new();
+    let mut at = 0usize;
+    while let Some(found) = text[at..].find("c->x[") {
+        let start = at + found + 5;
+        let mut end = start;
+        while text.as_bytes().get(end).is_some_and(|b| b.is_ascii_digit()) {
+            end += 1;
+        }
+        if let Ok(number) = text[start..end].parse::<usize>() {
+            *uses.entry(number).or_insert(0usize) += 1;
+        }
+        at = end;
+    }
+    let mut top: Vec<usize> = uses
+        .iter()
+        .filter(|(n, _)| **n != 31)
+        .map(|(n, _)| *n)
+        .collect();
+    top.sort_by_key(|n| (std::cmp::Reverse(uses[n]), *n));
+    top.truncate(local_count);
+    if uses.contains_key(&31) {
+        top.push(31);
+    }
+    top.sort_unstable();
+    top.dedup();
+    let chosen = &top;
+    let mut replaced = text.to_owned();
+    for n in chosen {
+        replaced = replaced.replace(&format!("c->x[{n}]"), &format!("x{n}_"));
+    }
+    let store = |mask: u32| {
+        chosen
+            .iter()
+            .filter(|n| mask >> *n & 1 != 0)
+            .map(|n| format!("c->x[{n}] = x{n}_; "))
+            .collect::<String>()
+    };
+    let load = |mask: u32| {
+        chosen
+            .iter()
+            .filter(|n| mask >> *n & 1 != 0)
+            .map(|n| format!("x{n}_ = c->x[{n}]; "))
+            .collect::<String>()
+    };
+    let marker = Regex::new("\x01([CBRALT])([0-9]+)\x01").unwrap();
+    let expanded = marker
+        .replace_all(&replaced, |caps: &regex::Captures| {
+            let kind = caps[1].chars().next().unwrap();
+            let index: usize = caps[2].parse().unwrap_or(0);
+            let before = dirty.0.get(index).copied().unwrap_or(0);
+            let after = dirty.1.get(index).copied().unwrap_or(0);
+            match kind {
+                'C' => store((before | 1 << 30) & !0xFE00),
+                'R' => store(before & !0xFE00),
+                'A' => store(before),
+                'T' => store(after),
+                'B' => load(0x4007FFFF),
+                _ => load(0xFFFFFFFF),
+            }
+        })
+        .into_owned();
+    let mut lines = expanded.splitn(2, '\n');
+    let head = lines.next().unwrap_or("");
+    let rest = lines.next().unwrap_or("");
+    let decl = if chosen.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n    uint64_t {};",
+            chosen
+                .iter()
+                .map(|n| format!("x{n}_ = c->x[{n}]"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    format!("{head}{decl}\n{rest}")
+}
+
 /// Give x29-based stores the stack variants.
 pub fn frame_stores(text: &str) -> String {
     let first = fp_store_pre()
@@ -151,6 +243,16 @@ mod tests {
             stack_stores("recomp_store32(c,c->x[0],v);"),
             "recomp_store32(c,c->x[0],v);"
         );
+    }
+
+    #[test]
+    fn localize_makes_a_register_local_and_stores_it() {
+        let text = "void f(){\n\x01C0\x01c->x[0]=1;\n}";
+        let out = localize_regs(text, 1, (&[1], &[1]));
+        assert!(out.contains("uint64_t x0_ = c->x[0];"));
+        assert!(out.contains("c->x[0] = x0_; "));
+        assert!(out.contains("x0_=1;"));
+        assert!(!out.contains('\x01'));
     }
 
     #[test]
