@@ -415,7 +415,9 @@ fn heap_sites() -> &'static regex::RegexSet {
             patterns.push(regex::escape(&format!(
                 "{{ uint64_t _t = c->x[8]; c->x[30] = {lr:#x}ULL; A64_ICALL(c, _t); }}"
             )));
-            patterns.push(regex::escape(&format!("c->x[30] = {lr:#x}ULL; A64_ICALL(c, _t);")));
+            patterns.push(regex::escape(&format!(
+                "c->x[30] = {lr:#x}ULL; A64_ICALL(c, _t);"
+            )));
         }
         regex::RegexSet::new(patterns).expect("heap site patterns")
     })

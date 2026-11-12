@@ -1858,9 +1858,7 @@ pub fn write_json(
     }
     lookup.mark(&format!("{hits} cache hits, {} misses", misses.len()));
     lookup.done();
-    let texts = crate::timing::span("lift.shared_texts", || {
-        shared_texts(&lift, &image, &misses)
-    })?;
+    let texts = crate::timing::span("lift.shared_texts", || shared_texts(&lift, &image, &misses))?;
     let emit = crate::timing::Stage::new("lift.emit");
     let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
         .ok()
