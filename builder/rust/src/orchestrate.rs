@@ -50,6 +50,9 @@ pub fn all_json_with(
     if exefs.is_empty() {
         return Err("build.all needs an exefs folder".into());
     }
+    // (a portable context is checked before the long stages: an invalid or
+    // missing marker stops here instead of after an hour of compiling)
+    crate::portable::check_env()?;
     // (NVIDIA's DLSS, before the long stages: both platforms compile and
     // link their Vulkan back end with NGX, and a DLSS build with no SDK
     // folder cannot go on. HOOKSHOT_NGX_SDK alone asks for it too, as it

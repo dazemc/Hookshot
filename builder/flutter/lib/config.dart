@@ -42,32 +42,195 @@ Do you accept NVIDIA's license?''';
 
 String get _home => Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '~';
 
-/// Per-user Hookshot Builder data. Create an empty portable.txt beside the
-/// executable to keep settings, downloads and backups beside the app instead.
-String builderHome() {
-  final override = Platform.environment['HOOKSHOT_BUILDER_HOME'];
-  String? base = override != null && override.isNotEmpty ? override : null;
-  if (base == null) {
-    try {
-      final exeDir = File(Platform.resolvedExecutable).parent.path;
-      if (File(p.join(exeDir, 'portable.txt')).existsSync()) base = p.join(exeDir, 'data');
-    } catch (_) {}
-  }
-  if (Platform.isWindows) {
-    final local = Platform.environment['LOCALAPPDATA'];
-    final root = base ?? (local != null && local.isNotEmpty ? local : p.join(_home, 'AppData', 'Local'));
-    return p.join(root, 'HookshotBuilder');
-  }
-  final data = base ?? Platform.environment['XDG_DATA_HOME'] ?? p.join(_home, '.local', 'share');
-  return p.join(data, 'hookshot', 'builder');
+/// The marker a portable Builder home carries, written by the Windows setup
+/// (`builder/setup/portable_home.h`) and by a hand-made portable folder.
+const portableMarker = '.hookshot-portable';
+const portableMarkerText = 'Hookshot Builder portable home v1';
+
+/// The game's own, relative link to its Builder (host/hos_update.c and
+/// builder/setup/portable_home.h read the same file).
+const gameHomeMarker = '.hookshot_builder_home';
+
+/// A resolved Builder home. [portable] is true only for a marked folder.
+class BuilderHome {
+  final String root;
+  final bool portable;
+  const BuilderHome(this.root, this.portable);
 }
 
-String configPath() {
-  if (Platform.isWindows) return p.join(builderHome(), 'builder.ini');
+bool _markerValid(String root, p.Context ctx) {
+  try {
+    final bytes = File(ctx.join(root, portableMarker)).readAsBytesSync();
+    if (bytes.length > portableMarkerText.length + 2) return false;
+    var end = bytes.length;
+    while (end > 0 && (bytes[end - 1] == 13 || bytes[end - 1] == 10)) {
+      end--;
+    }
+    final text = String.fromCharCodes(bytes.sublist(0, end));
+    return text == portableMarkerText && ctx.dirname(root) != root;
+  } catch (_) {
+    return false;
+  }
+}
+
+bool _markerExists(String root, p.Context ctx) => File(ctx.join(root, portableMarker)).existsSync();
+
+String _absolute(String path, p.Context ctx) {
+  if (!ctx.isAbsolute(path)) {
+    throw StateError('The Builder home must be a fully qualified folder: $path');
+  }
+  return ctx.normalize(path);
+}
+
+String _standardHome(Map<String, String> env, bool windows, p.Context ctx) {
+  if (windows) {
+    final local = env['LOCALAPPDATA'];
+    final home = env['USERPROFILE'] ?? env['HOME'] ?? '~';
+    final root = local != null && local.isNotEmpty ? local : ctx.join(home, 'AppData', 'Local');
+    return ctx.join(root, 'HookshotBuilder');
+  }
+  final data = env['XDG_DATA_HOME'];
+  final home = env['HOME'] ?? env['USERPROFILE'] ?? '~';
+  final base = data != null && data.isNotEmpty ? data : ctx.join(home, '.local', 'share');
+  return ctx.join(base, 'hookshot', 'builder');
+}
+
+/// Find a marked home from the running app: the setup installs it at
+/// `versions/<tag>/HookshotBuilder`, a ZIP at `builders/<tag>/HookshotBuilder`,
+/// and both sit under the marked home. A broken marker keeps that folder as
+/// the home (never AppData); only a valid marker makes it portable.
+BuilderHome? _discoverFromExecutable(String executable, p.Context ctx) {
+  var directory = ctx.dirname(_absolute(executable, ctx));
+  final executableDirectory = directory;
+  for (var depth = 0; depth <= 3; depth++) {
+    if (_markerValid(directory, ctx)) return BuilderHome(directory, true);
+    if (_markerExists(directory, ctx)) return BuilderHome(directory, false);
+    final parent = ctx.dirname(directory);
+    if (parent == directory) break;
+    directory = parent;
+  }
+  final sibling = ctx.join(executableDirectory, 'HookshotBuilder');
+  if (_markerValid(sibling, ctx)) return BuilderHome(sibling, true);
+  if (_markerExists(sibling, ctx)) return BuilderHome(sibling, false);
+  return null;
+}
+
+/// The Builder's data home: a marked portable home, the setup's explicit
+/// `HOOKSHOT_SETUP_BASE`, the old `portable.txt` layout, or the standard
+/// per-user folder. [standard] and [executable] let tests use authored paths.
+BuilderHome resolveBuilderHome({
+  Map<String, String>? environment,
+  String? executable,
+  bool? windows,
+  String? standard,
+}) {
+  final env = environment ?? Platform.environment;
+  final win = windows ?? Platform.isWindows;
+  final ctx = win ? p.windows : p.posix;
+  final portableRequested = env['HOOKSHOT_BUILDER_PORTABLE'] == '1';
+  final requested = (env['HOOKSHOT_SETUP_BASE'] ?? '').trim();
+  if (requested.isNotEmpty) {
+    final root = _absolute(requested, ctx);
+    final marked = _markerValid(root, ctx);
+    if (portableRequested && !marked) {
+      throw StateError('The portable Builder home is missing its marker: $root');
+    }
+    return BuilderHome(root, marked);
+  }
+  final found = _discoverFromExecutable(executable ?? Platform.resolvedExecutable, ctx);
+  if (portableRequested) {
+    if (found != null && found.portable) return found;
+    throw StateError('The portable Builder home was not passed to this process.');
+  }
+  if (found != null) return found;
+  // (the earlier opt-in: an empty portable.txt beside the executable keeps
+  // settings, downloads and backups under <exe>/data)
+  final exeDir = ctx.dirname(_absolute(executable ?? Platform.resolvedExecutable, ctx));
+  if (File(ctx.join(exeDir, 'portable.txt')).existsSync()) {
+    final data = ctx.join(exeDir, 'data');
+    return BuilderHome(
+      win ? ctx.join(data, 'HookshotBuilder') : ctx.join(data, 'hookshot', 'builder'),
+      true,
+    );
+  }
+  final override = env['HOOKSHOT_BUILDER_HOME'];
+  final root = standard ??
+      (override != null && override.isNotEmpty
+          ? (win ? ctx.join(override, 'HookshotBuilder') : ctx.join(override, 'hookshot', 'builder'))
+          : _standardHome(env, win, ctx));
+  return BuilderHome(_absolute(root, ctx), false);
+}
+
+/// Per-user Hookshot Builder data, or the portable home beside the setup.
+String builderHome({
+  Map<String, String>? environment,
+  String? executable,
+  bool? windows,
+  String? standard,
+}) =>
+    resolveBuilderHome(
+      environment: environment,
+      executable: executable,
+      windows: windows,
+      standard: standard,
+    ).root;
+
+bool isPortable({
+  Map<String, String>? environment,
+  String? executable,
+  bool? windows,
+  String? standard,
+}) =>
+    resolveBuilderHome(
+      environment: environment,
+      executable: executable,
+      windows: windows,
+      standard: standard,
+    ).portable;
+
+/// The default game folder: `Hookshot` beside a portable home, or the usual
+/// `~/Games/Hookshot`.
+String defaultGameFolder({
+  Map<String, String>? environment,
+  String? executable,
+  bool? windows,
+  String? standard,
+}) {
+  final env = environment ?? Platform.environment;
+  final win = windows ?? Platform.isWindows;
+  final ctx = win ? p.windows : p.posix;
+  final home = resolveBuilderHome(
+    environment: env,
+    executable: executable,
+    windows: win,
+    standard: standard,
+  );
+  if (home.portable) return ctx.join(ctx.dirname(home.root), 'Hookshot');
+  final user = env['HOME'] ?? env['USERPROFILE'] ?? '~';
+  return ctx.join(user, 'Games', 'Hookshot');
+}
+
+String configPath({
+  Map<String, String>? environment,
+  String? executable,
+  bool? windows,
+  String? standard,
+}) {
+  final env = environment ?? Platform.environment;
+  final win = windows ?? Platform.isWindows;
+  final ctx = win ? p.windows : p.posix;
+  final home = resolveBuilderHome(
+    environment: env,
+    executable: executable,
+    windows: win,
+    standard: standard,
+  );
+  if (home.portable || win) return ctx.join(home.root, 'builder.ini');
   // (the same file the Tk builder and hookshot-launch read on Linux)
-  final xdg = Platform.environment['XDG_CONFIG_HOME'];
-  final base = xdg != null && xdg.isNotEmpty ? xdg : p.join(_home, '.config');
-  return p.join(base, 'hookshot', 'builder.ini');
+  final xdg = env['XDG_CONFIG_HOME'];
+  final homeFolder = env['HOME'] ?? env['USERPROFILE'] ?? '~';
+  final base = xdg != null && xdg.isNotEmpty ? xdg : ctx.join(homeFolder, '.config');
+  return ctx.join(base, 'hookshot', 'builder.ini');
 }
 
 /// The tools root: HOOKSHOT_TOOLS when packaged, else this repository checkout.
@@ -78,8 +241,7 @@ String toolsRoot() {
   // builder keeps them in <app>/tools, a source checkout at the repository
   // root (debug bundle, test runner and packaged layouts all differ).
   bool hasSources(String path) =>
-      Directory('$path/third_party/a64-kit').existsSync() ||
-      File('$path/builder/rust/Cargo.toml').existsSync();
+      Directory('$path/third_party/a64-kit').existsSync() || File('$path/builder/rust/Cargo.toml').existsSync();
   try {
     var dir = File(Platform.resolvedExecutable).parent;
     for (var i = 0; i < 10; i++) {
@@ -118,23 +280,94 @@ String repository({String? override, String? root}) {
   return defaultRepository;
 }
 
-Map<String, String> loadConfig() {
+/// Path values builder.ini keeps; in a portable home they are stored relative
+/// to the home so a moved folder still finds its game and its files.
+const configPathKeys = {'out', 'nup', 'romfs', 'exefs'};
+
+void _checkConfigPath(String value, p.Context ctx) {
+  if (value.contains('\r') || value.contains('\n') || value.contains('\x00')) {
+    throw const FormatException('A Builder path cannot contain a line break.');
+  }
+  if (ctx.style == p.Style.windows && !ctx.isAbsolute(value) && value.contains(':')) {
+    throw const FormatException('A portable Builder path cannot name another drive.');
+  }
+}
+
+/// Store a same-volume path relative to [home]; another volume stays absolute.
+String portableSavePath(String path, String home, {bool? windows}) {
+  final ctx = (windows ?? Platform.isWindows) ? p.windows : p.posix;
+  if (path.isEmpty) return path;
+  _checkConfigPath(path, ctx);
+  if (!ctx.isAbsolute(path) || !ctx.isAbsolute(home)) return path;
+  if (!ctx.equals(ctx.rootPrefix(path), ctx.rootPrefix(home))) return path;
+  final relative = ctx.relative(path, from: home);
+  _checkConfigPath(relative, ctx);
+  return relative;
+}
+
+/// Resolve a stored path against the current home; an absolute path is kept.
+String portableLoadPath(String path, String home, {bool? windows}) {
+  final ctx = (windows ?? Platform.isWindows) ? p.windows : p.posix;
+  if (path.isEmpty) return path;
+  _checkConfigPath(path, ctx);
+  if (ctx.isAbsolute(path)) return path;
+  return ctx.normalize(ctx.join(home, path));
+}
+
+Map<String, String> loadConfig({
+  String? path,
+  String? home,
+  bool? portable,
+  bool? windows,
+}) {
+  final win = windows ?? Platform.isWindows;
+  final ctx = win ? p.windows : p.posix;
+  final root = home ?? builderHome(windows: win);
+  final portableHome = portable ?? (home != null ? _markerValid(root, ctx) : isPortable(windows: win));
   final cfg = <String, String>{};
   try {
-    for (final raw in File(configPath()).readAsLinesSync()) {
+    for (final raw in File(path ?? configPath(windows: win)).readAsLinesSync()) {
       final line = raw.trim();
       if (line.isEmpty) continue;
       final i = line.indexOf('=');
-      if (i > 0) cfg[line.substring(0, i)] = line.substring(i + 1);
+      if (i <= 0) continue;
+      final key = line.substring(0, i);
+      var value = line.substring(i + 1);
+      if (portableHome && configPathKeys.contains(key)) {
+        try {
+          value = portableLoadPath(value, root, windows: win);
+        } catch (_) {}
+      }
+      cfg[key] = value;
     }
   } catch (_) {}
   return cfg;
 }
 
-void saveConfig(Map<String, String> cfg) {
-  final path = configPath();
-  Directory(File(path).parent.path).createSync(recursive: true);
-  File(path).writeAsStringSync(cfg.entries.map((e) => '${e.key}=${e.value}\n').join());
+void saveConfig(
+  Map<String, String> cfg, {
+  String? path,
+  String? home,
+  bool? portable,
+  bool? windows,
+}) {
+  final win = windows ?? Platform.isWindows;
+  final ctx = win ? p.windows : p.posix;
+  final root = home ?? builderHome(windows: win);
+  final portableHome = portable ?? (home != null ? _markerValid(root, ctx) : isPortable(windows: win));
+  final stored = <String, String>{};
+  for (final entry in cfg.entries) {
+    var value = entry.value;
+    if (portableHome && configPathKeys.contains(entry.key) && value.isNotEmpty) {
+      try {
+        value = portableSavePath(value, root, windows: win);
+      } catch (_) {}
+    }
+    stored[entry.key] = value;
+  }
+  final target = path ?? configPath(windows: win);
+  Directory(ctx.dirname(target)).createSync(recursive: true);
+  File(target).writeAsStringSync(stored.entries.map((e) => '${e.key}=${e.value}\n').join());
 }
 
 /// Free GB under [folder] (nearest existing ancestor), null when unknown.

@@ -44,7 +44,8 @@ AppImage below. The AppImage is a development image, so building a game from it 
 Vulkan, SPIR-V and VMA headers; a source build needs nothing extra.
 
 - **Windows:** download `HookshotBuilder.exe` from [Releases](https://github.com/dazemc/Hookshot-rs/releases) or the
-  latest development build.
+  latest development build. For a portable install on an external SSD, run it with `--portable`; see
+  [Portable Hookshot Builder](docs/windows-portable-builder.md) for the folder, move and repair behavior.
 - **Linux:** download the AppImage, make it executable, and run it:
   ```sh
   chmod +x Hookshot*.AppImage
@@ -103,9 +104,9 @@ Press **Insert**, **F1** or **Esc** to open the Insert menu. It has Graphics, Au
 developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, field of view, camera speed, text speed and the debug
 teleport are there. The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame generation
 and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The Controls
-page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`, unset by
-default: until you bind one, the game's own button plays it, and a bound note answers only its own key or gamepad input
-while the game waits for a note. The in-game controls and the full option list are in the
+page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`, unset by default:
+until you bind one, the game's own button plays it, and a bound note answers only its own key or gamepad input while
+the game waits for a note. The in-game controls and the full option list are in the
 [technical reference](docs/fork.md) and in the builder's own help.
 
 ## Benchmarks

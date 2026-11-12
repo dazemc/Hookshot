@@ -255,6 +255,31 @@ struct LibrarySource {
     source: PathBuf,
 }
 
+/// The game folder's own launcher, as Python's `BESIDE[0]`: the setup copied
+/// to `hookshot.exe` on Windows (so a portable game can find its Builder
+/// beside itself), or the folder script on Linux. A source checkout without
+/// the packaged setup keeps the game executable alone.
+fn stage_game_launcher(platform: Platform, root: &Path, out: &Path) -> Option<PathBuf> {
+    let (source, name) = match platform {
+        Platform::Windows => (
+            root.parent()?.join("HookshotBuilder-Setup.exe"),
+            "hookshot.exe",
+        ),
+        Platform::Linux => (root.join("builder/linux/hookshot-folder"), "hookshot"),
+    };
+    if !source.is_file() {
+        return None;
+    }
+    let target = out.join(name);
+    fs::copy(&source, &target).ok()?;
+    #[cfg(unix)]
+    if platform == Platform::Linux {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
+    }
+    Some(target)
+}
+
 fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
@@ -423,6 +448,7 @@ fn package_json_on(
         }
     }
     bytes += copy(&root.join("assets/hookshot.png"), &out.join("hookshot.png"))?;
+    let launcher = stage_game_launcher(platform, &root, out);
     let romfs = Path::new(romfs);
     let target_romfs = out.join("romfs");
     if romfs.is_dir() && !target_romfs.exists() {
@@ -476,10 +502,17 @@ fn package_json_on(
     }
     fs::write(out.join("language.txt"), text).map_err(|e| e.to_string())?;
     let release = crate::version::release(&root);
-    let mut version = String::from("profiles=1\n");
-    if !release.is_empty() && release != "unknown" {
-        version.push_str(&format!("version={release}\n"));
-    }
+    // (a portable build records its Builder beside the game, relative to the
+    // game folder: moving the tree keeps the launcher's update path working.
+    // A standard build removes a former portable association before it
+    // publishes its own metadata, so setup and updater never disagree.)
+    let association = if release.is_empty() || release == "unknown" {
+        None
+    } else {
+        crate::portable::association_for(out)?
+    };
+    crate::portable::write_game_home(out, association.as_deref())?;
+    let version = crate::portable::version_text(&release, association.as_deref());
     fs::write(out.join("hookshot_version.txt"), version).map_err(|e| e.to_string())?;
     // The button prompts of other controllers, as Python's make_game makes
     // them: never fatal, and a failure leaves the game its own icons.
@@ -502,6 +535,7 @@ fn package_json_on(
     Ok(json!({
         "stage": "packaged",
         "exe": exe.to_string_lossy(),
+        "launcher": launcher.map(|path| path.to_string_lossy().into_owned()),
         "image": out.join("image.bin").to_string_lossy(),
         "romfs": target_romfs.to_string_lossy(),
         "bytes": bytes,
@@ -933,6 +967,35 @@ mod tests {
         link_tree(&src, &dst, &mut kept).unwrap();
         assert_eq!(kept, 0);
         assert_eq!(fs::read(dst.join("one.bin")).unwrap(), b"kept");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_packaged_windows_builder_copies_its_launcher_beside_the_game() {
+        let base = temp("launcher-windows");
+        let app = base.join("HookshotBuilder");
+        let root = app.join("tools");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(app.join("HookshotBuilder-Setup.exe"), b"authored setup").unwrap();
+        let out = base.join("Game");
+        fs::create_dir_all(&out).unwrap();
+        let launcher = stage_game_launcher(Platform::Windows, &root, &out).unwrap();
+        assert_eq!(launcher, out.join("hookshot.exe"));
+        assert_eq!(fs::read(&launcher).unwrap(), b"authored setup");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_linux_package_copies_the_folder_launcher() {
+        let base = temp("launcher-linux");
+        let root = base.join("tools");
+        fs::create_dir_all(root.join("builder/linux")).unwrap();
+        fs::write(root.join("builder/linux/hookshot-folder"), b"#!/bin/sh\n").unwrap();
+        let out = base.join("Game");
+        fs::create_dir_all(&out).unwrap();
+        let launcher = stage_game_launcher(Platform::Linux, &root, &out).unwrap();
+        assert_eq!(launcher, out.join("hookshot"));
+        assert_eq!(fs::read(&launcher).unwrap(), b"#!/bin/sh\n");
         let _ = fs::remove_dir_all(base);
     }
 }
