@@ -109,7 +109,7 @@ Still Python or not ported:
 |---|---|
 | Flutter build/update fallback | **Removed.** Flutter does not invoke Python; a missing engine is a typed error. |
 | Release/AppImage/Windows packaging | Linux AppImage and Windows package pipelines build Flutter + Rust; `v2.2.0-rs.1` is published with both. The AppImage needs distribution clang and Vulkan/SPIR-V/VMA headers for a game build |
-| Prompt textures (`Common.bntx`, per-face `textures.bin`) | Not ported; the game uses its own button textures |
+| Prompt textures (`Common.bntx`, per-face `textures.bin`) | **BC4 letter layers ported in Rust**: BNTX/GOB parsing, a glyph rasterizer, BC4 blocks and the HPTX run writer make `Common.bntx` and the non-Switch faces' `KeyTexFont` shapes. ASTC note/controller pictures and the guide-line layers are still the game's |
 | Legacy Tk/WPF builders | Kept for upstream release scripts, not used by the Flutter app |
 | Python source-reading tests | Deleted; tests are Rust, Flutter and C/C++ |
 
@@ -134,6 +134,10 @@ commits, not upstream ancestors. Ported recently:
 - **Video perf #2114**: planar YUV420P frames stay NV12 and defer RGBA to the pool, U/V interleaves 16 pairs at a time
   with SSE2, and decode threads go to 8 for AV1 and 4 for others. A headless boot played a 1920x1080 movie at 60 fps
   with no traps; `tests/video_uv_interleave_test.c` covers every pair count from 0 to 37 in CI.
+- **Prompt textures, BC4 letters**: the Rust prompt build now writes `Common.bntx` and each non-Switch face's
+  `textures.bin` from the Kenney glyphs. The in-game Xbox face logged 512 runs and the live texture pool at 60 fps with
+  no traps. Core fixtures cover the BNTX table (BC4 and ASTC entries), GOB addresses, BC4 levels, masks and the HPTX
+  header; ASTC notes, controller pictures and guide lines remain.
 - **11 Vulkan fixes**: texture table, span aging, split fence wait, recorder packet, Intel storage loop, subgroup
   barrier, mesh grass hold, pipeline-cache header, 250 ms readback, RADV mesh default, Intel uniform snapshot.
 - **7 host fixes**: update downgrade guard, menu option order, Steam gyro, Aux/splitter audio, window title/class,
@@ -151,13 +155,13 @@ Do not port game-derived pipeline lists or generated game data.
 
 `source-regressions.yml` runs Rust tests on Linux and Windows, Flutter tests/analyze, three SPIR-V fixture builds and
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
-All five workflows are green on `788354d9`. The pre-release `v2.2.0-rs.4` was built from that commit and carries the
-#1830 shader fix and the #2114 video conversion as well as the DLSS/V-Sync fixes, the compile-wave scheduler, the
-worker, mirror and image-pool changes, and the retired-import wait. `v2.2.0-rs.3` (from `74a7fd15`) has all but the
-last two; `v2.2.0-rs.2` (from `1c3cfc62`) has the first three.
+All five workflows are green on `048a7712`. The pre-release `v2.2.0-rs.5` was built from that commit and carries the
+BC4 prompt-texture layers as well as the #1830 shader fix, the #2114 video conversion, the DLSS/V-Sync fixes, the
+compile-wave scheduler, the worker, mirror and image-pool changes, and the retired-import wait. `v2.2.0-rs.4` (from
+`788354d9`) has everything but the prompt textures; `v2.2.0-rs.3` (from `74a7fd15`) has neither of the last two.
 
 The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
-app and Rust engine without Python; the pre-release (`v2.2.0-rs.4`) is published with the AppImage and the
+app and Rust engine without Python; the pre-release (`v2.2.0-rs.5`) is published with the AppImage and the
 Windows setup. The Linux image is a development image: a game build needs distribution clang and Vulkan/SPIR-V/VMA
 headers (or a source build). The repository never contains game files or generated game data.
 
