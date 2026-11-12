@@ -76,6 +76,12 @@ Commands: `build.prepare`, `lift.write`, `build.compile_many`, `build.host_link`
 `build.shaders`, `build.all`. `--stream` is the Flutter protocol; the same commands also take one JSON object on
 stdin and answer one JSON object.
 
+A successful `build.all` writes `build_times.json` in the work folder and prints "where the time went" as its last log lines:
+each stage's seconds, the compile's chunks/units/cache hits, the lift cache's hits, and the total. The file keeps the
+last 20 builds and holds only labels, counts and clocks: no game path and nothing read from the game. It is the
+measurement the cold-compile work starts from (`HOOKSHOT_BUILD_TIMING=1` still prints the same stage lines to stderr
+while a build runs).
+
 ## Benchmarks
 
 Measured on one Linux PC: Ryzen 9 5950X (16 cores/32 threads), 15.5 GiB RAM, RTX 4070 Ti, f2fs RAID 0, clang/lld

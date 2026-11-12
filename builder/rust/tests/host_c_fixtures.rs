@@ -243,6 +243,128 @@ int64_t hos_now_ns(void);
 }
 
 #[test]
+fn a_saves_link_follows_an_entry_that_moved_first() {
+    if cfg!(windows) {
+        // (the fixture is POSIX: mkdtemp, readlink and symlink)
+        return;
+    }
+    let repo = root();
+    let source = fs::read_to_string(repo.join("host/hos_main.c")).expect("host/hos_main.c");
+    // (the move's link mapping and copy_link, from the source as it is: the
+    // late link is the case a file system's directory order decides)
+    let start = source
+        .find("static const char *move_old, *move_from, *move_new;")
+        .expect("the saves move has no move_from");
+    let end = source
+        .find("static int has_link(")
+        .expect("the saves move has no copy_link");
+    let functions = &source[start..end];
+    let fixture = format!(
+        r#"#define _GNU_SOURCE
+#include <errno.h>
+#include <limits.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#ifndef MAX_PATH
+#define MAX_PATH 4096
+#endif
+#define SEP '/'
+#define SEP_S "/"
+{functions}
+static int dir(const char *p) {{ return mkdir(p, 0700) == 0 || errno == EEXIST; }}
+static int text(const char *p, char *out, size_t n) {{
+    const ssize_t r = readlink(p, out, n - 1);
+    if (r < 0) return 0;
+    out[r] = 0;
+    return 1;
+}}
+static int is(const char *a, const char *b) {{ return strcmp(a, b) == 0; }}
+int main(void) {{
+    char base[] = "/tmp/hookshot-saves-link-XXXXXX", old[256], new[256];
+    char save[512], id[1024], from[1024], to[1024], target[MAX_PATH], want[1024];
+    if (!mkdtemp(base)) return 2;
+    snprintf(old, sizeof old, "%s/old", base);
+    snprintf(new, sizeof new, "%s/new", base);
+    if (!dir(old) || !dir(new)) return 3;
+    snprintf(save, sizeof save, "%s/save", old);
+    snprintf(id, sizeof id, "%s/id", save);
+    if (!dir(save) || !dir(id)) return 4;
+    snprintf(want, sizeof want, "%s/save", new);
+    if (!dir(want)) return 5;
+    snprintf(want, sizeof want, "%s/save/id", new);
+    if (!dir(want)) return 6;
+    char real[MAX_PATH];
+    if (!realpath(old, real)) return 7;
+    move_old = real;
+    move_from = old;
+    move_new = new;
+
+    /* The entry moved first: the link's text names nothing by now, and must
+       still be pointed at the entry's new place. */
+    snprintf(from, sizeof from, "%s/last", old);
+    snprintf(to, sizeof to, "%s/last", new);
+    if (symlink(id, from) || rmdir(id) || rmdir(save)) return 8;
+    if (!copy_link(from, to)) return 9;
+    if (!text(to, target, sizeof target)) return 10;
+    if (!is(target, want)) {{
+        fprintf(stderr, "the late link names %s, not %s\n", target, want);
+        return 11;
+    }}
+
+    /* The same when realpath could not name the old folder: the text as
+       given is checked too. */
+    if (!dir(save) || !dir(id)) return 12;
+    snprintf(from, sizeof from, "%s/last-2", old);
+    snprintf(to, sizeof to, "%s/last-2", new);
+    if (symlink(id, from) || rmdir(id) || rmdir(save)) return 13;
+    move_old = NULL;
+    if (!copy_link(from, to)) return 14;
+    if (!text(to, target, sizeof target) || !is(target, want)) return 15;
+    move_old = real;
+
+    /* A link that names nothing, and one to something outside the move,
+       keep their text. */
+    snprintf(from, sizeof from, "%s/broken", old);
+    snprintf(to, sizeof to, "%s/broken", new);
+    if (symlink("../../nowhere", from) || !copy_link(from, to)) return 16;
+    if (!text(to, target, sizeof target) || !is(target, "../../nowhere")) return 17;
+    snprintf(from, sizeof from, "%s/outside", old);
+    snprintf(to, sizeof to, "%s/outside", new);
+    if (symlink("/etc/hostname", from) || !copy_link(from, to)) return 18;
+    if (!text(to, target, sizeof target) || !is(target, "/etc/hostname")) return 19;
+
+    char clean[MAX_PATH + 16];
+    snprintf(clean, sizeof clean, "rm -rf '%s'", base);
+    (void)system(clean);
+    puts("PASS: a saves link follows an entry that moved first, and dangling and outside links keep their text");
+    return 0;
+}}
+"#
+    );
+    let dir = scratch("saves-link");
+    let path = dir.join("fixture.c");
+    fs::write(&path, fixture).expect("write the saves link fixture");
+    let Some(run) = compile_and_run("saves-link", &[path], &[], &[]) else {
+        eprintln!("skipping the saves link fixture: no C compiler (CC, cc, gcc or clang)");
+        let _ = fs::remove_dir_all(dir);
+        return;
+    };
+    let _ = fs::remove_dir_all(dir);
+    assert!(
+        run.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(String::from_utf8_lossy(&run.stdout).starts_with("PASS"));
+}
+
+#[test]
 fn field_of_view_scales_only_the_gameplay_camera() {
     let repo = root();
     let source = fs::read_to_string(repo.join("host/oot_fov.c")).expect("host/oot_fov.c");
