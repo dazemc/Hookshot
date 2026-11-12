@@ -99,14 +99,22 @@ The engine also takes one JSON command on stdin; `hookshot_engine --help` and th
 
 ## In-game menu
 
-Press **Insert**, **F1** or **Esc** to open the Insert menu. It has Graphics, Audio, Controls, Debug/cheats and
-developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, field of view, camera speed, text speed and the debug
-teleport are there. The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame generation
-and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The Controls
-page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`, unset by default:
-until you bind one, the game's own button plays it, and a bound note answers only its own key or gamepad input while the
-game waits for a note. The in-game controls and the full option list are in the [technical reference](docs/fork.md) and
-in the builder's own help.
+Press **Insert**, **F1** or **Esc** to open the Insert menu. It has Graphics, Audio, Gameplay, Controls, Debug/cheats
+and developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, field of view, camera speed, text speed and the
+debug teleport are there. The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame
+generation and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The
+Controls page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`,
+unset by default: until you bind one, the game's own button plays it, and a bound note answers only its own key or
+gamepad input while the game waits for a note. The in-game controls and the full option list are in the
+[technical reference](docs/fork.md) and in the builder's own help.
+
+**Gameplay → System → Bug report** saves what an issue needs into `bug-reports/<date>_<time>` in the game folder in one press:
+`report.txt` (the version, the map you are in, your graphics card and driver, CPU, RAM and system, the menu options and
+`RX_`/`HOS_` switches you changed, and a link that fills in the issue form), this run's `hookshot_log.txt` and the run
+before's `hookshot_log.1.txt`, and `picture.png` of the game without the menu. The logs' home folder is written `~`
+(`%USERPROFILE%` on Windows) and the user name `<user>`; a switch value is written only when it is a number, a size or
+on/off, and never for a name with `TOKEN`, `KEY`, `ROOM`, `SECRET`, `PASS`, `SERVER` or `USER` in it. No saves, game
+files, `hookshot_options.ini` or `hookshot_env.txt` go in, and nothing is sent: attach the folder's files to an issue.
 
 ## Benchmarks
 
@@ -136,7 +144,7 @@ the compile-speed work.
 | No picture / black window | Update the GPU driver; make sure the game folder has `bin/hookshot_vk.so` (Linux) or `bin\hookshot_vk.dll` (Windows); try `RX_BACKEND=vulkan`. |
 | The game is slow or stutters | Turn on shader preparation, use the Insert menu's graphics settings, and see the GPU notes in the [technical reference](docs/fork.md). |
 | A save is missing after switching profiles | Check the profile's `save` folder; the launcher's import can bring saves from an emulator. |
-| Where is the log? | `hookshot_log.txt` in the game folder; older runs are `hookshot_log.1.txt` to `.4.txt`. |
+| Where is the log? | `hookshot_log.txt` in the game folder; older runs are `hookshot_log.1.txt` to `.4.txt`. **Gameplay → System → Bug report** gathers the logs, hardware and options for an issue in one press. |
 | The launcher/engine is missing | Install Hookshot Builder again. The builder no longer falls back to Python; a missing Rust engine stops with a clear error. |
 
 ## Contributing
