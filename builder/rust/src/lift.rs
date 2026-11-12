@@ -144,6 +144,34 @@ impl<'a, C: Code> Lifter<'a, C> {
             || ((word >> 27) & 7 == 5 && (word >> 22) & 1 == 0)
     }
 
+    fn adr_targets(&self, br_pc: u64, reg: u8) -> Option<Vec<u64>> {
+        let (lo, hi) = self.function_extent(br_pc);
+        if hi.saturating_sub(lo) > 0x40000 {
+            return None;
+        }
+        let mut targets = Vec::new();
+        let mut pc = lo;
+        while pc < hi {
+            if let Some(word) = self.code.word(pc) {
+                if word & 0x9F00001F == 0x10000000 | reg as u32 {
+                    let imm = ((word >> 3) & 0x1FFFFC) | ((word >> 29) & 3);
+                    let target = pc.wrapping_add(a64::sx(imm, 21) as u64);
+                    if lo <= target && target < hi && self.code.in_code(target) {
+                        targets.push(target);
+                    }
+                }
+            }
+            pc += 4;
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        if targets.is_empty() {
+            None
+        } else {
+            Some(targets)
+        }
+    }
+
     fn hoisted_constant(&self, before: u64, reg: u8, scan: usize) -> Option<u64> {
         let mut pc = before;
         for _ in 0..scan {
@@ -281,15 +309,15 @@ impl<'a, C: Code> Lifter<'a, C> {
             }
         }
         let Some(value) = values.get(&reg).cloned() else {
-            return None;
+            return self.adr_targets(br_pc, reg);
         };
         let (base, load) = match value {
             V::Add { left, right, .. } => match (*left, *right) {
                 (V::Const(base), load @ V::Load { .. }) => (base, load),
                 (load @ V::Load { .. }, V::Const(base)) => (base, load),
-                _ => return None,
+                _ => return self.adr_targets(br_pc, reg),
             },
-            _ => return None,
+            _ => return self.adr_targets(br_pc, reg),
         };
         let V::Load {
             table,
@@ -298,11 +326,22 @@ impl<'a, C: Code> Lifter<'a, C> {
             signed,
         } = load
         else {
-            return None;
+            return self.adr_targets(br_pc, reg);
         };
-        let V::Const(table) = *table else { return None };
-        let Some(count) = count
-            .or_else(|| bounds.get(&index).copied())
+        let table = match *table {
+            V::Const(table) => table,
+            V::Reg(reg) => self.hoisted_constant(br_pc, reg, 1024)?,
+            V::Add { left, right, .. } => match (*left, *right) {
+                (V::Reg(reg), V::Const(offset)) => self
+                    .hoisted_constant(br_pc, reg, 1024)?
+                    .wrapping_add(offset),
+                _ => return self.adr_targets(br_pc, reg),
+            },
+            _ => return self.adr_targets(br_pc, reg),
+        };
+        let Some(count) = bounds
+            .get(&index)
+            .copied()
             .filter(|count| *count > 0 && *count <= 4096)
         else {
             self.jt_missing.insert(br_pc, reg);
