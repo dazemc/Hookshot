@@ -1,14 +1,15 @@
 //! The Vulkan back end: `gpu/vk` and the shader recompiler it carries,
-//! compiled into `work/sa/build/hookshot_vk.so` (Linux). Ported from
+//! compiled into `work/sa/build/hookshot_vk.so` (Linux) or
+//! `work/sa/build/hookshot_vk.dll` (Windows with llvm-mingw). Ported from
 //! nx2/build.py's `vk_sources`, `vflags` and `vk_jobs` blocks.
 //!
-//! The Windows host link and DLL path are still build.py's: this module
-//! compiles and links the Linux shared object, which needs no game data.
 //! NVIDIA's DLSS SDK (`HOOKSHOT_NGX_SDK` or the request's `ngx` folder) adds
 //! `-DHOOKSHOT_NGX` and its headers to `vk_dlss.cpp` and links its static
-//! library; AMD's vendored FSR 4 headers do the same for `vk_fsr4.cpp` when
-//! `third_party/fidelityfx` is there. Without either, those files compile
-//! their "not available" stubs, as build.py's do.
+//! library; on Windows it also compiles `gpu/vk/vk_ngx_msvc_rt.cpp` and
+//! `host/mingw_msvc_shims.c` for what NVIDIA's MSVC-built library asks of
+//! Microsoft's runtime. AMD's vendored FSR 4 headers do the same for
+//! `vk_fsr4.cpp` when `third_party/fidelityfx` is there. Without either,
+//! those files compile their "not available" stubs, as build.py's do.
 //!
 //! Header roots come from `HOOKSHOT_VULKAN_HEADERS`, `HOOKSHOT_SPIRV_HEADERS`
 //! and `HOOKSHOT_VMA_HEADERS` first, then the system's `/usr` and
@@ -27,6 +28,19 @@ use crate::platform::Platform;
 /// NVIDIA's NGX runtime shim: build.py compiles it only for the Windows DLL
 /// with the NGX SDK, never for the Linux shared object.
 const NGX_MSVC_RT: &str = "vk_ngx_msvc_rt.cpp";
+
+/// The two shims a Windows NGX DLL adds: NVIDIA's C++ runtime parts and the
+/// C ones Microsoft's static libraries ask of `/MT` (`host/mingw_msvc_shims.c`,
+/// shared with the static FFmpeg libraries). The object names are build.py's.
+pub fn windows_ngx_sources(root: &Path) -> [(&'static str, PathBuf); 2] {
+    [
+        ("vk_ngx_msvc_rt.o", root.join("gpu/vk").join(NGX_MSVC_RT)),
+        (
+            "vk_ngx_mingw_msvc_shims.o",
+            root.join("host/mingw_msvc_shims.c"),
+        ),
+    ]
+}
 
 /// zstd's decoder, plain C, as build.py's `zstd_jobs` lists it.
 const ZSTD_DECODER: [&str; 10] = [
@@ -248,12 +262,12 @@ impl Headers {
 
 /// build.py's sentence when a header package is missing, unchanged but for
 /// the library's name.
-pub fn missing_guidance(missing: &[&str]) -> String {
+pub fn missing_guidance_for(platform: Platform, missing: &[&str]) -> String {
     format!(
         "no headers for {} (missing {}). Set RX_CPM to a CPM cache, or HOOKSHOT_VULKAN_HEADERS / \
          HOOKSHOT_SPIRV_HEADERS / HOOKSHOT_VMA_HEADERS (package root or its include/ folder), or install \
          distro packages vulkan-headers + spirv-headers + vulkan-memory-allocator, or set HOOKSHOT_VK_PREBUILT.",
-        Platform::current().vulkan_library(),
+        platform.vulkan_library(),
         missing.join(", ")
     )
 }
@@ -264,6 +278,40 @@ pub struct Options {
     /// NVIDIA's DLSS SDK folder: the request's `ngx` path, else
     /// `HOOKSHOT_NGX_SDK` (what build.py reads).
     pub ngx: Option<PathBuf>,
+}
+
+/// Why the Vulkan back end stopped before it could report a compile or link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VkBuildError {
+    /// The Windows DLL needs llvm-mingw, and none that can link for
+    /// x86_64-w64-mingw32 was found.
+    NoWindowsToolchain(String),
+    /// The build could not run, or the compiler/linker rejected it.
+    Build(String),
+}
+
+impl std::fmt::Display for VkBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoWindowsToolchain(message) | Self::Build(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for VkBuildError {}
+
+impl From<String> for VkBuildError {
+    fn from(message: String) -> Self {
+        Self::Build(message)
+    }
+}
+
+impl From<VkBuildError> for String {
+    fn from(error: VkBuildError) -> Self {
+        error.to_string()
+    }
 }
 
 fn absolute(path: &Path) -> PathBuf {
@@ -293,11 +341,26 @@ pub fn ngx_folder(requested: Option<&Path>) -> Option<PathBuf> {
 /// The DLSS SDK folder a build reads, checked: one that lacks this
 /// platform's static library is an error rather than a silent build without
 /// DLSS, because the caller asked for it.
+#[cfg(test)]
 pub fn resolve_ngx(requested: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    resolve_ngx_for(requested, Platform::current())
+}
+
+fn ngx_platform(platform: Platform) -> crate::ngx_sdk::Platform {
+    match platform {
+        Platform::Linux => crate::ngx_sdk::Platform::Linux,
+        Platform::Windows => crate::ngx_sdk::Platform::Windows,
+    }
+}
+
+pub fn resolve_ngx_for(
+    requested: Option<&Path>,
+    platform: Platform,
+) -> Result<Option<PathBuf>, String> {
     let Some(sdk) = ngx_folder(requested) else {
         return Ok(None);
     };
-    let library = crate::ngx_sdk::library(&sdk, crate::ngx_sdk::Platform::current());
+    let library = crate::ngx_sdk::library(&sdk, ngx_platform(platform));
     if !library.is_file() {
         return Err(format!(
             "NVIDIA DLSS: {} has no {} (build.ngx_fetch, or scripts/ngx_sdk.py, fetches it): \
@@ -336,11 +399,35 @@ pub fn fsr_flags(folder: &Path) -> Vec<String> {
 
 /// The link's tail: NVIDIA's static library before the system libraries, as
 /// build.py writes `@objs.rsp <libnvsdk_ngx.a> -ldl -lpthread -lm`.
+#[cfg(test)]
 pub fn link_libraries(ngx: Option<&Path>) -> Vec<String> {
+    link_libraries_for(Platform::current(), ngx)
+}
+
+pub fn link_libraries_for(platform: Platform, ngx: Option<&Path>) -> Vec<String> {
+    if platform == Platform::Windows {
+        // (build.py's Windows link tail: the Win32 and C++ runtime libraries,
+        // then NVIDIA's static library and the registry calls it makes. The
+        // /MT-built library names Microsoft's libcpmt, which llvm-mingw does
+        // not have: vk_ngx_msvc_rt.cpp supplies what it needs of it)
+        let mut libraries = ["-luser32", "-lc++", "-lunwind"]
+            .map(str::to_owned)
+            .to_vec();
+        if let Some(sdk) = ngx {
+            libraries.push(
+                crate::ngx_sdk::library(sdk, crate::ngx_sdk::Platform::Windows)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            libraries.push("-ladvapi32".to_owned());
+            libraries.push("-Wl,-Xlink=/nodefaultlib:libcpmt".to_owned());
+        }
+        return libraries;
+    }
     let mut libraries = Vec::new();
     if let Some(sdk) = ngx {
         libraries.push(
-            crate::ngx_sdk::library(sdk, crate::ngx_sdk::Platform::current())
+            crate::ngx_sdk::library(sdk, crate::ngx_sdk::Platform::Linux)
                 .to_string_lossy()
                 .into_owned(),
         );
@@ -417,14 +504,35 @@ fn release_requested() -> bool {
 /// NDEBUG and the back end's defines, then its include order. Eden's
 /// recompiler comes before suyu's root (`-DMKWVK_INCLUDES=2`), which object
 /// keys see because include folders themselves are left out of them.
+#[cfg(test)]
 pub fn vk_flags(root: &Path, gen_dir: &Path, headers: &Roots, release: bool) -> Vec<String> {
+    vk_flags_for(Platform::Linux, root, gen_dir, headers, release)
+}
+
+/// build.py's `vflags` for either target: the Windows DLL uses llvm-mingw's
+/// target flags and leaves out the POSIX shim, `-fPIC` and `_GNU_SOURCE`.
+pub fn vk_flags_for(
+    platform: Platform,
+    root: &Path,
+    gen_dir: &Path,
+    headers: &Roots,
+    release: bool,
+) -> Vec<String> {
     let vk = root.join("gpu/vk");
-    let mut flags = crate::toolchain::native_target(false);
+    let mut flags = if platform == Platform::Windows {
+        crate::host_build::mingw_target_flags()
+    } else {
+        crate::toolchain::native_target(false)
+    };
     flags.extend(cpu_flags());
+    if platform == Platform::Linux {
+        flags.extend([
+            "-fPIC".to_owned(),
+            format!("-I{}", root.join("host/posix").display()),
+            "-D_GNU_SOURCE".to_owned(),
+        ]);
+    }
     flags.extend([
-        "-fPIC".to_owned(),
-        format!("-I{}", root.join("host/posix").display()),
-        "-D_GNU_SOURCE".to_owned(),
         "-include".to_owned(),
         "algorithm".to_owned(),
         "-include".to_owned(),
@@ -485,11 +593,17 @@ pub fn imgui_flags(root: &Path) -> Vec<String> {
 }
 
 /// zstd's flags in the back end: a hidden, static decoder.
-pub fn zstd_flags() -> Vec<String> {
-    let mut flags = crate::toolchain::native_target(false);
+pub fn zstd_flags_for(platform: Platform) -> Vec<String> {
+    let mut flags = if platform == Platform::Windows {
+        crate::host_build::mingw_target_flags()
+    } else {
+        crate::toolchain::native_target(false)
+    };
     flags.extend(cpu_flags());
+    if platform == Platform::Linux {
+        flags.push("-fPIC".to_owned());
+    }
     flags.extend([
-        "-fPIC".to_owned(),
         "-O2".to_owned(),
         "-g0".to_owned(),
         "-DNDEBUG".to_owned(),
@@ -503,14 +617,16 @@ pub fn zstd_flags() -> Vec<String> {
 }
 
 /// The bundled fonts' object: no optimisation, no warnings.
-pub fn ui_fonts_flags() -> Vec<String> {
-    let mut flags = crate::toolchain::native_target(false);
-    flags.extend([
-        "-fPIC".to_owned(),
-        "-O0".to_owned(),
-        "-g0".to_owned(),
-        "-w".to_owned(),
-    ]);
+pub fn ui_fonts_flags_for(platform: Platform) -> Vec<String> {
+    let mut flags = if platform == Platform::Windows {
+        crate::host_build::mingw_target_flags()
+    } else {
+        crate::toolchain::native_target(false)
+    };
+    if platform == Platform::Linux {
+        flags.push("-fPIC".to_owned());
+    }
+    flags.extend(["-O0".to_owned(), "-g0".to_owned(), "-w".to_owned()]);
     flags
 }
 
@@ -733,18 +849,24 @@ fn job(cc: &str, src: &Path, obj: &Path, flags: &[String], deps: &Path, cache: &
 /// The skipped answer: build.all keeps going and packages the game without a
 /// renderer, and the builder's log says why rather than leaving a black
 /// window.
+#[cfg(test)]
 fn skipped(missing: &[&str]) -> Value {
+    skipped_for(Platform::current(), missing)
+}
+
+fn skipped_for(platform: Platform, missing: &[&str]) -> Value {
     json!({
         "stage": "vulkan",
         "built": false,
         "reason": "headers",
         "missing": missing,
-        "message": missing_guidance(missing),
+        "message": missing_guidance_for(platform, missing),
     })
 }
 
-/// Compile and link `hookshot_vk.so` into `work/sa/build`.
-pub fn build_json(work: &str) -> Result<Value, String> {
+/// Compile and link `hookshot_vk.so` (Linux) or `hookshot_vk.dll` (Windows)
+/// into `work/sa/build`.
+pub fn build_json(work: &str) -> Result<Value, VkBuildError> {
     let work = if work.is_empty() {
         crate::kit::work()
     } else {
@@ -756,7 +878,7 @@ pub fn build_json(work: &str) -> Result<Value, String> {
 
 /// The same, from an explicit repository root and work folder: the tests and
 /// the build driver use it. `HOOKSHOT_NGX_SDK` still names NVIDIA's SDK.
-pub fn build_at(root: &Path, work: &Path) -> Result<Value, String> {
+pub fn build_at(root: &Path, work: &Path) -> Result<Value, VkBuildError> {
     build_at_with(
         root,
         work,
@@ -772,12 +894,16 @@ pub fn build_at_with(
     work: &Path,
     search: &HeaderSearch,
     environment: &HeaderEnv,
-) -> Result<Value, String> {
+) -> Result<Value, VkBuildError> {
     build_at_with_options_search(root, work, search, environment, &Options::default())
 }
 
 /// The same, with the optional SDKs (NVIDIA's DLSS, AMD's FSR 4 headers).
-pub fn build_at_with_options(root: &Path, work: &Path, options: &Options) -> Result<Value, String> {
+pub fn build_at_with_options(
+    root: &Path,
+    work: &Path,
+    options: &Options,
+) -> Result<Value, VkBuildError> {
     build_at_with_options_search(
         root,
         work,
@@ -793,20 +919,49 @@ pub fn build_at_with_options_search(
     search: &HeaderSearch,
     environment: &HeaderEnv,
     options: &Options,
-) -> Result<Value, String> {
-    if Platform::current() != Platform::Linux {
-        return Err(
-            "The Vulkan back end's Windows build is not ported to the Rust engine yet: use the Python builder \
-             (python -I nx2/build.py --standalone) for hookshot_vk.dll."
-                .into(),
-        );
-    }
+) -> Result<Value, VkBuildError> {
+    build_at_for(
+        Platform::current(),
+        root,
+        work,
+        search,
+        environment,
+        options,
+        None,
+    )
+}
+
+/// The same, for an explicit target. `toolchain` lets a test supply the
+/// llvm-mingw answer instead of this PC's; `None` discovers it as the host
+/// link does.
+fn build_at_for(
+    platform: Platform,
+    root: &Path,
+    work: &Path,
+    search: &HeaderSearch,
+    environment: &HeaderEnv,
+    options: &Options,
+    toolchain: Option<Result<crate::host_build::MingwToolchain, String>>,
+) -> Result<Value, VkBuildError> {
+    // (a Windows cross build must not put this PC's /usr/include in front of
+    // llvm-mingw's headers: Linux's stdio.h and stdint.h do not belong in a
+    // PE compile. Environment names and the CPM cache still supply them)
+    let cross_search;
+    let search = if platform == Platform::Windows && !search.system.is_empty() {
+        cross_search = HeaderSearch {
+            system: Vec::new(),
+            cpm: search.cpm.clone(),
+        };
+        &cross_search
+    } else {
+        search
+    };
     let headers = Headers::find(search, environment);
     let Some(roots) = headers.roots() else {
-        return Ok(skipped(&headers.missing()));
+        return Ok(skipped_for(platform, &headers.missing()));
     };
     // (NVIDIA's DLSS: the request's SDK folder, else HOOKSHOT_NGX_SDK)
-    let ngx = resolve_ngx(options.ngx.as_deref())?;
+    let ngx = resolve_ngx_for(options.ngx.as_deref(), platform)?;
     // (AMD's FSR 4: MIT headers in the tree; HOOKSHOT_FSR=0 leaves the stubs)
     let fsr = fsr_headers(root).filter(|_| {
         std::env::var("HOOKSHOT_FSR")
@@ -814,6 +969,38 @@ pub fn build_at_with_options_search(
             .as_deref()
             .is_none_or(|value| value != "0")
     });
+    // (the Windows DLL uses llvm-mingw's clang/clang++, found exactly as the
+    // Windows host link finds it; a missing one is a typed answer, not a
+    // Python fallback)
+    let (cc, cxx, link_cc, nm) = if platform == Platform::Windows {
+        let toolchain = match toolchain.unwrap_or_else(crate::host_build::find_windows_toolchain) {
+            Ok(toolchain) => toolchain,
+            Err(error) => {
+                return Err(VkBuildError::NoWindowsToolchain(format!(
+                    "the Windows Vulkan back end cannot be built: {error}"
+                )));
+            }
+        };
+        let cxx = toolchain
+            .clangxx
+            .clone()
+            .unwrap_or_else(|| toolchain.clang.clone());
+        let nm = toolchain.clang.parent().map(|bin| bin.join("llvm-nm"));
+        (
+            toolchain.clang.to_string_lossy().into_owned(),
+            cxx.to_string_lossy().into_owned(),
+            toolchain.clang.to_string_lossy().into_owned(),
+            nm.filter(|path| path.is_file()),
+        )
+    } else {
+        let cc = crate::toolchain::find("clang", false)
+            .to_string_lossy()
+            .into_owned();
+        let cxx = crate::toolchain::find("clang++", false)
+            .to_string_lossy()
+            .into_owned();
+        (cc.clone(), cxx.clone(), cxx, None)
+    };
     let vk = root.join("gpu/vk");
     let gpu = root.join("gpu");
     let zstd = root.join("third_party/zstd/lib");
@@ -834,12 +1021,6 @@ pub fn build_at_with_options_search(
     let fonts = gen_dir.join("ui_fonts.cpp");
     crate::ui_fonts::write(&fonts, root)?;
     let stamp = shader_stamp(root)?;
-    let cc = crate::toolchain::find("clang", false)
-        .to_string_lossy()
-        .into_owned();
-    let cxx = crate::toolchain::find("clang++", false)
-        .to_string_lossy()
-        .into_owned();
     let release = release_requested();
 
     // (the dependency blobs, as build.py groups them: Eden and sirit see only
@@ -910,7 +1091,7 @@ pub fn build_at_with_options_search(
         write_deps(path, text)?;
     }
 
-    let vflags = vk_flags(root, &gen_dir, &roots, release);
+    let vflags = vk_flags_for(platform, root, &gen_dir, &roots, release);
     let imflags = imgui_flags(root);
     let mut jobs = Vec::new();
     // (Dear ImGui's five objects)
@@ -934,7 +1115,7 @@ pub fn build_at_with_options_search(
         ));
     }
     // (zstd's decoder)
-    let zflags = zstd_flags();
+    let zflags = zstd_flags_for(platform);
     for name in ZSTD_DECODER {
         let src = zstd.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
         let obj = obj_dir.join(format!(
@@ -951,7 +1132,7 @@ pub fn build_at_with_options_search(
         &cxx,
         &fonts,
         &obj_dir.join("vk_ui_fonts.o"),
-        &ui_fonts_flags(),
+        &ui_fonts_flags_for(platform),
         Path::new(""),
         &cache,
     ));
@@ -1009,15 +1190,50 @@ pub fn build_at_with_options_search(
             &cache,
         ));
     }
-    // (the Win32 calls on POSIX)
-    jobs.push(job(
-        &cc,
-        &root.join("host/posix/win32_posix.c"),
-        &obj_dir.join("vk_posix_win32_posix.o"),
-        &posix_flags(root),
-        &posix_deps_file,
-        &cache,
-    ));
+    if platform == Platform::Windows
+        && let Some(sdk) = &ngx
+    {
+        // (llvm-mingw: NVIDIA's static library was built with Microsoft's
+        // compiler for its static runtime (/MT). vk_ngx_msvc_rt.cpp has its
+        // C++ parts, host/mingw_msvc_shims.c the C ones the static FFmpeg
+        // libraries share, as build.py compiles them)
+        let extra = windows_ngx_sources(root);
+        let mut shim_flags = vflags.clone();
+        shim_flags.extend(ngx_flags(sdk));
+        jobs.push(job(
+            &cxx,
+            &extra[0].1,
+            &obj_dir.join(extra[0].0),
+            &shim_flags,
+            &vdeps_file,
+            &cache,
+        ));
+        let mut mingw_flags = crate::host_build::mingw_target_flags();
+        mingw_flags.extend([
+            "-O2".to_owned(),
+            "-g0".to_owned(),
+            "-Wno-everything".to_owned(),
+        ]);
+        jobs.push(job(
+            &cc,
+            &extra[1].1,
+            &obj_dir.join(extra[1].0),
+            &mingw_flags,
+            Path::new(""),
+            &cache,
+        ));
+    }
+    if platform == Platform::Linux {
+        // (the Win32 calls on POSIX)
+        jobs.push(job(
+            &cc,
+            &root.join("host/posix/win32_posix.c"),
+            &obj_dir.join("vk_posix_win32_posix.o"),
+            &posix_flags(root),
+            &posix_deps_file,
+            &cache,
+        ));
+    }
 
     let mut compiled =
         crate::compile::many_json(&json!({"jobs": jobs, "cache": cache, "parallel": 0}), root)?;
@@ -1037,22 +1253,37 @@ pub fn build_at_with_options_search(
         .iter()
         .filter_map(|job| job["obj"].as_str().map(str::to_owned))
         .collect();
-    let library = build.join(Platform::Linux.vulkan_library());
-    let args = vec![
-        "-fuse-ld=lld".to_owned(),
-        "-shared".to_owned(),
-        "-o".to_owned(),
-        library.to_string_lossy().into_owned(),
-        "-Xlinker".to_owned(),
-        format!("-Map={}.map", library.display()),
-        "-Wl,-Bsymbolic".to_owned(),
-        "-Wl,--gc-sections".to_owned(),
-        "-static-libstdc++".to_owned(),
-        "-static-libgcc".to_owned(),
-    ];
-    let libs = link_libraries(ngx.as_deref());
+    let library = build.join(platform.vulkan_library());
+    let map = library.with_extension("map");
+    let args = if platform == Platform::Windows {
+        // (build.py's Windows link: llvm-mingw's native link flags, a DLL,
+        // and the crash map beside it)
+        let mut args = crate::host_build::mingw_target_flags();
+        args.extend(crate::host_build::mingw_link_flags());
+        args.extend([
+            "-shared".to_owned(),
+            "-o".to_owned(),
+            library.to_string_lossy().into_owned(),
+            format!("-Wl,-Xlink=/map:{}", map.display()),
+        ]);
+        args
+    } else {
+        vec![
+            "-fuse-ld=lld".to_owned(),
+            "-shared".to_owned(),
+            "-o".to_owned(),
+            library.to_string_lossy().into_owned(),
+            "-Xlinker".to_owned(),
+            format!("-Map={}.map", library.display()),
+            "-Wl,-Bsymbolic".to_owned(),
+            "-Wl,--gc-sections".to_owned(),
+            "-static-libstdc++".to_owned(),
+            "-static-libgcc".to_owned(),
+        ]
+    };
+    let libs = link_libraries_for(platform, ngx.as_deref());
     let link = crate::linker::link_json(&json!({
-        "cc": cxx,
+        "cc": link_cc,
         "out": library.to_string_lossy(),
         "objects": objects,
         "args": args,
@@ -1069,8 +1300,13 @@ pub fn build_at_with_options_search(
         }));
     }
     // (as build.py's check_vk_symbols: a symbol left for the loader means the
-    // DLL would not load, and the only sign at run time is a black window)
-    let undefined = crate::linker::undefined_symbols(&library)?;
+    // DLL would not load, and the only sign at run time is a black window.
+    // On Windows llvm-nm -u must be empty too: lld resolves every import)
+    let undefined = if platform == Platform::Windows {
+        crate::linker::undefined_symbols_pe(&library, nm.as_deref())?
+    } else {
+        crate::linker::undefined_symbols(&library)?
+    };
     if !undefined.is_empty() {
         return Ok(json!({
             "stage": "vulkan-symbols",
@@ -1087,7 +1323,9 @@ pub fn build_at_with_options_search(
     Ok(json!({
         "stage": "vulkan",
         "built": true,
+        "platform": if platform == Platform::Windows { "windows" } else { "linux" },
         "library": library.to_string_lossy(),
+        "map": map.to_string_lossy(),
         "size": size,
         "sources": sources(root)?.len(),
         "objects": objects.len(),
@@ -1478,6 +1716,156 @@ mod tests {
         let error = resolve_ngx(Some(&broken)).unwrap_err();
         assert!(error.contains("has no"), "{error}");
         assert!(error.contains("Unset HOOKSHOT_NGX_SDK"), "{error}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn windows_flags_follow_build_pys_windows_branch() {
+        let base = temp("windows-flags");
+        let headers = roots(&base);
+        let generated = base.join("work/sa/build/gen");
+        let flags = vk_flags_for(Platform::Windows, &base, &generated, &headers, false);
+        for wanted in [
+            "--target=x86_64-w64-mingw32",
+            "-fms-extensions",
+            "-D_CRT_SECURE_NO_WARNINGS",
+            "-std=c++20",
+            "-O2",
+            "-DNDEBUG",
+            "-Wno-everything",
+            "-DVK_NO_PROTOTYPES",
+            "-DMKWVK_BUILDING",
+            "-DMKWVK_INCLUDES=2",
+        ] {
+            assert!(flags.iter().any(|flag| flag == wanted), "{wanted} missing");
+        }
+        for unwanted in ["-fPIC", "-D_GNU_SOURCE"] {
+            assert!(!flags.iter().any(|flag| flag == unwanted), "{unwanted}");
+        }
+        assert!(
+            !flags
+                .iter()
+                .any(|flag| flag.contains("host/posix") || flag.contains("host\\posix")),
+            "the POSIX shim is Linux's"
+        );
+        assert!(flags.iter().any(|flag| flag.starts_with("-march=")));
+        // (zstd and the fonts use the same target, without -fPIC)
+        for flags in [
+            zstd_flags_for(Platform::Windows),
+            ui_fonts_flags_for(Platform::Windows),
+        ] {
+            assert!(
+                flags
+                    .iter()
+                    .any(|flag| flag == "--target=x86_64-w64-mingw32")
+            );
+            assert!(!flags.iter().any(|flag| flag == "-fPIC"));
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn windows_ngx_jobs_add_the_msvc_runtime_shims_and_their_libraries() {
+        let base = temp("windows-ngx");
+        let extra = windows_ngx_sources(&base);
+        assert_eq!(extra[0].0, "vk_ngx_msvc_rt.o");
+        assert_eq!(extra[0].1, base.join("gpu/vk/vk_ngx_msvc_rt.cpp"));
+        assert_eq!(extra[1].0, "vk_ngx_mingw_msvc_shims.o");
+        assert_eq!(extra[1].1, base.join("host/mingw_msvc_shims.c"));
+        // (the regular source list never compiles the NGX shim itself)
+        assert!(
+            !sources(&base)
+                .unwrap()
+                .iter()
+                .any(|path| path.ends_with("vk_ngx_msvc_rt.cpp"))
+        );
+
+        let sdk = base.join("sdk");
+        let library = crate::ngx_sdk::library(&sdk, crate::ngx_sdk::Platform::Windows);
+        let libs = link_libraries_for(Platform::Windows, Some(&sdk));
+        assert_eq!(
+            &libs[..3],
+            vec![
+                "-luser32".to_owned(),
+                "-lc++".to_owned(),
+                "-lunwind".to_owned()
+            ]
+        );
+        assert_eq!(PathBuf::from(&libs[3]), library);
+        assert_eq!(libs[4], "-ladvapi32");
+        assert!(libs[5].contains("/nodefaultlib:libcpmt"));
+        assert!(!libs.iter().any(|lib| lib == "-ldl"));
+        // (without DLSS, no NVIDIA library, advapi32 or libcpmt option)
+        assert_eq!(
+            link_libraries_for(Platform::Windows, None),
+            vec![
+                "-luser32".to_owned(),
+                "-lc++".to_owned(),
+                "-lunwind".to_owned()
+            ]
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_missing_windows_toolchain_is_a_typed_error() {
+        let base = temp("windows-no-toolchain");
+        let system = base.join("system");
+        for path in [
+            "include/vulkan/vulkan.h",
+            "include/spirv/unified1/spirv.h",
+            "include/vk_mem_alloc.h",
+        ] {
+            touch(&system.join(path));
+        }
+        // (the environment names the headers: this PC's /usr is not searched
+        // for a PE compile, so the system entry alone would be skipped)
+        let environment = HeaderEnv {
+            vulkan: Some(system.clone()),
+            spirv: Some(system.clone()),
+            vma: Some(system.clone()),
+        };
+        let search = HeaderSearch {
+            system: vec![system],
+            cpm: vec![],
+        };
+        let error = build_at_for(
+            Platform::Windows,
+            &base,
+            &base.join("work"),
+            &search,
+            &environment,
+            &Options::default(),
+            Some(Err("no llvm-mingw was found: test".into())),
+        )
+        .unwrap_err();
+        assert!(matches!(error, VkBuildError::NoWindowsToolchain(_)));
+        let message = error.to_string();
+        assert!(message.contains("llvm-mingw"), "{message}");
+        assert!(message.contains("test"), "{message}");
+        // (a header set the caller does not have is the same skip on Windows,
+        // not a crash or a Python fallback)
+        let missing = build_at_for(
+            Platform::Windows,
+            &base,
+            &base.join("work"),
+            &HeaderSearch {
+                system: vec![],
+                cpm: vec![],
+            },
+            &HeaderEnv::default(),
+            &Options::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(missing["built"], false);
+        assert_eq!(missing["reason"], "headers");
+        assert!(
+            missing["message"]
+                .as_str()
+                .unwrap()
+                .contains("hookshot_vk.dll")
+        );
         let _ = fs::remove_dir_all(base);
     }
 
