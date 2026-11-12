@@ -1833,6 +1833,18 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_dlss_frame_is_retried_and_a_menu_change_clears_the_latch() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let checks = fs::read_to_string(root.join("gpu/vk/dlss_checks.h")).unwrap();
+        let temporal = fs::read_to_string(root.join("gpu/vk/vk_temporal.cpp")).unwrap();
+        let menu = fs::read_to_string(root.join("gpu/vk/vk_menu.cpp")).unwrap();
+        assert!(checks.contains("(uint64_t)(w + 2) * 3 >= ow"));
+        assert!(temporal.contains("void temporal_reset_failure()"));
+        assert!(temporal.contains("if (engine.e->retry)"));
+        assert!(menu.contains("temporal_reset_failure();"));
+    }
+
+    #[test]
     fn backend_init_failures_name_their_step() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let main = fs::read_to_string(root.join("gpu/vk/vk_main.cpp")).unwrap();

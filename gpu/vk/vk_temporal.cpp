@@ -742,6 +742,15 @@ int temporal_status(char* b, size_t n) {
     return mode;
 }
 
+void temporal_reset_failure() {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    for (auto& k : s.engines) k.failed.store(false, std::memory_order_relaxed);
+    s.reason = nullptr;
+    s.reason_repeats = 0;
+    s.last_frame = 0;
+}
+
 void temporal_idle() {
     State& s = st();
     if (!s.holding.load(std::memory_order_relaxed)) return;
@@ -1008,6 +1017,10 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
              cam.far_z, cam.fov_y * 57.29578f);
     }
     if (!engine.e->evaluate(cmd, f)) {
+        if (engine.e->retry) {
+            s.last_frame = 0;
+            return fail("its evaluation failed this frame");
+        }
         logf("vk: %s: its evaluation failed: the game's upscale from now on", engine.e->name);
         engine.failed = true;
         return false;   // (the network writes its output over whatever the evaluation did)

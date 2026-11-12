@@ -68,6 +68,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
 /// engine's own state, the chain's images and deferred frees are let go, so their video memory comes back. Nothing to do
 /// costs one atomic load
 void temporal_idle();
+void temporal_reset_failure();
 
 /// For the renderer's status line (vk_replay.cpp status_tick): while an engine draws, its details since the last call into b
 /// ("; DLSS: jitter ..., actor motion ..., its images ... MB") and temporal_mode(); else 0 and b left alone
@@ -123,6 +124,9 @@ struct TemporalEngine {
     /// light, unclamped, and takes back linear; null or false: LDR colour, square-root encoded, clamped to 0..1 (an LDR
     /// engine fed more would misread it)
     bool (*hdr)() = nullptr;
+    /// (hookshot) An evaluation that fails is for that frame only (a new history next), not for good: DLSS after a transient
+    /// error; the menu's scaling rows clear a latched failure too
+    bool retry = false;
 };
 /// Runs f a few frames on, to free what work in flight may still use. Called by the engines with the chain's lock held
 void temporal_later(std::function<void()> f);
