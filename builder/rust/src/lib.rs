@@ -29,6 +29,7 @@ mod lz4;
 mod nso;
 mod nso_image;
 mod nup;
+mod oot_patches;
 mod orchestrate;
 mod package;
 mod platform;
