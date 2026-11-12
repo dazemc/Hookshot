@@ -10,6 +10,7 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 use super::cff;
 use super::cmap;
 use super::faces::{self, BIND_BASE, FACE_CODES, PAD_BASE, STATIC_AT};
+use super::keys;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
@@ -44,7 +45,7 @@ impl Bounds {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Command {
+pub(crate) enum Command {
     Move(f64, f64),
     Line(f64, f64),
     Curve(f64, f64, f64, f64, f64, f64),
@@ -101,7 +102,7 @@ fn extend(bounds: &mut Option<Bounds>, x: f64, y: f64) {
     });
 }
 
-fn bounds_of(commands: &[Command]) -> Option<Bounds> {
+pub(crate) fn bounds_of(commands: &[Command]) -> Option<Bounds> {
     let mut bounds: Option<Bounds> = None;
     let mut current = (0.0, 0.0);
     for command in commands {
@@ -445,6 +446,14 @@ struct NewGlyph {
 }
 
 fn transformed(target: &Outline, kenney: &Outline) -> Result<((f64, f64), f64, i32), String> {
+    transformed_scaled(target, kenney, 1.0)
+}
+
+fn transformed_scaled(
+    target: &Outline,
+    kenney: &Outline,
+    extra: f64,
+) -> Result<((f64, f64), f64, i32), String> {
     let gb = target
         .bounds()
         .ok_or_else(|| "font: a target glyph has no outline".to_string())?;
@@ -457,14 +466,14 @@ fn transformed(target: &Outline, kenney: &Outline) -> Result<((f64, f64), f64, i
     if kw <= 0.0 || kh <= 0.0 {
         return Err("font: a Kenney glyph has no width".into());
     }
-    let scale = (side * faces::WIDE / kw).min(side / kh);
+    let scale = extra * (side * faces::WIDE / kw).min(side / kh);
     let over = (scale * kw - side).max(0.0);
     let dx = (gb.xmin + gb.xmax + over) / 2.0 - scale * (kb.xmin + kb.xmax) / 2.0;
     let dy = (gb.ymin + gb.ymax) / 2.0 - scale * (kb.ymin + kb.ymax) / 2.0;
     Ok(((scale, dx), dy, py_round(over) as i32))
 }
 
-fn rounded_outline(commands: &[Command], scale: f64, dx: f64, dy: f64) -> Vec<Command> {
+pub(crate) fn rounded_outline(commands: &[Command], scale: f64, dx: f64, dy: f64) -> Vec<Command> {
     let mut out = Vec::with_capacity(commands.len());
     let mut current = (0.0, 0.0);
     for command in commands {
@@ -669,6 +678,16 @@ fn kenney_glyph(map: &HashMap<String, GlyphId>, face: &faces::Face, pad: &str) -
 
 /// The written font, and each face's advances for its pad icons.
 pub fn build(otf: &[u8], kenney: &Path) -> Result<(Vec<u8>, Vec<(String, Vec<u16>)>), String> {
+    build_with_label(otf, kenney, None)
+}
+
+/// As [`build`], with the game's bold font for the keyboard face's word keys
+/// (`keys::LABEL_FONT`; without it, Kenney's keys as before).
+pub fn build_with_label(
+    otf: &[u8],
+    kenney: &Path,
+    label: Option<&[u8]>,
+) -> Result<(Vec<u8>, Vec<(String, Vec<u16>)>), String> {
     let face = Face::parse(otf, 0).map_err(|e| format!("font: {e:?}"))?;
     let cff_data = face
         .raw_face()
@@ -791,6 +810,39 @@ pub fn build(otf: &[u8], kenney: &Path) -> Result<(Vec<u8>, Vec<(String, Vec<u16
         face_advances.push((spec.name.to_owned(), widths));
     }
 
+    // (the keyboard face: the Switch's pad icons, then each key's icon at
+    // KEY_BASE + its code, the sticks' at STICK_KEYS and STICK_GAME, and a
+    // placeholder for each live text code; nx2/prompt_keys.py)
+    let keyboard_face = faces::NAMES.len() as u16 - 1;
+    let keyboard_base = PAD_BASE + FACE_CODES * keyboard_face;
+    for (i, pad) in faces::PADS.iter().enumerate() {
+        let code = faces::switch_icon(pad).unwrap();
+        let gid = game
+            .cmap
+            .iter()
+            .find(|(c, _)| *c == code)
+            .map(|(_, gid)| *gid)
+            .ok_or_else(|| format!("font: the game's cmap has no U+{code:04X}"))?;
+        placed.insert(keyboard_base + i as u16, gid);
+    }
+    for (k, (code, _)) in faces::STATIC.iter().enumerate() {
+        if let Some((_, gid)) = game.cmap.iter().find(|(c, _)| c == code) {
+            placed.insert(keyboard_base + STATIC_AT + k as u16, *gid);
+        }
+    }
+    place_bindings(&mut placed, keyboard_face, keyboard_base);
+    let keyboard_base_expected = PAD_BASE + FACE_CODES * faces::NAMES.len() as u16;
+    if keyboard_base_expected != keys::KEY_BASE {
+        return Err(format!(
+            "font: the keyboard face's keys at U+{keyboard_base_expected:04X}, not builder/rust/src/prompts/keys.rs's U+{:04X}",
+            keys::KEY_BASE
+        ));
+    }
+    let (keyboard_placed, keyboard_widths) =
+        keyboard_glyphs(&game, &mut new_glyphs, old_glyphs, kenney, label)?;
+    placed.extend(keyboard_placed);
+    face_advances.push(("keyboard".to_owned(), keyboard_widths));
+
     let bbox = game
         .outlines
         .iter()
@@ -841,6 +893,210 @@ pub fn build(otf: &[u8], kenney: &Path) -> Result<(Vec<u8>, Vec<(String, Vec<u16
     Ok((sfnt.write()?, face_advances))
 }
 
+fn push_new(
+    new_glyphs: &mut Vec<NewGlyph>,
+    old_glyphs: usize,
+    name: String,
+    commands: Vec<Command>,
+    width: u16,
+) -> Result<u16, String> {
+    let bounds = bounds_of(&commands).ok_or_else(|| format!("font: {name} has no outline"))?;
+    let gid = (old_glyphs + new_glyphs.len()) as u16;
+    new_glyphs.push(NewGlyph {
+        name,
+        commands,
+        width,
+        bounds,
+    });
+    Ok(gid)
+}
+
+/// The keyboard face's glyphs: each key's icon at `KEY_BASE` + its code, the
+/// sticks' at `STICK_KEYS`/`STICK_GAME`, and a Switch A placeholder for each
+/// live text code (`SLOT_BASE`; the host points each at its key when it gives
+/// it out). `label`: the game's bold font, when the romfs has it.
+fn keyboard_glyphs(
+    game: &GameFont,
+    new_glyphs: &mut Vec<NewGlyph>,
+    old_glyphs: usize,
+    kenney: &Path,
+    label: Option<&[u8]>,
+) -> Result<(BTreeMap<u16, u16>, Vec<u16>), String> {
+    let target_gid = game
+        .cmap
+        .iter()
+        .find(|(code, _)| *code == keys::TARGET)
+        .map(|(_, gid)| *gid)
+        .ok_or_else(|| format!("font: the game's cmap has no U+{:04X}", keys::TARGET))?;
+    let target = &game.outlines[target_gid as usize];
+    let target_bounds = target
+        .bounds()
+        .ok_or_else(|| "font: the game's A has no outline".to_string())?;
+    let target_advance = game.advances[target_gid as usize];
+
+    let keyboard_kenney = kenney
+        .parent()
+        .map(|third_party| third_party.join("kenney_input_keyboard"))
+        .unwrap_or_else(|| kenney.join("kenney_input_keyboard"));
+    let path = keyboard_kenney.join(keys::FONT);
+    let keyboard_bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let keyboard_face =
+        Face::parse(&keyboard_bytes, 0).map_err(|e| format!("{}: {e:?}", path.display()))?;
+    let mut koutlines: Vec<Outline> = Vec::new();
+    for gid in 0..keyboard_face.number_of_glyphs() {
+        let mut outline = Outline::default();
+        keyboard_face.outline_glyph(GlyphId(gid), &mut outline);
+        koutlines.push(outline);
+    }
+    let kmap: HashMap<String, GlyphId> = (0..keyboard_face.number_of_glyphs())
+        .filter_map(|gid| {
+            keyboard_face
+                .glyph_name(GlyphId(gid))
+                .map(|name| (name.to_owned(), GlyphId(gid)))
+        })
+        .collect();
+    let label_font = label.and_then(|bytes| keys::LabelFont::parse(bytes).ok());
+
+    let mut placed = BTreeMap::new();
+    let mut widths = vec![0u16; 256];
+    for code in 1..=255u8 {
+        let name = format!("key_{code:02x}");
+        let mut drawn: Option<u16> = None;
+        if let Some(which) = keys::mouse(code) {
+            let commands = keys::mouse_glyph(which, target_bounds);
+            drawn = Some(push_new(
+                new_glyphs,
+                old_glyphs,
+                name.clone(),
+                commands,
+                target_advance,
+            )?);
+        } else if let (Some(font), Some(text)) = (label_font.as_ref(), keys::label(code))
+            && let Some((commands, over)) = keys::word_key(text, target_bounds, font)
+        {
+            let width = target_advance as i32 + py_round(over) as i32;
+            if !(0..=u16::MAX as i32).contains(&width) {
+                return Err(format!("font: key {code:02X} is wider than a glyph may be"));
+            }
+            drawn = Some(push_new(
+                new_glyphs,
+                old_glyphs,
+                name.clone(),
+                commands,
+                width as u16,
+            )?);
+        }
+        if drawn.is_none()
+            && let Some(kname) = keys::kenney_name(code)
+            && let Some(kgid) = kmap.get(&kname)
+        {
+            let ((scale, dx), dy, over) =
+                transformed_scaled(target, &koutlines[kgid.0 as usize], 1.0)?;
+            let commands = merge_axis_lines(rounded_outline(
+                &koutlines[kgid.0 as usize].commands,
+                scale,
+                dx,
+                dy,
+            ));
+            let width = target_advance as i32 + over;
+            if !(0..=u16::MAX as i32).contains(&width) {
+                return Err(format!("font: key {code:02X} is wider than a glyph may be"));
+            }
+            drawn = Some(push_new(
+                new_glyphs,
+                old_glyphs,
+                name.clone(),
+                commands,
+                width as u16,
+            )?);
+        }
+        let Some(gid) = drawn else { continue };
+        placed.insert(keys::KEY_BASE + u16::from(code), gid);
+        widths[code as usize] = advance(gid, old_glyphs, &game.advances, new_glyphs);
+    }
+
+    let mut stick_glyphs: HashMap<String, u16> = HashMap::new();
+    for (i, icon) in keys::STICKS.iter().enumerate() {
+        let game_gid = game
+            .cmap
+            .iter()
+            .find(|(code, _)| *code == icon.code)
+            .map(|(_, gid)| *gid)
+            .ok_or_else(|| format!("font: the game's cmap has no U+{:04X}", icon.code))?;
+        placed.insert(keys::STICK_GAME + i as u16, game_gid);
+        let gid = if icon.stick == keys::Stick::Cam {
+            let kn = if icon.ways.len() == 4 {
+                "mouse_move"
+            } else if icon.ways.starts_with('l') || icon.ways.starts_with('r') {
+                "mouse_horizontal"
+            } else {
+                "mouse_vertical"
+            };
+            let name = format!("stick_{kn}");
+            match stick_glyphs.get(&name).copied() {
+                Some(gid) => gid,
+                None => match kmap.get(kn) {
+                    Some(kgid) => {
+                        let ((scale, dx), dy, over) =
+                            transformed_scaled(target, &koutlines[kgid.0 as usize], 1.2)?;
+                        let commands = merge_axis_lines(rounded_outline(
+                            &koutlines[kgid.0 as usize].commands,
+                            scale,
+                            dx,
+                            dy,
+                        ));
+                        let width = target_advance as i32 + over;
+                        if !(0..=u16::MAX as i32).contains(&width) {
+                            return Err("font: a mouse icon is wider than a glyph may be".into());
+                        }
+                        let gid =
+                            push_new(new_glyphs, old_glyphs, name.clone(), commands, width as u16)?;
+                        stick_glyphs.insert(name, gid);
+                        gid
+                    }
+                    None => game_gid,
+                },
+            }
+        } else if icon.ways.len() == 1 {
+            keys::move_key(icon.ways.chars().next().unwrap_or(' '))
+                .and_then(|code| placed.get(&(keys::KEY_BASE + u16::from(code))).copied())
+                .unwrap_or(game_gid)
+        } else if let Some(font) = label_font.as_ref()
+            && let Some((name, commands, over)) = keys::stick_label(font, icon.ways, target_bounds)
+        {
+            match stick_glyphs.get(&name).copied() {
+                Some(gid) => gid,
+                None => {
+                    let width = target_advance as i32 + py_round(over) as i32;
+                    if !(0..=u16::MAX as i32).contains(&width) {
+                        return Err("font: a stick label is wider than a glyph may be".into());
+                    }
+                    let gid =
+                        push_new(new_glyphs, old_glyphs, name.clone(), commands, width as u16)?;
+                    stick_glyphs.insert(name, gid);
+                    gid
+                }
+            }
+        } else {
+            game_gid
+        };
+        placed.insert(keys::STICK_KEYS + i as u16, gid);
+    }
+
+    // (host/prompts.c points each given-out slot at its key's icon; until
+    // then, a slot is the game's A)
+    let a_gid = game
+        .cmap
+        .iter()
+        .find(|(code, _)| *code == faces::SWITCH[0])
+        .map(|(_, gid)| *gid)
+        .ok_or_else(|| "font: the game's cmap has no A".to_string())?;
+    for i in 0..keys::SLOTS {
+        placed.insert(keys::SLOT_BASE + i as u16, a_gid);
+    }
+    Ok((placed, widths))
+}
+
 fn place_bindings(placed: &mut BTreeMap<u16, u16>, face: u16, base: u16) {
     for button in 0..faces::SWITCH.len() as u16 {
         for (input, _) in faces::PADS.iter().enumerate() {
@@ -865,11 +1121,15 @@ fn cmap_bytes(old: &[(u16, u16)], placed: &BTreeMap<u16, u16>) -> Vec<u8> {
     for (code, gid) in placed {
         mapping.insert(*code, *gid);
     }
-    let single = faces::SWITCH
+    let mut single = faces::SWITCH
         .iter()
         .copied()
         .chain(faces::STATIC.iter().map(|(code, _)| *code))
         .collect::<Vec<_>>();
+    // (the host points each of these at the keyboard's or the game's icon;
+    // each needs a segment of its own for its idDelta)
+    single.extend(keys::STICKS.iter().map(|icon| icon.code));
+    single.extend((0..keys::SLOTS as u16).map(|i| keys::SLOT_BASE + i));
     cmap::cmap4(&mapping.into_iter().collect::<Vec<_>>(), &single)
 }
 
@@ -960,6 +1220,7 @@ mod tests {
             .iter()
             .map(|(_, code)| *code)
             .chain(faces::STATIC.iter().map(|(code, _)| *code))
+            .chain(keys::STICKS.iter().map(|icon| icon.code))
             .collect::<Vec<_>>();
         codes.sort_unstable();
         let glyphs = codes.len() + 1;
@@ -1077,13 +1338,32 @@ mod tests {
         let otf = fixture();
         let kenney = crate::kit::root().join("third_party/kenney_input");
         let (font, widths) = build(&otf, &kenney).unwrap();
-        assert_eq!(widths.len(), 5);
+        assert_eq!(widths.len(), 6);
         assert_eq!(widths[0].0, "switch");
         assert_eq!(widths[0].1.len(), faces::PADS.len());
+        assert_eq!(widths[5].0, "keyboard");
+        assert_eq!(widths[5].1.len(), 256);
         let face = Face::parse(&font, 0).unwrap();
         assert!(face.number_of_glyphs() > 21);
         assert!(face.glyph_index('\u{F700}').is_some());
         assert!(face.glyph_index('\u{F000}').is_some());
+        assert!(
+            face.glyph_index('\u{F7C1}').is_some(),
+            "a key's icon (the mouse's left)"
+        );
+        assert!(face.glyph_index('\u{EEC0}').is_some(), "a live text slot");
+        assert!(
+            face.glyph_index('\u{F8C0}').is_some(),
+            "the keyboard's sticks"
+        );
+        assert!(face.glyph_index('\u{F8D0}').is_some(), "the game's sticks");
+        assert_eq!(
+            face.glyph_index('\u{EEC0}'),
+            face.glyph_index('\u{E040}'),
+            "a slot starts as the game's A"
+        );
+        assert!(widths[5].1[0x45] > 0, "the key E has an icon width");
+        assert_eq!(widths[5].1[0x07], 0, "a key with no icon has no width");
         let cff = face
             .raw_face()
             .table(ttf_parser::Tag::from_bytes(b"CFF "))
@@ -1110,14 +1390,21 @@ mod tests {
         let dictionary = crate::prompts::zs::zs_dictionary(romfs).unwrap();
         let packed = crate::prompts::zs::read_zs(romfs, crate::prompts::FONT, &dictionary).unwrap();
         let (_, otf) = crate::prompts::bfotf::unwrap(&packed).unwrap();
+        let label =
+            crate::prompts::zs::read_zs(romfs, crate::prompts::keys::LABEL_FONT, &dictionary)
+                .ok()
+                .and_then(|packed| crate::prompts::bfotf::unwrap(&packed).ok())
+                .map(|(_, otf)| otf);
         let kenney = crate::kit::root().join("third_party/kenney_input");
-        let (font, widths) = build(&otf, &kenney).unwrap();
+        let (font, widths) = build_with_label(&otf, &kenney, label.as_deref()).unwrap();
         assert!(font.len() > otf.len());
-        assert_eq!(widths.len(), 5);
+        assert_eq!(widths.len(), 6);
         assert_eq!(widths[0].0, "switch");
+        assert_eq!(widths[5].0, "keyboard");
         let face = Face::parse(&font, 0).unwrap();
         assert!(face.number_of_glyphs() > 261);
         assert!(face.glyph_index('\u{F700}').is_some());
+        assert!(face.glyph_index('\u{F7C1}').is_some());
         let output = std::env::var_os("HOOKSHOT_TEST_FONT_OUT");
         if let Some(path) = output {
             std::fs::write(path, &font).unwrap();

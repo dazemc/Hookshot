@@ -1,6 +1,7 @@
-//! The button-prompt assets of other controllers (`nx2/prompt_assets.py`):
-//! the game's icon font redrawn per controller face, and the layouts and
-//! textures the game's button icons live in. Nothing is called out to Python.
+//! The button-prompt assets of other controllers and the keyboard
+//! (`nx2/prompt_assets.py`): the game's icon font redrawn per controller
+//! face, the keyboard's keys, and the layouts and textures the game's button
+//! icons live in. Nothing is called out to Python.
 
 use std::path::Path;
 
@@ -12,6 +13,7 @@ pub mod cff;
 pub mod cmap;
 pub mod faces;
 pub mod font;
+pub mod keys;
 pub mod layout;
 pub mod raster;
 pub mod restbl;
@@ -46,7 +48,8 @@ pub struct Written {
 /// prompts, as before.
 pub fn build(romfs: &Path, out: &Path) -> Result<Written, String> {
     let kenney = crate::kit::root().join("third_party/kenney_input");
-    let inputs = match cache::inputs(romfs, &kenney) {
+    let kenney_keyboard = crate::kit::root().join("third_party/kenney_input_keyboard");
+    let inputs = match cache::inputs(romfs, &kenney, &kenney_keyboard) {
         Ok(inputs) => inputs,
         Err(error) => {
             remove(out);
@@ -105,7 +108,7 @@ pub fn build(romfs: &Path, out: &Path) -> Result<Written, String> {
         return Err("prompts: incomplete generated output".to_owned());
     }
     // (certify only output made from the inputs it was started with)
-    match cache::inputs(romfs, &kenney) {
+    match cache::inputs(romfs, &kenney, &kenney_keyboard) {
         Ok(again) if again == inputs => {
             if let Err(error) = cache::write_outputs(&new, &inputs, &written, &outputs) {
                 reason = format!("{reason}; not stamped: {error}");
@@ -150,7 +153,13 @@ fn generate(romfs: &Path, out: &Path) -> Result<Written, String> {
     let game_font = zs::read_zs(romfs, FONT, &dictionary)?;
     let (key, otf) = bfotf::unwrap(&game_font)?;
     let kenney = crate::kit::root().join("third_party/kenney_input");
-    let (font, widths) = font::build(&otf, &kenney)?;
+    // (the game's bold font for the keyboard face's word keys: optional, so
+    // an install without it keeps Kenney's keys)
+    let label = zs::read_zs(romfs, keys::LABEL_FONT, &dictionary)
+        .ok()
+        .and_then(|packed| bfotf::unwrap(&packed).ok())
+        .map(|(_, otf)| otf);
+    let (font, widths) = font::build_with_label(&otf, &kenney, label.as_deref())?;
     let wrapped = bfotf::wrap(key, &font);
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let font_path = out.join("External.bfotf");
@@ -232,7 +241,10 @@ mod tests {
         if let Some(out) = std::env::var_os("HOOKSHOT_TEST_PROMPTS_OUT") {
             let written = build(&romfs, Path::new(&out)).unwrap();
             assert!(written.size_table);
-            assert_eq!(written.faces, ["switch", "xbox", "ps4", "ps5", "steamdeck"]);
+            assert_eq!(
+                written.faces,
+                ["switch", "xbox", "ps4", "ps5", "steamdeck", "keyboard"]
+            );
             assert!(Path::new(&out).join("External.bfotf").is_file());
             assert!(Path::new(&out).join("rsizetable.zs").is_file());
         }
