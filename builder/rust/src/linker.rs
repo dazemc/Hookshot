@@ -29,6 +29,53 @@ fn nm() -> Option<PathBuf> {
 
 /// Undefined, non-weak symbols that are not the C/C++ runtime's: what
 /// dlopen(RTLD_NOW) would refuse.
+/// A PE DLL's undefined symbols from `llvm-nm -u`: llvm-mingw's lld resolves
+/// every import, so a non-empty list means the DLL would not load.
+pub fn undefined_symbols_pe(
+    shared_object: &Path,
+    nm: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    let nm = match nm.filter(|path| path.is_file()) {
+        Some(nm) => nm.to_path_buf(),
+        None => match nm_from_mingw(shared_object) {
+            Some(nm) => nm,
+            None => return Ok(Vec::new()),
+        },
+    };
+    let output = Command::new(&nm)
+        .args(["-u"])
+        .arg(shared_object)
+        .output()
+        .map_err(|e| format!("{}: {e}", nm.display()))?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix('U')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        })
+        .collect())
+}
+
+/// llvm-nm beside a DLL built by a toolchain a caller did not name: the DLL's
+/// folder is not it, so fall back to the PATH's llvm-nm.
+fn nm_from_mingw(_shared_object: &Path) -> Option<PathBuf> {
+    for name in ["llvm-nm", "x86_64-w64-mingw32-nm"] {
+        if let Some(path) = crate::toolchain::find(name, true)
+            .to_str()
+            .filter(|path| Path::new(path).is_file())
+        {
+            return Some(PathBuf::from(path));
+        }
+    }
+    None
+}
+
 pub fn undefined_symbols(shared_object: &Path) -> Result<Vec<String>, String> {
     let Some(nm) = nm() else {
         return Ok(Vec::new());

@@ -82,21 +82,6 @@ void main() {
   });
 
   group('DLSS', () {
-    test('a Windows DLSS build is a typed error, not a Python fallback', () {
-      expect(
-        () => requireDlssSupported(dlss: true, windows: true),
-        throwsA(isA<DlssBuildUnsupported>()),
-      );
-      expect(
-        () => requireDlssSupported(dlss: true, windows: false),
-        returnsNormally,
-      );
-      expect(
-        () => requireDlssSupported(dlss: false, windows: true),
-        returnsNormally,
-      );
-    });
-
     test('the SDK folder follows each platform', () {
       expect(
         dlssSdkDir(

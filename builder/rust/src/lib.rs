@@ -187,7 +187,8 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "out").unwrap_or_default(),
         )
         .map_err(String::from),
-        "build.vk" => vk_build::build_json(&string(&request, "work").unwrap_or_default()),
+        "build.vk" => vk_build::build_json(&string(&request, "work").unwrap_or_default())
+            .map_err(String::from),
         "build.cpu" => host::check_json(),
         "build.jobs" => {
             let given = request

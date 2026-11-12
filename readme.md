@@ -65,9 +65,10 @@ saves, diagnostics, gamescope options) and runs `hookshot_engine --stream` for a
 
 A game build started from the Flutter app on Linux runs no Python, DLSS included: the `.nup` read, lift, patches,
 compile, host link, package, Vulkan backend, NVIDIA's DLSS SDK and its NGX-enabled link, AMD's FSR 4 flags and shader
-preparation are Rust. It can reuse the AppImage's prebuilt Vulkan renderer (`HOOKSHOT_VK_PREBUILT`), except for a DLSS
-build, which compiles its own backend. The AppImage itself, the Windows package, the Windows Vulkan DLL, and the
-button-prompt textures are the parts still on the Python path or in progress.
+preparation are Rust, on Windows too: with llvm-mingw the engine cross-builds `hookshot_vk.dll`, links NVIDIA's NGX
+library and packages both of its runtimes. It can reuse the AppImage's prebuilt Vulkan renderer (`HOOKSHOT_VK_PREBUILT`),
+except for a DLSS build, which compiles its own backend. The AppImage itself, the Windows package, and the button-prompt
+textures are the parts still on the Python path or in progress.
 
 The older Tk and WPF builder sources remain in the tree for the release pipeline. They are not the build path this
 README documents.
@@ -107,7 +108,7 @@ gains; those numbers are not in this table until it merges.
 | Lift and OoT changes | Python lift; patches through a Python bridge | Rust lift with jump tables and a per-function cache; native patch table and after-sites |
 | Compile and object cache | Python `nx2/build.py` | Rust `build.compile_many` with a content-addressed object cache |
 | Windows host link | Python `nx2/build.py` | Rust `build.host_link`: llvm-mingw, the same host sources/flags/libraries, content-keyed objects, UTF-8 response files and DLL staging; cross-built with stub objects, not yet a real game link |
-| Vulkan backend | Python `nx2/build.py` | Rust `build.vk`: the same 195 sources, 212 jobs, content-addressed objects and a symbol check; NVIDIA's NGX/DLSS link and AMD's vendored FSR 4 flags are ported for Linux, the Windows Vulkan DLL is not |
+| Vulkan backend | Python `nx2/build.py` | Rust `build.vk`: the same 195 sources, 212/213 jobs, content-addressed objects and a symbol check; NVIDIA's NGX/DLSS link and AMD's vendored FSR 4 flags are ported for Linux and Windows, the Windows DLL through llvm-mingw |
 | Button prompts | Python `nx2/prompt_assets.py` | Rust package step: the font, layouts, ring, hints and size table; the prompt textures are not ported |
 | Shaders | Python census and prepare stages | Rust `build.shaders`, and prepare inside `build.all` |
 | Updates | `make_game.py --update` | Rust `build.all` from the folder's kept `.hookshot_exefs` and `romfs` |
@@ -125,7 +126,7 @@ gains; those numbers are not in this table until it merges.
 | Compile and object cache | `build.compile_many`, `build.compile_one` | content-addressed objects; 66/66 cached in the end-to-end run |
 | Host link (Linux) | `build.host_link` | `nx2/build.py`'s Linux source list and link line |
 | Host link (Windows) | `build.host_link` | llvm-mingw, the same host sources, flags and libraries as `nx2/build.py`, content-keyed objects, UTF-8 response files, PE manifest/map/stack, and SDL, wgpu-native and FFmpeg DLLs staged beside the executable |
-| Vulkan backend (Linux) | `build.vk` | the same 195 sources as `nx2/build.py`, 212 jobs, content-addressed objects and an exported-symbol check; with `HOOKSHOT_NGX_SDK` (or a request's `ngx`) `vk_dlss.cpp` sees NVIDIA's headers and the static library is linked, and `third_party/fidelityfx` turns on FSR 4 in `vk_fsr4.cpp`; the Windows Vulkan DLL is not ported |
+| Vulkan backend (Linux and Windows) | `build.vk` | the same 195 sources as `nx2/build.py`, 212 jobs on Linux and 213 on Windows with NGX, content-addressed objects and an exported-symbol check; with `HOOKSHOT_NGX_SDK` (or a request's `ngx`) `vk_dlss.cpp` sees NVIDIA's headers and the static library is linked, `third_party/fidelityfx` turns on FSR 4 in `vk_fsr4.cpp`, and the Windows llvm-mingw build adds `vk_ngx_msvc_rt.cpp` and `mingw_msvc_shims.c` |
 | Package | `build.package` | stages the executable, image, romfs, shader list and language |
 | Button prompts | `build.package` | writes `prompts/External.bfotf`, `Common.blarc`, `ring.bin`, all five `hint.bin` and `rsizetable.zs` from the game's files; no Python |
 | Shader census | `build.shaders` | writes `hookshot_shaders.bin` |
@@ -133,7 +134,7 @@ gains; those numbers are not in this table until it merges.
 | Builder services | `profiles.*`, `diagnostics`, `gamescope.command`, `build.cpu`, `build.toolchain`, `build.jobs`, `build.check`, `version.describe` | profiles list/add/rename/remove/export; diagnostics; gamescope; CPU, jobs and toolchain checks |
 | Saves | `saves.list`, `saves.import` | the app's save scan and import: emulator layouts, profile ids, backup to `oot-save-backups`, running-game and NX2navi guards, rollback |
 | Updates | `build.all` from `.hookshot_exefs` and `romfs` | a built folder keeps the game files an update needs |
-| DLSS | `build.all` with `dlss`, `build.ngx_fetch`, `build.ngx_install` | the SDK's headers, library and runtime, each checked against its SHA-256; the Linux backend is compiled and linked with NGX and DLSS's runtime is packaged in `<game folder>/ngx`. Frame Generation's runtime and the Windows DLL are in progress |
+| DLSS | `build.all` with `dlss`, `build.ngx_fetch`, `build.ngx_install` | the SDK's headers, library and both runtimes, each checked against its SHA-256; either backend is compiled and linked with NGX, and DLSS's and DLSS Frame Generation's runtimes are packaged in `<game folder>/ngx` |
 
 The prompt font is semantically identical to Python's, not byte-identical: the glyphs, outlines, cmap and hmtx match,
 while the CFF layout differs (37,360 bytes against Python's 33,452). `Common.blarc`, `ring.bin` and all five `hint.bin`
@@ -144,8 +145,6 @@ are byte-identical; `rsizetable.zs` has the same content with a different compre
 
 | Part | What runs today | Status |
 |---|---|---|
-| Windows DLSS build | The DLSS build stage is Rust on Linux: the SDK fetch, NGX compile and link, and the runtime in the game folder's `ngx`. Windows needs `hookshot_vk.dll`, which the Rust engine does not build yet. | in progress |
-| Windows Vulkan DLL | The Rust engine links the Windows host, but `build.vk` still links only the Linux `hookshot_vk.so`; the Windows `hookshot_vk.dll` is still `nx2/build.py`'s. | in progress |
 | Prompt textures | The package writes the font, layouts, ring, hints and size table; `Common.bntx` and `prompts/<face>/textures.bin` are not generated, so the game keeps its own button textures. | not ported |
 | Release and AppImage packaging | `scripts/linux/appimage.sh`, `scripts/release_parts.py`, `scripts/make_setup_parts.py`; the AppImage still launches the Tk builder and the Windows package is still the .NET builder's. | not ported |
 
@@ -154,8 +153,6 @@ Flutter itself calls no Python. A build or update with no Rust engine stops with
 
 ### Still to come
 
-- Windows Vulkan DLL linking in Rust, and with it the Windows DLSS build (the Linux NGX/DLSS and FSR 4 flags are in).
-- DLSS Frame Generation's runtime beside DLSS's in `<game folder>/ngx`, on both platforms.
 - The prompt textures: `Common.bntx` and `prompts/<face>/textures.bin`.
 - A Windows boot test of the cross-built host and a real game link; the VM is prepared but not started while builds run.
 - Release, AppImage and Windows packaging in the new builder.
@@ -164,8 +161,8 @@ Flutter itself calls no Python. A build or update with no Rust engine stops with
   branch the cached full lift measured 50.8 → 15.05 s, `.nup` read 94 → 46 s and shader census 4.02 → 3.08 s, with
   byte-identical output; it is not merged, so the table above is the verified baseline.
 
-The release/AppImage packaging still uses Python. Everything in a Linux Flutter game build is Rust, DLSS included,
-and Flutter does not invoke Python; the prompt textures are the one asset it does not write.
+The release/AppImage packaging still uses Python. Everything else in a Flutter game build is Rust on Linux and
+Windows, DLSS included, and Flutter does not invoke Python; the prompt textures are the one asset it does not write.
 
 ## Project status
 
@@ -308,8 +305,8 @@ exefs is in `.hookshot_exefs` and the romfs is the folder's `romfs`.
 
 From the Flutter builder, an update runs the Rust engine's `build.all` with those two folders. A folder built before
 the builder kept them has no copy to update from: it shows an error asking for the game files once, and building into
-the same folder again fixes it. Folders built with NVIDIA DLSS update through the same Rust path on Linux (the tick
-also fetches the SDK again, or reuses its files). The release AppImage's `--update <game folder>` also still takes its
+the same folder again fixes it. Folders built with NVIDIA DLSS update through the same Rust path on Linux and Windows
+(the tick also fetches the SDK again, or reuses its files). The release AppImage's `--update <game folder>` also still takes its
 old path until the packaging port lands. From the command line, the same update is a `build.all` request with `exefs` = `<folder>/.hookshot_exefs`,
 `romfs` = `<folder>/romfs`, and `out` = the folder.
 
@@ -802,9 +799,10 @@ machine these measurements were made on, the SPIR-V and VMA headers are in `buil
 It discovers the same 195 sources as `nx2/build.py`, compiles 212 jobs, caches objects by content and checks the
 exported symbols. The AppImage's `AppRun` sets `HOOKSHOT_VK_PREBUILT` to its own `hookshot_vk.so`, so an AppImage build
 reuses it. If the Vulkan, SPIR-V or VMA headers are missing, the engine says so and still writes the folder without a
-renderer; install the headers, set `HOOKSHOT_*_HEADERS`, or use a CPM cache via `RX_CPM`. The Windows Vulkan DLL link is
-not ported. With `dlss` the engine fetches NVIDIA's SDK when it is missing, compiles `hookshot_vk.so` with NGX, links
-NVIDIA's static library and puts DLSS's runtime in `<out>/ngx`; `HOOKSHOT_NGX_SDK` alone turns that on too, as in
+renderer; install the headers, set `HOOKSHOT_*_HEADERS`, or use a CPM cache via `RX_CPM`. With `RX_TARGET=windows` and
+`HOOKSHOT_MINGW` set, the same stage cross-builds `hookshot_vk.dll` and checks the PE's imports. With `dlss` the engine
+fetches NVIDIA's SDK when it is missing, compiles the platform's backend with NGX, links NVIDIA's static library and
+puts DLSS's and DLSS Frame Generation's runtimes in `<out>/ngx`; `HOOKSHOT_NGX_SDK` alone turns that on too, as in
 `build.py`. AMD's FSR 4 headers in `third_party/fidelityfx` (MIT) are compiled in whenever they are present
 (`HOOKSHOT_FSR=0` leaves the stubs).
 
@@ -838,11 +836,12 @@ executable: 192 host objects compiled, 0 failed, link ok, 0 undefined symbols; `
 stack reserve and a UTF-8 manifest. That cross-build used scratch lifted code and FFmpeg stubs, not a real game link.
 
 No Windows boot has been made yet. A real game executable still needs the game's lifted objects and a Windows FFmpeg
-build, and `hookshot_vk.dll` (the Windows Vulkan backend) is not built by the Rust engine; only the Linux
-`hookshot_vk.so` is. A DLSS build on Windows therefore stops with a typed error in the Flutter app rather than falling
-back to `make_game.py`; the Python path below still builds one. A Windows VM is available for the boot test, but it is
-deliberately not started while builds run; the verification steps are prepared. Until that run, a Windows game build
-and gameplay are not verified. For a complete Windows build today, use the Python path below.
+build. `build.vk` now cross-builds the Windows `hookshot_vk.dll` too, with NGX and both DLSS runtimes when a DLSS build
+asks for it; a cross-built DLL was checked as PE32+ with no undefined symbols. A DLSS build on Windows goes through the
+same Rust `build.all` as Linux; a missing llvm-mingw or Vulkan/SPIR-V/VMA headers returns the engine's specific error,
+never a Python fallback. A Windows VM is available for the boot test, but it is deliberately not started while builds
+run; the verification steps are prepared. Until that run, a Windows game build and gameplay are not verified. For the
+release packaging, use the Python path below.
 
 You need [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), unpacked as `llvm-mingw` in the
 clone or with `HOOKSHOT_MINGW` set to its folder. Without it the Python path uses the clang from
@@ -887,9 +886,9 @@ from the command line, set them before you run `make_game.py`:
 
 Unpack llvm-mingw's Linux build (`ucrt-ubuntu-22.04-x86_64`), then run `make_game.py` with `RX_TARGET=windows` and
 `HOOKSHOT_MINGW` set to its folder. The objects go to `~/.cache/hookshot-builder-windows`, apart from the Linux
-game's. The game folder runs under Proton or on Windows. This is the Python path; the Rust engine can cross-link the
-Windows host now, but it does not build `hookshot_vk.dll` yet and still needs the game's lifted objects and a Windows
-FFmpeg build for a real link.
+game's. The game folder runs under Proton or on Windows. The Rust engine can cross-link both the Windows host and
+`hookshot_vk.dll` now, with NVIDIA's NGX library when DLSS is asked for, but a real game link still needs the game's
+lifted objects and a Windows FFmpeg build.
 
 </details>
 
@@ -946,38 +945,40 @@ the game's own upscaler, with camera jitter (**NVIDIA Reflex** needs no SDK and 
 every build). NVIDIA's files are NVIDIA's, under its own license, the
 [NVIDIA RTX SDKs license](https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt).
 Hookshot never includes or redistributes them: each build downloads them for itself, and only after you accept that
-license. Never share a game folder built with them, and do not post builds made with them. On Linux the Rust engine does
-the whole stage: `build.all` with `dlss` fetches the SDK (every file checked against its SHA-256, reused when right),
-compiles and links `hookshot_vk.so` with NGX, and puts DLSS's runtime in `<game folder>/ngx`. `build.ngx_fetch` fetches
-the same files on its own.
+license. Never share a game folder built with them, and do not post builds made with them. The Rust engine does the
+whole stage on both platforms: `build.all` with `dlss` fetches the SDK (every file checked against its SHA-256, reused
+when right), compiles and links `hookshot_vk.so` or `hookshot_vk.dll` with NGX, and puts DLSS's runtime and DLSS Frame
+Generation's in `<game folder>/ngx`. `build.ngx_fetch` fetches the same files on its own.
 
 - **Windows, the Hookshot Builder:** tick **NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)** before you
-  build. It is off by default and shows NVIDIA's license when you tick it. The tick downloads the SDK into
-  `%LOCALAPPDATA%\HookshotBuilder\ngx-sdk` and puts DLSS's runtime, `nvngx_dlss.dll`, in the game folder's `ngx` folder.
-  The Rust engine does not link the Windows Vulkan DLL yet, so the tick stops with an error in the Flutter app instead
-  of falling back to `make_game.py`; the Python path below builds a Windows DLSS game.
+  build. It is off by default and shows NVIDIA's license when you tick it. The Rust build downloads the SDK into
+  `%LOCALAPPDATA%\HookshotBuilder\ngx-sdk`, cross-builds `hookshot_vk.dll` with llvm-mingw and puts DLSS's runtime,
+  `nvngx_dlss.dll`, and DLSS Frame Generation's, `nvngx_dlssg.dll`, in the game folder's `ngx` folder. A missing
+  llvm-mingw or backend toolchain is a specific build error; the builder never falls back to Python for DLSS.
 - **Windows, the command line:** `python -I scripts/ngx_sdk.py --platform windows <sdk folder>` asks you to accept
-  NVIDIA's license (or pass `--accept-nvidia-license`) and fetches the headers, `nvsdk_ngx_s.lib` and `nvngx_dlss.dll`,
-  each checked against its SHA-256. Then build with `HOOKSHOT_NGX_SDK=<sdk folder>`: `make_game.py` copies
-  `nvngx_dlss.dll` into `<game folder>\ngx`. NGX is also pointed at `%LOCALAPPDATA%\Hookshot\ngx`, and at
-  `RX_VK_DLSS_DIR` when it is set, and uses the newest `nvngx_dlss.dll` it finds across them (to try a given one, make
-  sure no other folder has a newer one). Never copy NGX's core, `_nvngx.dll`, beside the game: it comes with NVIDIA's
-  driver.
+  NVIDIA's license (or pass `--accept-nvidia-license`) and fetches the headers, `nvsdk_ngx_s.lib`, `nvngx_dlss.dll` and
+  `nvngx_dlssg.dll`, each checked against its SHA-256. Then build with `HOOKSHOT_NGX_SDK=<sdk folder>`: the Rust engine
+  copies both runtimes into `<game folder>\ngx`; `make_game.py` does the same. NGX is also pointed at
+  `%LOCALAPPDATA%\Hookshot\ngx`, and at `RX_VK_DLSS_DIR` when it is set, and uses the newest of each it finds across
+  them (to try a given one, make sure no other folder has a newer one). Never copy NGX's core, `_nvngx.dll`, beside
+  the game: it comes with NVIDIA's driver.
 - **Linux, the Hookshot Builder (the AppImage):** the same tick as on Windows, and nothing else to do: no variable is
   passed to the AppImage and no file is copied by hand. The build downloads the SDK into
   `$XDG_DATA_HOME/hookshot/builder/ngx-sdk` (`~/.local/share/hookshot/builder/ngx-sdk`), builds the game with it and
-  puts DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, in the game folder's `ngx` folder.
+  puts DLSS's runtime, `libnvidia-ngx-dlss.so.<version>`, and frame generation's,
+  `libnvidia-ngx-dlssg.so.<version>`, in the game folder's `ngx` folder.
 - **Linux, a build from source:** `scripts/linux/ngx-sdk.sh <sdk folder>` (it runs `scripts/ngx_sdk.py --platform
-  linux`) asks you to accept NVIDIA's license and fetches `libnvsdk_ngx.a` for the build and
-  `libnvidia-ngx-dlss.so.<version>`, DLSS's runtime. Then run the build with `HOOKSHOT_NGX_SDK=<sdk folder>` set:
-  `build.all` (or `build.vk`) compiles the backend with NGX and `build.all` puts the runtime in the game folder's `ngx`
-  folder; `make_game.py` does the same. NGX's core comes with NVIDIA's Linux driver.
-- **Linux, a game folder with other than plain English letters in its path:** NVIDIA's NGX on Linux loads DLSS's
-  runtime only from a folder whose whole path is ASCII. A game in `~/Games/Zelda` needs nothing more. A game in a
-  folder such as `~/Games/Zelda-Café` (the `é` is not ASCII) cannot use the runtime in its own `ngx` folder, and the
-  log and the Insert menu say so: copy `libnvidia-ngx-dlss.so.*` from there into `$XDG_DATA_HOME/hookshot/ngx`
-  (`~/.local/share/hookshot/ngx`), which the game also looks in, or into any other folder with an ASCII path and name
-  that folder in `RX_VK_DLSS_DIR`.
+  linux`) asks you to accept NVIDIA's license and fetches `libnvsdk_ngx.a` for the build,
+  `libnvidia-ngx-dlss.so.<version>`, DLSS's runtime, and `libnvidia-ngx-dlssg.so.<version>`, frame generation's. Then
+  run the build with `HOOKSHOT_NGX_SDK=<sdk folder>` set: `build.all` (or `build.vk`) compiles the backend with NGX and
+  `build.all` puts both runtimes in the game folder's `ngx` folder; `make_game.py` does the same. NGX's core comes with
+  NVIDIA's Linux driver.
+- **Linux, a game folder with other than plain English letters in its path:** NVIDIA's NGX on Linux loads these
+  runtimes only from a folder whose whole path is ASCII. A game in `~/Games/Zelda` needs nothing more. A game in a
+  folder such as `~/Games/Zelda-Café` (the `é` is not ASCII) cannot use the runtimes in its own `ngx` folder, and the
+  log and the Insert menu say so: copy `libnvidia-ngx-dlss.so.*` and `libnvidia-ngx-dlssg.so.*` from there into
+  `$XDG_DATA_HOME/hookshot/ngx` (`~/.local/share/hookshot/ngx`), which the game also looks in, or into any other
+  folder with an ASCII path and name that folder in `RX_VK_DLSS_DIR`.
 
 The **DLSS model** row chooses DLSS's network, by NVIDIA's preset letter, for every mode: **Transformer (K)**, the
 transformer model and the one tested most here (the default); **Transformer 2 (M)**, NVIDIA's second-generation
@@ -1000,7 +1001,9 @@ gameplay upscale with DLSS chosen, so on the title screen the log has no NGX lin
 With `RX_VK_DLSS_LOG=1` NGX's own lines go there too (`ngx:`). Some of them look like errors but are not:
 `failed to load NGXCore: 126` (twice) is NVIDIA's library looking for `_nvngx.dll` and `nvngx.dll` beside the game, which
 are not there on purpose, before it loads the driver's; `Feature ... failed to load from cache` is NGX finding no model
-of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the game folder's `nvngx_dlss.dll`.
+of its own downloads (`C:\ProgramData\NVIDIA\NGX\models`) before it uses the game folder's `nvngx_dlss.dll`. DLSS Frame
+Generation loads `nvngx_dlssg.dll` (Linux: `libnvidia-ngx-dlssg.so.*`) from the same `ngx` folder; without it NGX takes
+the driver's own copy, which may be older and can refuse sets or make a single frame.
 
 </details>
 
@@ -1108,14 +1111,14 @@ same scene to 59-60 fps. `0` or unset copies every written binding, as before.
    `build.all` with the exefs and romfs. The same engine prints the progress lines the builder shows.
 2. The engine builds the image, lifts the game's ARM64 code to C (jump tables and a per-function cache), applies the
    OoT patches and after-sites, and compiles the C with clang.
-3. It links `host/`, which plays the part of the console's system software, into `hookshot`/`hookshot.exe`; on Linux
-   the engine also builds `hookshot_vk.so` with `build.vk`. `host/nvn_native.c` records the game's NVN2 graphics calls,
-   and `gpu/vk/` replays them on Vulkan.
+3. It links `host/`, which plays the part of the console's system software, into `hookshot`/`hookshot.exe`; the engine
+   also builds `hookshot_vk.so` or `hookshot_vk.dll` with `build.vk`. `host/nvn_native.c` records the game's NVN2
+   graphics calls, and `gpu/vk/` replays them on Vulkan.
 4. Switch 2 Ampere shaders are lowered to Maxwell (`lower_to_maxwell.h`) and translated to SPIR-V by Eden's shader
    recompiler. The engine lists them and runs the built game with `--prepare-shaders` before the folder is ready.
-5. Python still builds the Windows Vulkan DLL (and so the Windows DLSS build) and the release packages. The Linux
-   NGX/DLSS and FSR 4 backend, the Windows host link and the prompt font and layouts are Rust now; the prompt textures
-   are not generated yet. Those are the open items above.
+5. Python still builds the release packages. The Linux and Windows NGX/DLSS and FSR 4 backends, the Windows host link
+   and the prompt font and layouts are Rust now; the prompt textures are not generated yet. Those are the open items
+   above.
 
 More detail on the architecture is in the [design notes](docs/design.md). The [development guide](docs/development.md)
 still describes the older Python pipeline and the runtime's testing switches; the build commands in this README are the

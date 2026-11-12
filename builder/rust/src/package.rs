@@ -361,9 +361,10 @@ pub fn package_json(
     )
 }
 
-/// DLSS's runtime in `<out>/ngx`, as Python's `place_ngx_runtime` does: the
-/// SDK's file when a DLSS build names the folder, and out of the way when it
-/// does not (a folder rebuilt without DLSS loses the runtime too).
+/// DLSS's runtime and DLSS Frame Generation's in `<out>/ngx`, as Python's
+/// `place_ngx_runtime` does: the SDK's files when a DLSS build names the
+/// folder, and out of the way when it does not (a folder rebuilt without
+/// DLSS loses both runtimes too).
 fn place_ngx_runtime(platform: Platform, out: &Path, sdk: &Path) -> Value {
     let ngx = match platform {
         Platform::Linux => crate::ngx_sdk::Platform::Linux,
@@ -373,11 +374,7 @@ fn place_ngx_runtime(platform: Platform, out: &Path, sdk: &Path) -> Value {
         return crate::ngx_sdk::install_runtime(sdk, ngx, &out.join("ngx"))
             .unwrap_or_else(|error| json!({"placed": false, "error": error}));
     }
-    let stale = out.join("ngx").join(ngx.runtime_name());
-    let removed = stale.is_file() && fs::remove_file(&stale).is_ok();
-    if removed {
-        let _ = fs::remove_dir(out.join("ngx"));
-    }
+    let removed = crate::ngx_sdk::remove_runtimes(&out.join("ngx"), ngx);
     json!({"placed": false, "removed": removed})
 }
 
@@ -410,7 +407,7 @@ fn package_json_on(
     if vk.is_file() {
         bytes += copy(&vk, &bin.join(platform.vulkan_library()))?;
     }
-    // (NVIDIA DLSS: DLSS's runtime in <out>/ngx, never NGX's core)
+    // (NVIDIA DLSS: DLSS's and DLSS Frame Generation's runtimes in <out>/ngx, never NGX's core)
     let ngx_runtime = place_ngx_runtime(platform, out, Path::new(ngx));
     let sdl2 = env_path("HOOKSHOT_SDL2");
     let wgpu = env_path("WGPU_NATIVE");
@@ -866,23 +863,50 @@ mod tests {
         .unwrap()
     }
 
+    fn sdk_runtimes(sdk: &Path, platform: crate::ngx_sdk::Platform) {
+        for kind in crate::ngx_sdk::RuntimeKind::ALL {
+            let path = crate::ngx_sdk::runtime(sdk, platform, kind);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"runtime").unwrap();
+        }
+    }
+
     #[test]
-    fn a_dlss_package_puts_the_runtime_in_ngx_and_never_its_core() {
+    fn a_dlss_package_puts_both_runtimes_in_ngx_and_never_its_core() {
         let base = temp("ngx-runtime");
         let platform = crate::ngx_sdk::Platform::Linux;
         let sdk = base.join("sdk");
-        let runtime = crate::ngx_sdk::runtime(&sdk, platform);
-        fs::create_dir_all(runtime.parent().unwrap()).unwrap();
-        fs::write(&runtime, b"runtime").unwrap();
+        sdk_runtimes(&sdk, platform);
         let answer = package_into(&base, Platform::Linux, sdk.to_str().unwrap());
         assert_eq!(answer["ngx"]["placed"], true);
-        assert!(base.join("out/ngx").join(platform.runtime_name()).is_file());
+        for kind in crate::ngx_sdk::RuntimeKind::ALL {
+            assert!(
+                base.join("out/ngx")
+                    .join(platform.runtime_name(kind))
+                    .is_file()
+            );
+        }
         assert!(!base.join("out/ngx/_nvngx.so").exists());
-        // (a folder rebuilt without DLSS loses the runtime, as Python's does)
+        // (a folder rebuilt without DLSS loses both runtimes, as Python's does)
         let answer = package_into(&base, Platform::Linux, "");
         assert_eq!(answer["ngx"]["placed"], false);
         assert_eq!(answer["ngx"]["removed"], true);
         assert!(!base.join("out/ngx").exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_windows_dlss_package_puts_the_dll_runtimes_in_ngx() {
+        let base = temp("ngx-windows");
+        let ngx = crate::ngx_sdk::Platform::Windows;
+        let sdk = base.join("sdk");
+        sdk_runtimes(&sdk, ngx);
+        let answer = package_into(&base, Platform::Windows, sdk.to_str().unwrap());
+        assert_eq!(answer["ngx"]["placed"], true);
+        for name in ["nvngx_dlss.dll", "nvngx_dlssg.dll"] {
+            assert!(base.join("out/ngx").join(name).is_file(), "{name}");
+        }
+        assert!(!base.join("out/ngx/_nvngx.dll").exists());
         let _ = fs::remove_dir_all(base);
     }
 }

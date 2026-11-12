@@ -566,7 +566,7 @@ fn probe_mingw(clang: &Path) -> Result<(), String> {
 
 /// The llvm-mingw to build with: HOOKSHOT_MINGW, then a target-prefixed clang
 /// on PATH, then a plain clang that can link for the target.
-fn find_windows_toolchain() -> Result<MingwToolchain, String> {
+pub(crate) fn find_windows_toolchain() -> Result<MingwToolchain, String> {
     let mut tried = Vec::new();
     if let Some(folder) = std::env::var_os("HOOKSHOT_MINGW").filter(|value| !value.is_empty()) {
         let folder = PathBuf::from(folder);
@@ -606,7 +606,7 @@ fn find_windows_toolchain() -> Result<MingwToolchain, String> {
         tried.push("no clang on PATH".into());
     }
     Err(format!(
-        "the Windows host link needs llvm-mingw: set HOOKSHOT_MINGW to an llvm-mingw folder (its bin/clang), or put x86_64-w64-mingw32-clang on PATH (on Linux, build with RX_TARGET=windows). The Visual Studio route is not ported to this engine. {}",
+        "the Windows build needs llvm-mingw: set HOOKSHOT_MINGW to an llvm-mingw folder (its bin/clang), or put x86_64-w64-mingw32-clang on PATH (on Linux, build with RX_TARGET=windows). The Visual Studio route is not ported to this engine. {}",
         tried.join("; ")
     ))
 }
@@ -622,7 +622,7 @@ pub(crate) fn mingw_target_flags() -> Vec<String> {
 
 /// nx2/toolchain.py's native_link() for llvm-mingw: lld, the static runtime,
 /// and no Microsoft C runtime libraries in an FFmpeg or NGX object's way.
-fn mingw_link_flags() -> Vec<String> {
+pub(crate) fn mingw_link_flags() -> Vec<String> {
     [
         "-fuse-ld=lld",
         "-static",
