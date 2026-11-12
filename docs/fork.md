@@ -131,6 +131,9 @@ commits, not upstream ancestors. Ported recently:
   interpolates the Royal Family Tomb water right; sirit names an undefined operand instead of aborting, and
   `RX_VK_LOWER_SKIP` leaves programs unlowered for bisection. A headless RTX 4070 Ti boot ran 10,185 presents at 60 fps
   with 52,729 programs translated and no traps; the AMD water itself has not been checked on AMD hardware.
+- **Video perf #2114**: planar YUV420P frames stay NV12 and defer RGBA to the pool, U/V interleaves 16 pairs at a time
+  with SSE2, and decode threads go to 8 for AV1 and 4 for others. A headless boot played a 1920x1080 movie at 60 fps
+  with no traps; `tests/video_uv_interleave_test.c` covers every pair count from 0 to 37 in CI.
 - **11 Vulkan fixes**: texture table, span aging, split fence wait, recorder packet, Intel storage loop, subgroup
   barrier, mesh grass hold, pipeline-cache header, 250 ms readback, RADV mesh default, Intel uniform snapshot.
 - **7 host fixes**: update downgrade guard, menu option order, Steam gyro, Aux/splitter audio, window title/class,
@@ -148,12 +151,13 @@ Do not port game-derived pipeline lists or generated game data.
 
 `source-regressions.yml` runs Rust tests on Linux and Windows, Flutter tests/analyze, three SPIR-V fixture builds and
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
-All five workflows are green on `1f298413`. The pre-release `v2.2.0-rs.3` was built from `74a7fd15` and carries the
-two DLSS/V-Sync fixes, the compile-wave scheduler, the worker, mirror and image-pool changes, and the retired-import
-wait. The #1830 shader fix came after `rs.3`; `v2.2.0-rs.2` (from `1c3cfc62`) has the first three.
+All five workflows are green on `788354d9`. The pre-release `v2.2.0-rs.4` was built from that commit and carries the
+#1830 shader fix and the #2114 video conversion as well as the DLSS/V-Sync fixes, the compile-wave scheduler, the
+worker, mirror and image-pool changes, and the retired-import wait. `v2.2.0-rs.3` (from `74a7fd15`) has all but the
+last two; `v2.2.0-rs.2` (from `1c3cfc62`) has the first three.
 
 The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
-app and Rust engine without Python; the pre-release (`v2.2.0-rs.3`) is published with the AppImage and the
+app and Rust engine without Python; the pre-release (`v2.2.0-rs.4`) is published with the AppImage and the
 Windows setup. The Linux image is a development image: a game build needs distribution clang and Vulkan/SPIR-V/VMA
 headers (or a source build). The repository never contains game files or generated game data.
 
