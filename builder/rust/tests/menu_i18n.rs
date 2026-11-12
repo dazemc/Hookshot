@@ -459,6 +459,17 @@ int main(int argc, char** argv) {
         std::printf("%s\n", mkwvk::i18n::tr("Off"));
         return 0;
     }
+    if (cmd == "auto") {
+        mkwvk::opts.menu_lang = 0;   // (Auto: the game's language)
+        std::printf("%d\n", mkwvk::i18n::lang_now());
+        std::printf("%s\n", mkwvk::i18n::tr("Off"));
+        return 0;
+    }
+    if (cmd == "plural" && argc == 4) {
+        mkwvk::opts.menu_lang = std::atoi(argv[2]);
+        std::printf("%d\n", mkwvk::i18n::plural(std::atoi(argv[3])));
+        return 0;
+    }
     if (cmd == "language") {
         std::printf("%d\n", mkwvk::i18n::game_lang_count());
         std::printf("%s\n", mkwvk::i18n::game_lang_code(2));
@@ -543,18 +554,23 @@ fn build_fixture() -> (PathBuf, PathBuf) {
     (dir, exe)
 }
 
-fn run(exe: &Path, dir: &Path, args: &[&str]) -> String {
-    let output = Command::new(exe)
-        .args(args)
-        .env("I18N_TEST_DIR", dir)
-        .output()
-        .expect("the lookup fixture runs");
+fn run_env(exe: &Path, dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> String {
+    let mut command = Command::new(exe);
+    command.args(args).env("I18N_TEST_DIR", dir);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("the lookup fixture runs");
     assert!(
         output.status.success(),
         "the lookup fixture failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("UTF-8 output")
+}
+
+fn run(exe: &Path, dir: &Path, args: &[&str]) -> String {
+    run_env(exe, dir, args, &[])
 }
 
 #[test]
@@ -581,6 +597,33 @@ fn the_lookup_translates_formats_and_falls_back_to_english() {
     assert_eq!(out.trim_end(), "Audio", "a missing key falls back to English");
     let out = run(&exe, &dir, &["lookup-lang", "2", "Off"]);
     assert_eq!(out.trim_end(), "Desligado", "a key the table has");
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn auto_follows_the_game_language_and_the_plural_forms() {
+    let (dir, exe) = build_fixture();
+    // (fr-CA takes French: its first part, as the Auto rule says)
+    fs::write(dir.join("language.txt"), "fr-CA\n").unwrap();
+    let out = run(&exe, &dir, &["auto"]);
+    let lines: Vec<_> = out.lines().collect();
+    assert_eq!(lines[0], "4", "French is the menu's language");
+    assert_eq!(lines[1], "Désactivé", "and its text is French");
+
+    // (HOS_LANGUAGE wins over language.txt, any case, as the game's own start reads it)
+    fs::remove_file(dir.join("language.txt")).unwrap();
+    let out = run_env(&exe, &dir, &["auto"], &[("HOS_LANGUAGE", "pt-br")]);
+    let lines: Vec<_> = out.lines().collect();
+    assert_eq!(lines[0], "1", "Portuguese (Brazil) from the game's switch");
+    assert_eq!(lines[1], "Desligado");
+
+    // (the restart line's plural forms: ru 1/2-4/5+, pl 1/2-4/5+; menu_lang 10 is ru, 9 is pl)
+    for (n, want) in [("1", "0"), ("2", "1"), ("5", "2"), ("11", "2"), ("21", "0")] {
+        assert_eq!(run(&exe, &dir, &["plural", "10", n]).trim_end(), want, "ru plural {n}");
+    }
+    for (n, want) in [("1", "0"), ("2", "1"), ("5", "2"), ("12", "2"), ("22", "1")] {
+        assert_eq!(run(&exe, &dir, &["plural", "9", n]).trim_end(), want, "pl plural {n}");
+    }
     fs::remove_dir_all(dir).ok();
 }
 
