@@ -1,7 +1,8 @@
 // The temporal chain's actor motion for every bone layout OoT draws (upstream NotRexed/Hookshot dfc8fa5e): four
 // influences, two (RG8 / RG8UI), one in a second set (R8 / R8UI or R16UI), and a rigid model on one bone (a joint and no
 // weight). These are game-free source checks, and the compiled fixture covers the classification, the weights and the
-// motion with authored vertices and bone palettes. No game, dump or GPU is needed.
+// motion with authored vertices and bone palettes. A camera cut starts a new upscaler history too (upstream 7a0c89f0):
+// its source check and the compiled math fixture are here as well. No game, dump or GPU is needed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -205,6 +206,113 @@ fn actor_motion_fixture_covers_classification_weights_and_motion() {
         "{}: {}",
         exe.display(),
         String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn camera_cut_starts_a_new_upscaler_history() {
+    let math = read("gpu/vk/dlss_math.h");
+    let temporal = read("gpu/vk/vk_temporal.cpp");
+    let pose = function(&math, "inline bool camera_pose(");
+    assert!(pose.contains("std::isfinite"));
+    assert!(pose.contains("Gauss-Jordan"));
+    let cut = function(&math, "inline bool camera_cut(");
+    for token in [
+        "*move > 5.0 * k",
+        "*turn > 30.0 * k",
+        "*move > 0.5 * k",
+        "k < 0.25 ? 0.25",
+        "k > 4 ? 4",
+    ] {
+        assert!(cut.contains(token), "camera_cut lacks {token}");
+    }
+    assert!(temporal.contains("dlss_math::camera_cut(s.last_vp, cam.current, ms, &move, &turn)"));
+    assert!(temporal.contains("RX_VK_TEMPORAL_CUT"));
+    assert!(temporal.contains("std::chrono::steady_clock::time_point last_at"));
+}
+
+#[test]
+fn camera_cut_fixture_runs() {
+    let Some(cxx) = compiler() else {
+        eprintln!(
+            "skipping the compiled camera-cut fixture: no C++ compiler (CXX, c++, g++ or clang++)"
+        );
+        return;
+    };
+    let repo = root();
+    let dir = std::env::temp_dir().join(format!(
+        "hookshot-camera-cut-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).expect("scratch folder");
+    let exe = dir.join(if cfg!(windows) { "math.exe" } else { "math" });
+    let source = repo.join("tests/test_dlss_math.cpp");
+    let build = Command::new(&cxx)
+        .args(["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror"])
+        .arg(format!("-I{}", repo.display()))
+        .arg(&source)
+        .arg("-o")
+        .arg(&exe)
+        .current_dir(&dir)
+        .status()
+        .expect("run the C++ compiler");
+    assert!(build.success(), "{cxx} failed on {}", source.display());
+    let run = Command::new(&exe)
+        .output()
+        .expect("run the camera-cut fixture");
+    assert!(
+        run.status.success(),
+        "{}: {}",
+        exe.display(),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_actor_vertex_spirv_header_is_made_from_its_shader() {
+    let Some(glslang) = glslang() else {
+        eprintln!("skipping the SPIR-V check: no glslangValidator or glslang");
+        return;
+    };
+    let repo = root();
+    let dir = std::env::temp_dir().join(format!(
+        "hookshot-actor-spirv-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).expect("scratch folder");
+    let out = dir.join("dlss_actor_vert_spv.h");
+    let build = Command::new(&glslang)
+        .args([
+            "-V",
+            "--quiet",
+            "--target-env",
+            "vulkan1.3",
+            "--vn",
+            "DLSS_ACTOR_VERT_SPV",
+            "-o",
+        ])
+        .arg(&out)
+        .arg(repo.join("gpu/vk/shaders/dlss_actor.vert"))
+        .status()
+        .expect("run glslangValidator");
+    assert!(build.success(), "{glslang} failed on dlss_actor.vert");
+    let made = fs::read_to_string(&out).expect("glslang's header");
+    let checked = read("gpu/vk/shaders/dlss_actor_vert_spv.h");
+    assert_eq!(
+        words(&made),
+        words(&checked),
+        "gpu/vk/shaders/dlss_actor_vert_spv.h is not made from dlss_actor.vert as it is now (glslangValidator -V \
+         --target-env vulkan1.3 --vn DLSS_ACTOR_VERT_SPV -o dlss_actor_vert_spv.h dlss_actor.vert)"
     );
     let _ = fs::remove_dir_all(dir);
 }
