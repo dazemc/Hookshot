@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <map>
@@ -50,6 +51,7 @@
 #include "bc_levels.h"
 #include "astc_bc_policy.h"
 #include "drawn_writeback.h"
+#include "igpu_budget.h"
 #include "vram_compact.h"
 #include "evict_reason.h"
 #include "keep_rendered.h"
@@ -3990,6 +3992,26 @@ Texture* texture_for_present(const nvn_tex* t) {
     return best ? best : tex;
 }
 
+/// (hookshot) The system's RAM in bytes, read once by texture_frame (0: could not be read; igpu_budget.h then takes the
+/// 8 GB tier). Windows: GlobalMemoryStatusEx. Linux: /proc/meminfo's MemTotal. No game data.
+static uint64_t system_ram_bytes() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX mem{sizeof mem};
+    return GlobalMemoryStatusEx(&mem) ? (uint64_t)mem.ullTotalPhys : 0;
+#elif defined(__linux__)
+    FILE* f = fopen("/proc/meminfo", "r");
+    if (!f) return 0;
+    char line[256];
+    unsigned long long kb = 0;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) break;
+    fclose(f);
+    return kb * 1024;
+#else
+    return 0;
+#endif
+}
+
 /// (hookshot) The texture budget a quality preset sets, or the card's own (tests/test_preset_texture_budget.py). The preset's
 /// replaced `own` outright, and `own` is where RX_VK_VRAM_MB and an integrated GPU's cap are applied: with a preset on, the
 /// documented RX_VK_VRAM_MB did nothing (the mirrors' RX_VK_MIRROR_MB wins over the preset), and an integrated GPU on Low or
@@ -4108,26 +4130,34 @@ void texture_frame(uint64_t completed) {
     if (frame_no % 10) return;
     uint64_t used = 0, allowed = 0, block_free = 0;
     const bool known = vram_usage(&used, &allowed, &block_free);
-    if (!own)   // (RX_VK_VRAM_MB, else 70% of what the driver allows the process at the first look)
-        own = getenv("RX_VK_VRAM_MB") ? (uint64_t)atoi(getenv("RX_VK_VRAM_MB")) << 20
-              : known                ? std::min<uint64_t>(allowed / 100 * (allowed <= (8704ull << 20) ? 45 : 70), 6144ull << 20)
-                                     : 4096ull << 20;
+    const bool vram_env = getenv("RX_VK_VRAM_MB") != nullptr;
     // (hookshot: at most 6 GB: a 16 GB card's 10.8 GB filled up, read as a leak: 105, 106. On a card of 8 GB or less, 45% of what the
     // driver allows, not 70%: the game's other VRAM (render targets, the pools' mirrors and imports, buffers, pipelines) is ~3.5-3.8 GB
     // in Hyrule Field, so 70% (5.1 GB of an 8 GB card's 7.3) put the whole past what the card holds. The driver paged VRAM to system
     // memory and the GPU time went from ~13 to 55 ms a frame for good: an RTX 3060 Ti at 14 fps ten seconds into play, #1400's
     // RTX 4050 at 5 fps. RX_VK_VRAM_MB=<MB>: the old size, or any)
-    {   // (hookshot) an integrated GPU's "VRAM" is the system's RAM, which the game's own ~10 GB also needs: 70% of what the driver allows
-        // was 5.3 GB of textures on a 16 GB laptop with a Radeon 780M, and the PC ran out of memory in Hyrule Field within minutes
-        // (Discord, 2026-11-09). At most 2.5 GB there unless RX_VK_VRAM_MB says otherwise
-        static bool told;
-        if (!getenv("RX_VK_VRAM_MB") && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU && own > (2560ull << 20)) {
-            own = 2560ull << 20;
-            if (!told) told = true, logf("vk: an integrated GPU shares the system's RAM: textures at most 2560 MB (RX_VK_VRAM_MB=<MB>: other)");
+    if (!own) {   // (RX_VK_VRAM_MB, else 70% of what the driver allows the process at the first look)
+        const uint64_t driver_budget =
+            vram_env ? (uint64_t)atoi(getenv("RX_VK_VRAM_MB")) << 20
+            : known  ? std::min<uint64_t>(allowed / 100 * (allowed <= (8704ull << 20) ? 45 : 70), 6144ull << 20)
+                     : 4096ull << 20;
+        // (hookshot) an integrated GPU's "VRAM" is the system's RAM, which the game's own ~10 GB also needs: 70% of what the
+        // driver allows was 5.3 GB of textures on a 16 GB laptop with a Radeon 780M, and the PC ran out of memory in Hyrule
+        // Field within minutes (Discord, 2026-11-09). The tier by system RAM keeps the old 2.5 GB on 16 GB, less on 8 and 12,
+        // more on 24 and up; RX_VK_VRAM_MB still wins, and a discrete GPU is untouched (igpu_budget.h)
+        if (!vram_env && dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+            static const uint64_t system_ram = system_ram_bytes();   // (once: /proc/meminfo or GlobalMemoryStatusEx)
+            const igpu_budget::Plan plan = igpu_budget::choose(system_ram, driver_budget, false, true);
+            own = plan.budget;
+            logf("vk: integrated GPU texture budget: %llu MB (system RAM %llu GB, driver allows %llu MB, reserved %llu GB; "
+                 "RX_VK_VRAM_MB=<MB>: other)",
+                 (unsigned long long)(own >> 20), (unsigned long long)(system_ram >> 30),
+                 (unsigned long long)(driver_budget >> 20), (unsigned long long)(plan.reserved >> 30));
+        } else {
+            own = driver_budget;
         }
     }
     // (a smaller preset on a bigger card: the card's own; RX_VK_VRAM_MB and an integrated GPU's cap: preset_texture_budget)
-    const bool vram_env = getenv("RX_VK_VRAM_MB") != nullptr;
     const bool preset_budget = opts.vram_mb > 0 && !vram_env && preset_caps_memory();
     uint64_t budget = preset_texture_budget((uint64_t)std::max(opts.vram_mb, 0), preset_budget, vram_env,
                                             dev.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, own);
