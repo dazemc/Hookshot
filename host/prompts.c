@@ -203,8 +203,6 @@ static int cmap4_bind(uint8_t *st, size_t n, int face) {
         const int pad = hos_binding(HOS_BIND_PAD, b, 0), bound = pad >= 0 && pad < HOS_PAD_ART_N;   /* (a paddle: the default's icon) */
         const unsigned gid = cmap4_glyph(st, n, base + (unsigned)(bound ? pad : switch_pad[b]));
         if (gid && cmap4_point(st, segs, switch_code[b], gid)) done += bound && !keys;
-        const unsigned gid = cmap4_glyph(st, n, base + (unsigned)(bound ? pad : switch_pad[b]));
-        if (gid && cmap4_point(st, segs, switch_code[b], gid)) done += bound && !keys;
     }
     for (int k = 0; k < 3; k++) {
         const unsigned gid = cmap4_glyph(st, n, base + STATIC_AT + (unsigned)k);
