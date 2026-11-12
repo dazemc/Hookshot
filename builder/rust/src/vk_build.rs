@@ -1833,6 +1833,18 @@ mod tests {
     }
 
     #[test]
+    fn esc_opens_the_menu_by_default_after_the_version_five_move() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let header = fs::read_to_string(root.join("gpu/vk/vk_menu.h")).unwrap();
+        let menu = fs::read_to_string(root.join("gpu/vk/vk_menu.cpp")).unwrap();
+        assert!(header.contains("int menu_shortcut = 2;"));
+        assert!(menu.contains("options_version=5"));
+        assert!(
+            menu.contains("if (version < 5 && opts.menu_shortcut == 0) opts.menu_shortcut = 2;")
+        );
+    }
+
+    #[test]
     fn radv_and_the_xtxh_navi_21_ids_are_out_of_the_amd_workarounds() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();

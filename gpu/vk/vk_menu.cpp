@@ -1414,7 +1414,7 @@ void save() {
         fprintf(f, "memory_budget=%d\n", opts.budget);
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on)
-        fprintf(f, "options_version=4\n");
+        fprintf(f, "options_version=5\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the keys-only controls, HOS_KEY_*, have no pad_ line)
@@ -3013,6 +3013,9 @@ void menu_init() {
         // (Descriptor reuse is on by default from options_version 4: a file from before wrote its 0 whether chosen or not, as
         // the off default it then was; fewer stutters and a better 1% low in the field, the flash checks clean, 2026-11-10)
         if (version < 4) opts.descriptor_reuse = 1;
+        // (the Menu shortcut "Insert, F1 or Esc" from options_version 5: an older file wrote 0 whether chosen or not, as
+        // the old default; Insert and F1 still work, Esc is added. 1 and 2 were deliberate choices and stay)
+        if (version < 5 && opts.menu_shortcut == 0) opts.menu_shortcut = 2;
     }
     first_start = !has_options;
     // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
