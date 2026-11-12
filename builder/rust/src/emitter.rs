@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 
 use libloading::Library;
 use serde_json::{Value, json};
+use sha1::{Digest, Sha1};
 
 type Config = unsafe extern "C" fn(c_int, c_int);
 type Batch = unsafe extern "C" fn(
@@ -138,6 +139,19 @@ pub fn translate(items: &[(u64, u32)]) -> Result<(Vec<String>, Vec<i32>), String
         }
         return Ok((texts, flags));
     }
+}
+
+/// A fingerprint of the loaded shared translator, so cached lifted C is not
+/// reused after a64emit changes.
+pub fn fingerprint() -> String {
+    for path in candidates() {
+        if let Ok(data) = std::fs::read(&path) {
+            let mut digest = Sha1::new();
+            digest.update(&data);
+            return format!("{:x}", digest.finalize());
+        }
+    }
+    String::new()
 }
 
 pub fn runtime_text(which: i32) -> Result<String, String> {

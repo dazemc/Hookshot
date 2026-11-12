@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use sha1::{Digest, Sha1};
+
 use crate::a64::{self, Kind};
 use crate::image::Image;
 
@@ -1359,6 +1361,178 @@ fn remove_stale_chunks(dir: &std::path::Path, keep: usize) -> Result<(), String>
     Ok(())
 }
 
+fn codegen_fingerprint() -> Vec<u8> {
+    let mut digest = Sha1::new();
+    digest.update(b"hookshot-lift-cache-v1");
+    for source in [
+        include_bytes!("text.rs").as_slice(),
+        include_bytes!("insn.rs").as_slice(),
+        include_bytes!("emitter.rs").as_slice(),
+        include_bytes!("a64.rs").as_slice(),
+        include_bytes!("lift.rs").as_slice(),
+    ] {
+        digest.update(source);
+        digest.update([0]);
+    }
+    digest.update(crate::emitter::fingerprint().as_bytes());
+    digest.finalize().to_vec()
+}
+
+fn env_fingerprint() -> Vec<u8> {
+    let mut digest = Sha1::new();
+    for name in [
+        "A64_LOCAL_REGS",
+        "A64_NO_VFPX",
+        "A64_MARK_EACH",
+        "A64_NO_VSET",
+    ] {
+        digest.update(name.as_bytes());
+        digest.update(b"=");
+        digest.update(std::env::var(name).unwrap_or_default().as_bytes());
+        digest.update([0]);
+    }
+    digest.finalize().to_vec()
+}
+
+fn hash_resolution(hash: &mut Sha1, lift: &Lifter<Image>, kind: Kind, pc: u64) {
+    let target = match kind {
+        Kind::B(target)
+        | Kind::Bl(target)
+        | Kind::BCond(target, _)
+        | Kind::Cbz(target, _, _, _)
+        | Kind::Tbz(target, _, _, _) => Some(target),
+        _ => None,
+    };
+    if let Some(target) = target {
+        hash.update(target.to_le_bytes());
+        hash.update([lift.entries.contains(&target) as u8]);
+        hash.update(lift.callee(target).to_le_bytes());
+    }
+    if matches!(kind, Kind::Br(_)) {
+        let mut targets = lift.jt.get(&pc).cloned().unwrap_or_default();
+        targets.sort_unstable();
+        targets.dedup();
+        for target in targets {
+            hash.update(target.to_le_bytes());
+            hash.update([lift.entries.contains(&target) as u8]);
+            hash.update(lift.callee(target).to_le_bytes());
+        }
+    }
+}
+
+fn hash_kind(hash: &mut Sha1, kind: Kind) {
+    match kind {
+        Kind::B(target) => {
+            hash.update([1]);
+            hash.update(target.to_le_bytes());
+        }
+        Kind::Bl(target) => {
+            hash.update([2]);
+            hash.update(target.to_le_bytes());
+        }
+        Kind::BCond(target, cond) => {
+            hash.update([3]);
+            hash.update(target.to_le_bytes());
+            hash.update([cond]);
+        }
+        Kind::Cbz(target, reg, sf, nz) => {
+            hash.update([4]);
+            hash.update(target.to_le_bytes());
+            hash.update([reg, sf, nz]);
+        }
+        Kind::Tbz(target, reg, bit, nz) => {
+            hash.update([5]);
+            hash.update(target.to_le_bytes());
+            hash.update([reg, bit, nz]);
+        }
+        Kind::Br(reg) => {
+            hash.update([6, reg]);
+        }
+        Kind::Blr(reg) => {
+            hash.update([7, reg]);
+        }
+        Kind::Ret(reg) => {
+            hash.update([8, reg]);
+        }
+        Kind::Svc(imm) => {
+            hash.update([9]);
+            hash.update(imm.to_le_bytes());
+        }
+        Kind::Trap => {
+            hash.update([10]);
+        }
+        Kind::Isb => {
+            hash.update([11]);
+        }
+        Kind::Ic => {
+            hash.update([12]);
+        }
+        Kind::Op => {
+            hash.update([13]);
+        }
+    }
+}
+
+fn function_key(
+    lift: &Lifter<Image>,
+    image: &Image,
+    entry: u64,
+    codegen: &[u8],
+    env: &[u8],
+) -> [u8; 20] {
+    let mut hash = Sha1::new();
+    hash.update(b"hookshot-lift-cache-fn-v1");
+    hash.update(codegen);
+    hash.update(env);
+    hash.update(entry.to_le_bytes());
+    if let Some((target, slot)) = lift.plt.get(&entry) {
+        hash.update([1]);
+        hash.update(target.to_le_bytes());
+        hash.update(slot.to_le_bytes());
+    } else {
+        hash.update([0]);
+    }
+    if let Some(body) = lift.funcs.get(&entry) {
+        for (pc, kind) in body {
+            hash.update(pc.to_le_bytes());
+            hash.update(image.word(*pc).unwrap_or(0).to_le_bytes());
+            hash_kind(&mut hash, *kind);
+            hash_resolution(&mut hash, lift, *kind, *pc);
+        }
+    }
+    let mut labels: Vec<u64> = lift
+        .labels
+        .get(&entry)
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect();
+    labels.sort_unstable();
+    for label in labels {
+        hash.update(label.to_le_bytes());
+    }
+    hash.finalize().into()
+}
+
+fn emit_entry<C: Code>(lift: &Lifter<C>, code: &C, entry: u64) -> Result<String, String> {
+    let body = lift
+        .funcs
+        .get(&entry)
+        .ok_or_else(|| format!("function {entry:08x} disappeared"))?;
+    let items: Vec<(u64, u32)> = body
+        .keys()
+        .filter_map(|pc| code.word(*pc).map(|word| (*pc, word)))
+        .collect();
+    let (translated, _) = crate::emitter::translate(&items)?;
+    let by_pc: std::collections::HashMap<u64, String> =
+        items.iter().map(|(pc, _)| *pc).zip(translated).collect();
+    let texts: Vec<String> = body
+        .keys()
+        .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
+        .collect();
+    Ok(lift.emit_function(entry, &texts))
+}
+
 pub fn write_json(
     exefs: &str,
     out: &str,
@@ -1389,28 +1563,30 @@ pub fn write_json(
         .copied()
         .take(if limit == 0 { usize::MAX } else { limit })
         .collect();
+    let cache_dir = out.join("lift_cache");
+    let mut cache = crate::lift_cache::Cache::open(&cache_dir)?;
+    let codegen = codegen_fingerprint();
+    let env = env_fingerprint();
+    let mut emitted: Vec<Option<String>> = vec![None; entries.len()];
+    let mut misses: Vec<(usize, u64, [u8; 20])> = Vec::new();
+    for (index, entry) in entries.iter().copied().enumerate() {
+        let key = function_key(&lift, &image, entry, &codegen, &env);
+        if let Some(text) = cache.get(&key) {
+            emitted[index] = Some(text);
+        } else {
+            misses.push((index, entry, key));
+        }
+    }
     let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(8)
         .max(1)
-        .min(entries.len().max(1));
-    let mut emitted: Vec<(usize, String)> = if workers <= 1 {
+        .min(misses.len().max(1));
+    let results: Vec<(usize, [u8; 20], Result<String, String>)> = if workers <= 1 {
         let mut out = Vec::new();
-        for (index, entry) in entries.iter().copied().enumerate() {
-            let body = &lift.funcs[&entry];
-            let items: Vec<(u64, u32)> = body
-                .keys()
-                .filter_map(|pc| image.word(*pc).map(|word| (*pc, word)))
-                .collect();
-            let (translated, _) = crate::emitter::translate(&items)?;
-            let by_pc: std::collections::HashMap<u64, String> =
-                items.iter().map(|(pc, _)| *pc).zip(translated).collect();
-            let texts: Vec<String> = body
-                .keys()
-                .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
-                .collect();
-            out.push((index, lift.emit_function(entry, &texts)));
+        for &(index, entry, key) in &misses {
+            out.push((index, key, emit_entry(&lift, &image, entry)));
         }
         out
     } else {
@@ -1419,27 +1595,14 @@ pub fn write_json(
                 .map(|worker| {
                     let lift = &lift;
                     let image = &image;
-                    let entries = &entries;
+                    let misses = &misses;
                     scope.spawn(move || {
                         let mut out = Vec::new();
-                        let mut index = worker;
-                        while index < entries.len() {
-                            let entry = entries[index];
-                            let body = &lift.funcs[&entry];
-                            let items: Vec<(u64, u32)> = body
-                                .keys()
-                                .filter_map(|pc| image.word(*pc).map(|word| (*pc, word)))
-                                .collect();
-                            if let Ok((translated, _)) = crate::emitter::translate(&items) {
-                                let by_pc: std::collections::HashMap<u64, String> =
-                                    items.iter().map(|(pc, _)| *pc).zip(translated).collect();
-                                let texts: Vec<String> = body
-                                    .keys()
-                                    .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
-                                    .collect();
-                                out.push((index, lift.emit_function(entry, &texts)));
-                            }
-                            index += workers;
+                        let mut at = worker;
+                        while at < misses.len() {
+                            let (index, entry, key) = misses[at];
+                            out.push((index, key, emit_entry(lift, image, entry)));
+                            at += workers;
                         }
                         out
                     })
@@ -1447,10 +1610,24 @@ pub fn write_json(
                 .collect();
             handles
                 .into_iter()
-                .flat_map(|h| h.join().unwrap_or_default())
+                .flat_map(|handle| handle.join().unwrap_or_default())
                 .collect()
         })
     };
+    for (index, key, result) in results {
+        let text = result?;
+        cache.put(key, &text)?;
+        emitted[index] = Some(text);
+    }
+    cache.save()?;
+    if emitted.iter().any(Option::is_none) {
+        return Err("the lift cache left some functions without C".into());
+    }
+    let mut emitted: Vec<(usize, String)> = emitted
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, text)| text.map(|text| (index, text)))
+        .collect();
     emitted.sort_by_key(|(index, _)| *index);
     let mut used = std::collections::HashSet::new();
     for (_, text) in &emitted {

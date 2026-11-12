@@ -21,6 +21,7 @@ mod image;
 mod insn;
 mod kit;
 mod lift;
+mod lift_cache;
 mod lifted_c;
 mod linker;
 mod logo_rgba;
