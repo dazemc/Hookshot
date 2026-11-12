@@ -460,6 +460,8 @@ fn package_json_on(
                 "faces": written.faces,
                 "hint": written.hint,
                 "ring": written.ring,
+                "kept": written.kept,
+                "reason": written.reason,
             }),
             Err(error) => json!({"error": error}),
         }

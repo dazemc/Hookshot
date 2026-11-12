@@ -7,6 +7,7 @@ use std::path::Path;
 pub mod bfotf;
 pub mod cff;
 pub mod cmap;
+pub mod cache;
 pub mod faces;
 pub mod font;
 pub mod layout;
@@ -23,21 +24,123 @@ pub struct Written {
     pub faces: Vec<String>,
     pub hint: bool,
     pub ring: bool,
+    /// The previous complete set was unchanged and kept (nothing drawn).
+    pub kept: bool,
+    /// Why the prompts were kept or drawn again, for the build log.
+    pub reason: String,
 }
 
 /// Write `<out>/External.bfotf` and, when the larger font no longer fits its
 /// entry, `<out>/rsizetable.zs`. The caller keeps a failure non-fatal: the
 /// game then shows its own button icons.
+///
+/// Complete, unchanged output is kept: generation runs in a fresh sibling
+/// folder and only complete output can replace the previous set.
+/// `HOOKSHOT_FORCE_PROMPTS` draws it again. A failed generation removes the
+/// prompts, as before.
 pub fn build(romfs: &Path, out: &Path) -> Result<Written, String> {
+    let kenney = crate::kit::root().join("third_party/kenney_input");
+    let inputs = match cache::inputs(romfs, &kenney) {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            remove(out);
+            return Err(error);
+        }
+    };
+    let mut reason = if crate::kit::env_on("HOOKSHOT_FORCE_PROMPTS") {
+        Some("forced".to_owned())
+    } else {
+        cache::unchanged(out, &inputs)
+    };
+    if reason.is_none() {
+        match cache::clear_runtime(out) {
+            Ok(()) => {
+                if let Some(mut written) = cache::written(out) {
+                    written.reason = "unchanged, kept".to_owned();
+                    return Ok(written);
+                }
+                reason = Some("stamp has no summary".to_owned());
+            }
+            Err(error) => reason = Some(format!("runtime files could not be cleared: {error}")),
+        }
+    }
+    let mut reason = reason.unwrap_or_else(|| "packaged or direct build".to_owned());
+    // (an interrupted retry must not leave even the previous stamp behind)
+    let _ = std::fs::remove_file(out.join(cache::KEY));
+    let parent = out
+        .parent()
+        .ok_or_else(|| format!("prompts: {} has no folder", out.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    let temporary = parent.join(format!(".prompts-{}", std::process::id()));
+    remove(&temporary);
+    let new = temporary.join("new");
+    std::fs::create_dir_all(&new).map_err(|e| format!("{}: {e}", new.display()))?;
+    let written = match generate(romfs, &new) {
+        Ok(written) => written,
+        Err(error) => {
+            remove(&temporary);
+            remove(out);
+            return Err(error);
+        }
+    };
+    let complete = cache::outputs(&new)
+        .map(|outputs| {
+            outputs.contains_key("External.bfotf")
+                && written.faces.iter().all(|face| outputs.contains_key(face))
+        })
+        .unwrap_or(false);
+    if !complete {
+        remove(&temporary);
+        remove(out);
+        return Err("prompts: incomplete generated output".to_owned());
+    }
+    // (certify only output made from the inputs it was started with)
+    match cache::inputs(romfs, &kenney) {
+        Ok(again) if again == inputs => {
+            if let Err(error) = cache::write(&new, &inputs, &written) {
+                reason = format!("{reason}; not stamped: {error}");
+            }
+        }
+        _ => {
+            reason = format!("{reason}; inputs changed or unreadable during generation, not stamped");
+        }
+    }
+    let previous = temporary.join("previous");
+    if out.exists() {
+        std::fs::rename(out, &previous).map_err(|e| {
+            remove(&temporary);
+            format!("{}: {e}", out.display())
+        })?;
+    }
+    if let Err(error) = std::fs::rename(&new, out) {
+        // (never throw away the only complete set: keep the temporary folder
+        // if the previous one cannot be put back)
+        if previous.exists() {
+            if std::fs::rename(&previous, out).is_ok() {
+                remove(&temporary);
+            }
+        } else {
+            remove(&temporary);
+        }
+        return Err(format!("{}: {error}", out.display()));
+    }
+    remove(&temporary);
+    let mut written = written;
+    written.reason = reason;
+    Ok(written)
+}
+
+fn remove(path: &Path) {
+    let _ = std::fs::remove_dir_all(path);
+}
+
+fn generate(romfs: &Path, out: &Path) -> Result<Written, String> {
     let dictionary = zs::zs_dictionary(romfs)?;
     let game_font = zs::read_zs(romfs, FONT, &dictionary)?;
     let (key, otf) = bfotf::unwrap(&game_font)?;
     let kenney = crate::kit::root().join("third_party/kenney_input");
     let (font, widths) = font::build(&otf, &kenney)?;
     let wrapped = bfotf::wrap(key, &font);
-    if out.exists() {
-        std::fs::remove_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
-    }
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let font_path = out.join("External.bfotf");
     std::fs::write(&font_path, &wrapped).map_err(|e| format!("{}: {e}", font_path.display()))?;
@@ -88,6 +191,8 @@ pub fn build(romfs: &Path, out: &Path) -> Result<Written, String> {
         faces: widths.iter().map(|(face, _)| face.clone()).collect(),
         hint: hint.is_some(),
         ring: ring.is_some(),
+        kept: false,
+        reason: String::new(),
     })
 }
 

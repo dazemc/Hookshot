@@ -187,6 +187,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `HOOKSHOT_JOBS=<n>` (or `--jobs`) | Compilers at once (default one per CPU thread, each started when the free memory holds it; `HOOKSHOT_MEM_GATE=0` turns that check off) |
 | `HOOKSHOT_LIFT_JOBS=<n>` | Processes that write the lifted C (default the cores, at most 16) |
 | `HOOKSHOT_KEEP_BUILD_FILES=1` | Keeps the lifted C and the objects after a build, so that the next one compiles only what changed |
+| `HOOKSHOT_FORCE_PROMPTS=1` | Regenerates button-prompt assets even when unchanged. Unset, empty, `0`, `false`, `off` and `no` (case-insensitive, surrounding spaces ignored) are off |
 | `HOOKSHOT_MINGW=<dir>`, `HOOKSHOT_MSVC=1` | The llvm-mingw to build with; the Visual Studio route instead |
 | `RX_CPM=<dir>`, `WGPU_NATIVE=<dir>` | The CPM cache (Vulkan and SPIR-V headers, VMA, FFmpeg) and wgpu-native |
 | `RX_TARGET=windows` | On Linux: the Windows game, with llvm-mingw's Linux build in `HOOKSHOT_MINGW` |
@@ -196,6 +197,14 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_MTUNE=<tune>`, `RX_STEAMDECK=1` | clang's instruction scheduling for this CPU (default: `znver2` on a Steam Deck's APU, whose Zen 2 cores it schedules better; elsewhere the `-march` level's) |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
+
+A build keeps the button prompts when their source, fonts, game assets, button tables and generation options still
+match, and every generated file still has its recorded size and content hash. The inputs are checked before and after
+generation; changed or unreadable inputs leave no reusable stamp. The build log says `button prompts: unchanged, kept`, or
+`regenerated` and why. Generation uses a fresh directory and publishes only a complete set. A failed generation still removes the
+prompts, so the game shows its own icons, as before. An interrupted builder can leave the old set without a stamp; the
+next build regenerates it. The files the game derives at run time are still cleared by every build, including a kept
+one; they are not part of the stamp. If those files cannot be cleared, the build regenerates rather than trusting them.
 
 ## The pipeline state list
 
