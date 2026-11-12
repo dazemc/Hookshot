@@ -127,6 +127,27 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **Quality preset Auto (this PC) (#2850, upstream `f6cfd987`)**: `gpu/vk/auto_settings.h` picks the memory tier,
+  upscaler, Render resolution and Output resolution from the card's video memory and type, its mesh-shader feature,
+  RTX/RDNA 4, the build's DLSS/FSR 4 and the screen. A first start starts on it; a saved Auto is chosen again only
+  when the hardware fingerprint (`auto_for=`) changes, and a saved Custom or named preset is never changed. In play
+  the replay's 120-present windows move the Render resolution at most two steps (saved as `auto_steps=`, done as
+  `auto_tuned=`), never up after a down, and stop for this run when the CPU holds the frame rate. Switches:
+  `RX_VK_AUTO_PRESET=0`, `RX_VK_AUTO_PRESET_VRAM_MB=<MB>`, `RX_VK_AUTO_TUNE=0`. The Linux window bridge passes the
+  desktop size (`MKWVK_WINDOW_VERSION` 3). The fork has no screen-mode Output list (#2566), so Auto picks the
+  screen's size only when it is one of the menu's fixed `kOutputs` sizes, else the game's 2048x1152.
+  `tests/test_auto_settings.cpp` runs the rule for authored profiles and
+  `builder/rust/tests/auto_preset.rs` checks the menu wiring and that a saved preset is left alone.
+- **Mesh shaders is a launch switch (#2881, upstream `8694e3c6`)**: the Graphics row is gone;
+  `RX_VK_MESH_SHADERS=native` or `compute` chooses, unset is Automatic. Unlike upstream, an existing
+  `mesh_shaders=` line in `hookshot_options.ini` still chooses as the old row did and `save()` keeps it, so a saved
+  path is not silently changed; the switch wins over it. `tests/test_mesh_mode_switch.cpp` runs the rule and
+  `builder/rust/tests/mesh_mode_switch.rs` checks the row's removal, the ini key and the line's persistence.
+- **Frame generation maker names (#2788, upstream `8296d07c`)**: with frame generation on, **Frame generation by**
+  reads `Auto: DLSS FG`, `Auto: FSR 3.1 FG` or `Auto: Built-in FG`, its help says why another maker has the frames,
+  and the FPS counter's second line reads `Base 60, DLSS FG`. The saved values stay 0 Auto / 1 Built-in. The fork has
+  no `menu_i18n.h`, so these texts are English only; translations remain to port.
+  `builder/rust/tests/framegen_naming.rs` checks the row, the counter, the maker ring and every DLSS-G skip reason.
 - **Keyboard button prompts (#2435)**: a sixth prompt face draws the keys and mouse buttons the Controls page binds,
   with the key glyphs, stick icons and live binding changes, and Auto picks it when no gamepad is present. The Kenney
   Input Prompts keyboard/mouse font is vendored under `third_party/kenney_input_keyboard` (CC0, provenance
