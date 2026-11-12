@@ -778,22 +778,32 @@ static int nightly_tag(const char *s) {
 #define HOOKSHOT_WIDEN2(s) L##s
 #define HOOKSHOT_WIDEN(s) HOOKSHOT_WIDEN2(s)
 
-/* The shipping Builder is the Flutter app: its executable and its data folder
-   must both be there, not just the exe name (an incomplete extraction or an
-   antivirus quarantine is recovered by setup instead of reused). */
+/* The shipping Builder is the Flutter app: an EXE alone cannot start it. Keep this startup contract in step with
+   scripts/windows/release_parts.sh's package (the app's Flutter runtime, its data folder and the Rust engine). A
+   missing or empty file, or a folder in place of one, means an incomplete extraction or an antivirus quarantine:
+   the setup repairs it instead of reusing or launching it. */
 static int builder_ready(const wchar_t *exe) {
-    WIN32_FILE_ATTRIBUTE_DATA info;
-    if (!GetFileAttributesExW(exe, GetFileExInfoStandard, &info) ||
-        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (!info.nFileSizeHigh && !info.nFileSizeLow)) return 0;
-    wchar_t data[MAX_PATH];
+    static const wchar_t *const required[] = {
+        L"flutter_windows.dll", L"data\\icudtl.dat", L"data\\app.so",
+        L"hookshot_engine.exe", L"hookshot_engine.dll"
+    };
+    wchar_t path[MAX_PATH];
     const size_t n = wcslen(exe);
     if (n >= MAX_PATH) return 0;
-    wcscpy(data, exe);
-    wchar_t *slash = wcsrchr(data, L'\\');
-    if (!slash) return 0;
-    wcscpy(slash + 1, L"data");
-    const DWORD attributes = GetFileAttributesW(data);
-    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY);
+    wcscpy(path, exe);
+    wchar_t *name = wcsrchr(path, L'\\');
+    if (!name) return 0;
+    const size_t prefix = (size_t)(++name - path);
+    for (size_t i = 0; i <= sizeof required / sizeof *required; i++) {
+        if (i) {
+            if (prefix + wcslen(required[i - 1]) >= MAX_PATH) return 0;
+            wcscpy(name, required[i - 1]);
+        }
+        WIN32_FILE_ATTRIBUTE_DATA info;
+        if (!GetFileAttributesExW(path, GetFileExInfoStandard, &info) ||
+            (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (!info.nFileSizeHigh && !info.nFileSizeLow)) return 0;
+    }
+    return 1;
 }
 
 static const char *manifest_url(void) {
@@ -1034,7 +1044,7 @@ static DWORD WINAPI work(LPVOID unused) {
         home_path(staged_exe, L"%ls\\%ls", install, wrun);
         for (wchar_t *q = staged_exe; *q; q++) if (*q == L'/') *q = L'\\';
         if (!builder_ready(staged_exe))
-            fail(L"The Builder or its data folder is incomplete after unpacking (%ls). Your antivirus may have quarantined files from %ls. Check its quarantine/history, then run the setup again. No complete installation was published.", staged_exe, install);
+            fail(L"The Builder or its startup files are incomplete after unpacking (%ls). Your antivirus may have quarantined files from %ls. Check its quarantine/history, then run the setup again. No complete installation was published.", staged_exe, install);
         if (!publish_install(install, final_dir, g_home.portable))
             fail(L"Could not finish installing into %ls. A preserved repair backup, if restoration was blocked, is beside it as .rollback-*.", final_dir);
         wcscpy(install, final_dir);
