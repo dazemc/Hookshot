@@ -29,19 +29,20 @@ game data, leave it out.
 
 What to work on first, and the steps from claiming a problem to its release, are in the [workflow](docs/workflow.md):
 priorities by severity and by how many players run the affected hardware, and the hardware tiers a change must not
-break. Claim in Discord #dev-work before you start.
+break. Claim in Discord #dev-work before you start. The small, game-free tasks are in
+[good first issues](docs/good-first-issues.md).
 
 | | What |
 |---|---|
-| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it (build, hardware, driver, where, fps). Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works: add a row there. |
+| **Test on other hardware** | NVIDIA cards are the most tested; [tested configurations](docs/tested-configurations.md) lists the runs behind the player-facing summary (build, hardware, driver, where, fps). Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works: add a row there. |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
-| **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
+| **Report what is broken** | Use the [issue forms](https://github.com/dazemc/Hookshot-rs/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. |
-| **Improve the docs** | The README, the development guide and the design notes are part of the project. Corrections and clearer steps are welcome. |
+| **Improve the docs** | The README, the development guide, the design notes and this page are part of the project. Corrections and clearer steps are welcome; docs that still describe the Python builder are bugs too. |
 
 ## Before you open an issue or a PR
 
-- Try the [newest release](https://github.com/NotRexed/Hookshot/releases/latest) first. It includes every fix before it.
+- Try the [newest release](https://github.com/dazemc/Hookshot-rs/releases/latest) first. It includes every fix before it.
 - Search the open issues. If yours is already there, add your details instead of opening another.
 - English, please.
 - One topic per issue or pull request. Do not mix a fix with a refactor or a batch of unrelated changes.
@@ -52,124 +53,147 @@ break. Claim in Discord #dev-work before you start.
 ## Development setup
 
 You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions do
-not work, and the build reads the dump where it lies without changing it. Builds need about 60 GB free and a run uses
-about 10 GB of RAM. Build on an SSD if you can: a hard drive works, but takes much longer, and the builder warns you
+not work, and the build reads the dump where it lies without changing it. Builds need about 50 GB free and 16 GB of
+RAM recommended. Build on an SSD if you can: a hard drive works, but takes much longer, and the builder warns you
 before it starts.
+
+The maintained builder is the Flutter desktop app in `builder/flutter`; the Rust engine and its CLI are in
+`builder/rust`. Both platforms need stable Rust (1.99 or newer) and Flutter 3.47 or newer. The app never invokes
+Python; Python remains only in the release tooling, the legacy `nx2/` and `builder/py` builders, and the pipeline
+state merge.
 
 ### Windows, from the command line
 
-1. Install Python 3 from [python.org](https://www.python.org/downloads/) (not the Microsoft Store build: `python -I`
-   does not see packages installed there) and the pipeline's packages:
-
-   ```powershell
-   python -m pip install -r requirements.txt
-   ```
-
-   (the second line: the button prompts' packages. Without them the game shows the Switch's icons)
+1. Install [stable Rust](https://rustup.rs/) and [Flutter](https://docs.flutter.dev/get-started/install/windows)
+   3.47 or newer, and put `cargo` and `flutter` on `PATH`.
 
 2. Get [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build) and set `HOOKSHOT_MINGW` to its
-   folder. Without it the build falls back to emsdk's clang at `C:\emsdk` with Visual Studio's C++ tools and the
-   Windows SDK (`HOOKSHOT_MSVC=1` forces that route).
+   folder. The engine builds the game and the Vulkan back end with it; without it the Windows build stops with a
+   message. This engine does not use the old emsdk/Visual Studio route.
 
 3. Copy the pieces a clone does not carry from the `tools` folder Hookshot Builder installs. Run `HookshotBuilder.exe`
    from the latest release once (releases no longer carry a `HookshotBuilder.zip`): the folder is
-   `%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`.
+   `%LOCALAPPDATA%\HookshotBuilder\versions\<tag>\HookshotBuilder\tools`.
 
    | From `tools` | To | Variable |
    |---|---|---|
-   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
-   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
+   | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan, SPIR-V and VMA headers, FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the build stops) |
+   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the optional WebGPU fallback renderer; without it the game is built without one) |
    | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
 
-4. Run everything with `python -I` from the repository root.
+4. Build the engine and run the app:
+
+   ```powershell
+   cargo build --release --workspace --manifest-path builder/rust/Cargo.toml
+   cd builder/flutter
+   flutter pub get
+   flutter run -d windows
+   ```
+
+   The app looks for `builder/rust/target/release/hookshot_engine`; `HOOKSHOT_ENGINE_CLI` points it at another engine.
 
 ### Linux
 
-Either use the `Hookshot-<version>-x86_64.AppImage` from the Releases page, or build the environment and the AppImage
-yourself:
+Install stable Rust, Flutter 3.47 or newer, clang and lld, cmake, ninja, pkg-config, the GTK 3 development headers,
+OpenSSL headers, and Vulkan, SPIR-V and VMA headers (or set `RX_CPM` to a CPM cache). Then:
 
 ```sh
-scripts/linux/deps.sh       # LLVM, Python packages, FFmpeg with dav1d, SDL2, Vulkan headers
-scripts/linux/appimage.sh   # the AppImage, in build-linux/
+cargo build --release --workspace --manifest-path builder/rust/Cargo.toml
+(cd builder/flutter && flutter pub get && flutter run -d linux)
 ```
 
-The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
-compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
+The release AppImage is built by `scripts/linux/appimage.sh` into `build-linux/`; it needs the same toolchain plus
+`curl`, `zstd` and `file`. The AppImage is a development image: a game build from it needs the distribution's clang
+and Vulkan/SPIR-V/VMA headers. The README's [download and play](readme.md#download-and-play) has the player-facing
+Linux notes. `scripts/linux/deps.sh` belongs to the old Python/Tk AppImage and is not used by the Flutter builder.
 
 ### NVIDIA DLSS (optional)
 
 DLSS (`gpu/vk/vk_dlss.cpp`) is built in only with NVIDIA's DLSS SDK, which is NVIDIA's, under NVIDIA's own license, and
-is never committed, bundled or uploaded: not in a PR, not in a release, not in a CI artifact. Fetch it for your own
-builds with `scripts/ngx_sdk.py` (it prints NVIDIA's license notice and needs `--accept-nvidia-license` or a typed yes),
-then build with `HOOKSHOT_NGX_SDK=<sdk folder>`:
+is never committed, bundled or uploaded: not in a PR, not in a release, not in a CI artifact. The Flutter app fetches
+it for your own builds when you tick DLSS and accept NVIDIA's license. For a headless build, fetch it with the engine:
 
-```powershell
-python -I scripts/ngx_sdk.py --platform windows C:\path\ngx-sdk     # headers, nvsdk_ngx_s.lib, nvngx_dlss.dll
-$env:HOOKSHOT_NGX_SDK = "C:\path\ngx-sdk"
-python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot-dlss"
+```sh
+E=builder/rust/target/release/hookshot_engine
+printf '%s' '{"command":"build.ngx_fetch","sdk":"C:\\path\\ngx-sdk"}' | "$E"
 ```
 
-On Windows the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built for Microsoft's static runtime) into
+Then pass `"ngx":"C:\\path\\ngx-sdk","dlss":true` to `build.all`, or set `HOOKSHOT_NGX_SDK=<sdk folder>`. On Windows
+the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built for Microsoft's static runtime) into
 `hookshot_vk.dll`, with `gpu/vk/vk_ngx_msvc_rt.cpp` and `host/mingw_msvc_shims.c` for what it needs of that runtime.
-`make_game.py` copies `nvngx_dlss.dll` into the game folder's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside
-the game (it is the driver's). On Linux it is `--platform linux` (or `scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`
-and `libnvidia-ngx-dlss.so`. A Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
+`build.all` copies `nvngx_dlss.dll` and `nvngx_dlssg.dll` into the game folder's `ngx` folder; never put NGX's core,
+`_nvngx.dll`, beside the game (it is the driver's). On Linux it uses `libnvsdk_ngx.a` and `libnvidia-ngx-dlss.so`. A
+Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
+
 CI's `vulkan-dlss` workflow (`.github/workflows/vulkan-dlss.yml`) checks only that `hookshot_vk.dll` still links with the
 SDK. It runs by hand, and on a push or pull request only when a file DLSS's build depends on changes; it accepts NVIDIA's
 license for that run alone and uploads nothing.
 
 Never share a game folder built with the SDK. A change to the pinned release updates the file table and SHA-256s in
-`scripts/ngx_sdk.py` (and `tests/test_ngx_sdk.py`), and the release named in the builder's license text
-(`builder/HookshotBuilder/MainWindow.xaml.cs`).
+`builder/rust/src/ngx_sdk.rs` (and its tests), and the license text in `builder/flutter/lib/config.dart`.
 
 ### Hookshot Builder
 
-The builder is a .NET 8 WPF app. Open `builder/HookshotBuilder.sln` in Visual Studio 2022 with the .NET desktop
-workload, or build it from a developer prompt:
-
-```powershell
-dotnet build builder/HookshotBuilder.sln
-```
-
-You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
+The builder is a Flutter desktop app. Open `builder/flutter` in an editor with the Flutter plugin, or run the commands
+above. The old WPF app in `builder/HookshotBuilder` and the Tk app in `builder/py` are legacy and not the maintained
+builder; do not add features to them for the Flutter app.
 
 For a Windows installation that keeps its own state on an external SSD, see
 [portable Builder setup and relocation](docs/windows-portable-builder.md).
 
-The Windows app's **Build workers** choice applies to builds started from that window. **Automatic** keeps the existing
-`HOOKSHOT_JOBS` override, or the build tools' free-memory policy when no override is set. A number overrides it for that
-build's child process only; more workers need more memory and are not always faster. This choice is not saved: a new
-window, including one started to update a game, uses Automatic again.
-
-Its **Build memory** choice is saved with the build's other settings, and the updates use it too, as they show no menu.
-**Automatic** keeps the free-memory policy. A number of GB sets
-`HOOKSHOT_MEM_LIMIT_GB` for that build: the compilers may then reserve that much together, whatever is free now. The
-compilers that always run (up to 4 on Windows) still run under a smaller number.
+`HOOKSHOT_TOOLS` points the app at another source tree. `HOOKSHOT_BUILDER_HOME` moves its settings, downloads and
+backups; an empty `portable.txt` beside the executable keeps them beside the app instead.
 
 ## Building
 
+The engine takes one JSON object on stdin and answers one JSON object; `--stream` is the Flutter protocol. From a
+checkout:
+
+```sh
+E=builder/rust/target/release/hookshot_engine
+printf '%s' '{"command":"build.prepare","nup":"<game>.nup","out":"<out>","work":"<work>"}' | "$E"
+printf '%s' '{"command":"build.all","exefs":"<work>/exefs","romfs":"<out>/romfs","out":"<out>","work":"<work>","language":"en-US"}' | "$E"
+```
+
 | Command | What it does |
 |---|---|
-| `python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US` | Build a complete game folder from a `.nup`. A build takes about 40 minutes. |
-| `python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Hookshot"` | The same, from extracted folders. |
-| `python -I nx2/make_game.py --check --nup "C:\path\your-game.nup"` | Check the game and its version without building. |
-| `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | Record the dump in `work/dump.txt`. |
-| `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
-| `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot.exe` and `hookshot_vk.dll`. |
-| `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
-| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
+| `cargo build --release --workspace --manifest-path builder/rust/Cargo.toml` | Build the engine, its CLI and ZBIC into `builder/rust/target/release`. |
+| `cd builder/flutter && flutter pub get && flutter run -d windows` (or `-d linux`) | Run the builder app against the engine. |
+| `scripts/linux/appimage.sh` | Build the Linux AppImage in `build-linux/`. |
+| `printf '%s' '{"command":"build.prepare","nup":"...","out":"...","work":"..."}' \| "$E"` | Read a `.nup` into `work/exefs` and `out/romfs`. |
+| `printf '%s' '{"command":"build.all","exefs":"...","romfs":"...","out":"...","work":"..."}' \| "$E"` | Lift, compile, link and package a game folder from an exefs/romfs pair. |
+| `printf '%s' '{"command":"build.shaders","romfs":"<dump>/romfs","out":"<out>/hookshot_shaders.bin"}' \| "$E"` | Build the shader census and seed list. |
+| `printf '%s' '{"command":"build.ngx_fetch","sdk":"..."}' \| "$E"` | Fetch NVIDIA's DLSS SDK after accepting its license. |
 
-Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
-local artifacts; they are never committed.
+A build reads and writes tens of gigabytes. Keep each game's work folder separate (the `work` field) and never commit
+it: the lifted C and every build output are local artifacts.
+
+### Build switches
+
+The builder and engine read these; the runtime and renderer switches are in the
+[development guide](docs/development.md#switches-for-testing-and-debugging), where the surrounding switch tables are
+kept.
+
+| Switch | What it does |
+|---|---|
+| `HOOKSHOT_TOOLS=<dir>` | Source tree the engine builds from (default: this checkout). |
+| `HOOKSHOT_ENGINE_CLI=<file>` | Engine binary the Flutter app starts. |
+| `HOOKSHOT_BUILDER_HOME=<dir>` | Builder settings, downloads and backups. |
+| `HOOKSHOT_LIFT_JOBS=<n>`, `HOOKSHOT_NUP_JOBS=<n>`, `HOOKSHOT_CENSUS_JOBS=<n>` | Lift, `.nup` extraction and shader census workers. |
+| `HOOKSHOT_MINGW=<dir>`, `RX_CPM=<dir>`, `WGPU_NATIVE=<dir>` | Windows compiler, Vulkan/SPIR-V/VMA headers, optional WebGPU renderer. |
+| `HOOKSHOT_VK_PREBUILT=<file>`, `HOOKSHOT_NGX_SDK=<dir>` | Use a prebuilt Vulkan back end; build DLSS with NVIDIA's SDK. |
+| `HOOKSHOT_A64EMIT_LIB=<file>`, `HOOKSHOT_ZBIC_LIB=<file>`, `HOOKSHOT_SDL2=<dir>` | Translator, ZBIC and SDL2 libraries to package. |
+| `HOOKSHOT_BUILD_TIMING=1`, `HOOKSHOT_FORCE_PROMPTS=1` | Print stage timings; regenerate prompt assets. |
+| `RX_TARGET=windows`, `RX_RELEASE=1`, `RX_PGO=gen`, `RX_MARCH=<level>`, `RX_MTUNE=<tune>`, `RX_STEAMDECK=1` | Cross-build for Windows, release layout, profile generation, CPU level and scheduling. |
 
 ## Testing
 
-The Python source-reading suite and `tests/run_all.py` were removed. The checks are now:
+The old Python source-reading suite and `tests/run_all.py` are gone. The checks are now:
 
 | Command | What it runs |
 |---|---|
-| `cargo test --workspace` in `builder/rust` | Rust engine unit and CLI tests. |
+| `cargo test --workspace` in `builder/rust` | Rust engine, CLI, C/C++ fixtures and the docs checks (`docs.rs`, `rust_only_app.rs`). |
 | `flutter test` and `flutter analyze` in `builder/flutter` | Builder state, routing and UI tests. |
 | CMake under `tests/` and `gpu/vk/tests` | The C and C++ fixtures that do not need the game. |
 | A run in the game on your hardware | Runtime, renderer and performance changes. Record what you did, what you saw, and the numbers from `hookshot_log.txt`. |
@@ -188,17 +212,19 @@ generated game data to the repository or to CI.
   new folder and a provenance note rather than editing one.
 - Treat the local mkw-recomp and Eglantine checkouts as read-only references: read from them, run them, never edit
   them.
-- New switches use the `RX_` prefix in the renderer and `HOS_` in the runtime. They are off, or neutral, unless
-  asked for, and they do not cost anything while off. Document them where the surrounding switches are documented.
+- The app's path is Rust and Flutter. Python remains only for release tooling, the legacy `nx2/` and `builder/py`
+  builders, and the pipeline-state merge; do not add a new build stage there. Legacy Python stays on the standard
+  library except the existing pipeline dependencies (lz4, numpy, capstone, unicorn, zstandard) and the button prompts'
+  packages (`nx2/prompt_requirements.txt`), which are accepted for `nx2/prompt_assets.py` and `nx2/prompt_draw.py`
+  alone, at build time.
+- New switches use the `RX_` prefix in the renderer, `HOS_` in the runtime and `HOOKSHOT_` in the builder and engine.
+  They are off, or neutral, unless asked for, and they do not cost anything while off. Document them where the
+  surrounding switches are documented.
 - The GPU replay rules in [design notes, section 4](docs/design.md#4-the-lessons-from-mkw-as-rules-here) are not
   suggestions: nothing the replay reads may come from live guest memory, waits are honoured per queue, and texture
   and sampler registrations stay in submission order. A change that reads guest memory at replay time is a
   regression, even if it looks right on one frame.
-- Python runs with `-I`. Tests stay on the standard library so CI needs no install step; the pipeline's existing
-  dependencies (lz4, numpy, capstone, unicorn, zstandard) are the exception, not a reason to add more. So are the
-  button prompts' (fontTools, Pillow, astc-encoder-py, texture2ddecoder: `nx2/prompt_requirements.txt`), accepted for
-  `nx2/prompt_assets.py` and `nx2/prompt_draw.py` alone, at build time. Maintainers' agents reviewing a change: check
-  that these four are still used only there, and flag any other use. Keep line endings LF (`.gitattributes`).
+- Keep line endings LF (`.gitattributes`).
 - New code has to be GPL-compatible. See below.
 
 ## Commits and pull requests
@@ -263,10 +289,10 @@ NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing
 
 ## Where to talk
 
-- **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
+- **Issues:** [use the forms](https://github.com/dazemc/Hookshot-rs/issues/new/choose).
 - **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
   web ports, and that channel is where Hookshot talk belongs.
-- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest.
+- **Newest release:** https://github.com/dazemc/Hookshot-rs/releases/latest.
 
 Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than
 before moves the port forward.

@@ -4,6 +4,10 @@ This report compares the maintained build paths on the same class of PC. It is w
 maintainers and for people deciding whether the Rust/Flutter builder is worth trying. The numbers are
 measurements, not estimates; the machines and the load are named with each one.
 
+The current pre-release is [v2.2.0-rs.10](https://github.com/dazemc/Hookshot-rs/releases/tag/v2.2.0-rs.10)
+(2026-11-12). The numbers below were measured across the Rust/Flutter pre-release line, not as a benchmark of that
+tag alone.
+
 ## Short version
 
 | Work | Upstream Python path | Hookshot-rs Rust path | Notes |
@@ -80,12 +84,13 @@ Python.** The maintained Rust path is at parity with the Python pipeline for:
 The remaining Python is not on the app's path:
 
 - `scripts/` release tooling (version notes, AppImage/Windows packaging helpers);
-- the legacy `nx2/` builder, kept for upstream release scripts and local comparison;
+- the legacy `nx2/` and `builder/py` builders, kept for upstream release scripts and local comparison;
 - the merge of `assets/pipeline_states/*.xz` into the shipped state list, which is build-asset
   tooling rather than a game build stage.
 
-If a change makes the Flutter app call Python, that is a regression. The source checks in
-`builder/rust` and the release workflows enforce the Rust-only path.
+If a change makes the Flutter app call Python, that is a regression. `builder/rust/tests/rust_only_app.rs`
+fails when the app or engine starts Python or `make_game.py`, `builder/rust/tests/docs.rs` fails when the
+contributor docs send people back to the Python builder, and the release workflows build the app without Python.
 
 ## What is not claimed
 
@@ -102,16 +107,19 @@ If a change makes the Flutter app call Python, that is a regression. The source 
 
 ```sh
 # Rust engine
-cd builder/rust && cargo build --release
+cd builder/rust && cargo build --release --workspace
 E=$PWD/target/release/hookshot_engine
 
+# read a .nup first; build.all takes an unpacked exefs/romfs pair
+printf '%s' '{"command":"build.prepare","nup":"<game>.nup","out":"<out>","work":"<work>"}' | "$E"
+
 # one stage at a time
-printf '%s' '{"command":"lift.write","exefs":"<dump>/exefs","out":"<work>/gen","standalone":true}' | "$E"
-printf '%s' '{"command":"build.shaders","romfs":"<dump>/romfs","out":"<out>/hookshot_shaders.bin"}' | "$E"
-printf '%s' '{"command":"build.package","work":"<work>","out":"<out>","romfs":"<dump>/romfs","assets":"","language":"en-US"}' | "$E"
+printf '%s' '{"command":"lift.write","exefs":"<work>/exefs","out":"<work>/gen","standalone":true}' | "$E"
+printf '%s' '{"command":"build.shaders","romfs":"<out>/romfs","out":"<out>/hookshot_shaders.bin"}' | "$E"
+printf '%s' '{"command":"build.package","work":"<work>","out":"<out>","romfs":"<out>/romfs","assets":"","language":"en-US"}' | "$E"
 
 # the whole build
-printf '%s' '{"command":"build.all","exefs":"<dump>/exefs","romfs":"<dump>/romfs","out":"<out>","work":"<work>"}' | "$E"
+printf '%s' '{"command":"build.all","exefs":"<work>/exefs","romfs":"<out>/romfs","out":"<out>","work":"<work>","language":"en-US"}' | "$E"
 ```
 
 The engine reports each stage, the unit count, the cache hits and the wall time in its JSON responses;

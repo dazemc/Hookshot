@@ -1,17 +1,30 @@
-# hookshot_builder
+# Hookshot Builder (Flutter)
 
-A new Flutter project.
+The desktop app for Hookshot: a Flutter UI over the Rust engine in [`../rust`](../rust). It builds a game folder from
+the player's own `.nup` or an unpacked `exefs`/`romfs` pair, launches the game, manages profiles and saves, updates a
+built folder and pins a release. The app never invokes Python; a missing engine is a typed error.
 
-## Getting Started
+## Run
 
-This project is a starting point for a Flutter application.
+Build the engine first, then the app:
 
-A few resources to get you started if this is your first Flutter project:
+```sh
+cargo build --release --workspace --manifest-path ../rust/Cargo.toml
+flutter pub get
+flutter run -d linux    # or: flutter run -d windows
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+The app looks for `../rust/target/release/hookshot_engine` (and the debug build); set `HOOKSHOT_ENGINE_CLI` to use
+another engine. `HOOKSHOT_TOOLS` points it at another source tree, and `HOOKSHOT_BUILDER_HOME` moves its settings,
+downloads and backups.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Test
+
+```sh
+flutter test
+flutter analyze
+```
+
+The Rust side's tests are `cargo test --workspace` in `../rust`. The full contributor path, including the game build
+and the Windows toolchain, is in [CONTRIBUTING.md](../../CONTRIBUTING.md); the architecture and the engine's JSON
+commands are in [docs/fork.md](../../docs/fork.md).
