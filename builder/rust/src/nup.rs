@@ -5,6 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -38,6 +40,13 @@ struct Record {
     reserved: [u8; 12],
 }
 
+struct Extracted {
+    entries: usize,
+    damaged: Vec<String>,
+    count: usize,
+    bytes: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Title {
     index: u32,
@@ -50,6 +59,7 @@ struct Title {
 
 pub struct Nup {
     file: File,
+    path: PathBuf,
     pub file_size: u64,
     physical: u64,
     toc_offset: u64,
@@ -166,6 +176,7 @@ impl Nup {
         let strings = meta[strings_at - 0x80..].to_vec();
         Ok(Self {
             file,
+            path: path.to_path_buf(),
             file_size,
             physical,
             toc_offset,
@@ -669,6 +680,79 @@ impl Nup {
         }))
     }
 
+    /// One member into a resolved destination, written in place: an old file
+    /// is unlinked, not truncated, so another hard link keeps its data.
+    fn extract_in_place(
+        &mut self,
+        where_to: &mut Destination,
+        part: &str,
+        rel: &str,
+        record: &Record,
+    ) -> Result<(bool, bool, u64), String> {
+        let path = where_to.path(part, rel)?;
+        let checked = part == "romfs" && rel.ends_with(".zs");
+        let expected = if checked && record.hash != [0u8; 32] {
+            Some(record.hash)
+        } else {
+            None
+        };
+        let info = match fs::symlink_metadata(&path) {
+            Ok(meta) => Some(meta),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("{}: {error}", path.display())),
+        };
+        if info.as_ref().is_some_and(is_link) {
+            return Err(format!(
+                "extraction path is a link or reparse point: {}",
+                path.display()
+            ));
+        }
+        // (a member cut short by an interrupted run is shorter than its size: written again)
+        if info
+            .as_ref()
+            .is_some_and(|meta| meta.is_file() && meta.len() == record.size)
+        {
+            if checked {
+                let previous = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                if !zstd_start(&previous)
+                    || expected.is_some_and(|want| Sha256::digest(&previous).as_slice() != want)
+                {
+                    return Ok((true, false, 0));
+                }
+            }
+            return Ok((false, false, 0));
+        }
+        let data = self.read_bytes(record, rel)?;
+        if checked
+            && (!zstd_start(&data)
+                || expected.is_some_and(|want| Sha256::digest(&data).as_slice() != want))
+        {
+            // (still written: the game gets a stand-in for the damaged member)
+        }
+        let damaged = checked
+            && (!zstd_start(&data)
+                || expected.is_some_and(|want| Sha256::digest(&data).as_slice() != want));
+        if info.is_some() {
+            fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        let mut temporary = path.as_os_str().to_owned();
+        temporary.push(".part");
+        let temporary = PathBuf::from(temporary);
+        let _ = fs::remove_file(&temporary);
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if let Err(error) = file.write_all(&data) {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            return Err(format!("{}: {error}", path.display()));
+        }
+        drop(file);
+        Ok((damaged, true, data.len() as u64))
+    }
+
     /// Extract the package, saying how many members of all of them are done.
     /// The heads file of a romfs is written once the whole romfs was walked.
     pub fn extract_with_progress(
@@ -689,86 +773,140 @@ impl Nup {
             total += entries.len();
             parts.push((part, entries));
         }
+        let workers = std::env::var("HOOKSHOT_NUP_JOBS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|count| count.get())
+                    .unwrap_or(1)
+                    .min(4)
+            })
+            .max(1);
         let mut count = 0usize;
         let mut bytes = 0u64;
         let mut done = 0usize;
         let mut where_to = Destination::new(out);
-        let mut stale = true;
         for (part, entries) in parts {
             let mut damaged = Vec::new();
-            for (rel, record) in entries {
-                let path = where_to.path(part, &rel)?;
-                let checked = part == "romfs" && rel.ends_with(".zs");
-                let expected = if checked && record.hash != [0u8; 32] {
-                    Some(record.hash)
-                } else {
-                    None
-                };
-                let info = match fs::symlink_metadata(&path) {
-                    Ok(meta) => Some(meta),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) => return Err(format!("{}: {error}", path.display())),
-                };
-                if info.as_ref().is_some_and(is_link) {
-                    return Err(format!(
-                        "extraction path is a link or reparse point: {}",
-                        path.display()
-                    ));
-                }
-                // (a member cut short by an interrupted run is shorter than its size: written again)
-                if info
-                    .as_ref()
-                    .is_some_and(|meta| meta.is_file() && meta.len() == record.size)
-                {
-                    if checked {
-                        let previous =
-                            fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                        if !zstd_start(&previous)
-                            || expected
-                                .is_some_and(|want| Sha256::digest(&previous).as_slice() != want)
-                        {
-                            damaged.push(rel.clone());
+            let romfs = part == "romfs";
+            if romfs && workers > 1 && entries.len() > 256 {
+                let path = self.path.clone();
+                let out = out.to_path_buf();
+                let chunk = 4096usize;
+                let chunks = entries.len().div_ceil(chunk);
+                let (tx, rx) = mpsc::channel::<Result<(usize, Extracted), String>>();
+                let next = AtomicUsize::new(0);
+                let merged =
+                    std::thread::scope(|scope| -> Result<Vec<(usize, Extracted)>, String> {
+                        let mut handles = Vec::new();
+                        for _ in 0..workers.min(chunks) {
+                            let tx = tx.clone();
+                            let path = path.clone();
+                            let out = out.clone();
+                            let entries = &entries;
+                            let next = &next;
+                            let part = part;
+                            handles.push(scope.spawn(move || {
+                                let mut nup = match Nup::open(&path) {
+                                    Ok(nup) => nup,
+                                    Err(error) => {
+                                        let _ = tx.send(Err(error));
+                                        return;
+                                    }
+                                };
+                                let mut where_to = Destination::new(&out);
+                                loop {
+                                    let at = next.fetch_add(1, Ordering::Relaxed);
+                                    if at >= chunks {
+                                        break;
+                                    }
+                                    let start = at * chunk;
+                                    let end = (start + chunk).min(entries.len());
+                                    let mut extracted = Extracted {
+                                        entries: end - start,
+                                        damaged: Vec::new(),
+                                        count: 0,
+                                        bytes: 0,
+                                    };
+                                    let mut failed = None;
+                                    for (rel, record) in &entries[start..end] {
+                                        match nup.extract_in_place(&mut where_to, part, rel, record)
+                                        {
+                                            Ok((bad, written, written_bytes)) => {
+                                                if bad {
+                                                    extracted.damaged.push(rel.clone());
+                                                }
+                                                if written {
+                                                    extracted.count += 1;
+                                                    extracted.bytes += written_bytes;
+                                                }
+                                            }
+                                            Err(error) => {
+                                                failed = Some(error);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if let Some(error) = failed {
+                                        let _ = tx.send(Err(error));
+                                        break;
+                                    }
+                                    if tx.send(Ok((at, extracted))).is_err() {
+                                        break;
+                                    }
+                                }
+                            }));
                         }
+                        drop(tx);
+                        let mut results = Vec::with_capacity(chunks);
+                        let mut error = None;
+                        let mut here = 0usize;
+                        for message in rx {
+                            match message {
+                                Ok((at, extracted)) => {
+                                    here += extracted.entries;
+                                    progress(done + here, total);
+                                    results.push((at, extracted));
+                                }
+                                Err(failure) => {
+                                    if error.is_none() {
+                                        error = Some(failure);
+                                    }
+                                }
+                            }
+                        }
+                        for handle in handles {
+                            if handle.join().is_err() && error.is_none() {
+                                error = Some("a .nup worker stopped".to_string());
+                            }
+                        }
+                        if let Some(error) = error {
+                            return Err(error);
+                        }
+                        results.sort_by_key(|(at, _)| *at);
+                        Ok(results)
+                    })?;
+                for (_, extracted) in merged {
+                    done += extracted.entries;
+                    damaged.extend(extracted.damaged);
+                    count += extracted.count;
+                    bytes += extracted.bytes;
+                }
+            } else {
+                for (rel, record) in &entries {
+                    let (bad, written, written_bytes) =
+                        self.extract_in_place(&mut where_to, part, rel, record)?;
+                    if bad {
+                        damaged.push(rel.clone());
+                    }
+                    if written {
+                        count += 1;
+                        bytes += written_bytes;
                     }
                     done += 1;
                     progress(done, total);
-                    continue;
                 }
-                let data = self.read_bytes(&record, &rel)?;
-                if checked
-                    && (!zstd_start(&data)
-                        || expected.is_some_and(|want| Sha256::digest(&data).as_slice() != want))
-                {
-                    damaged.push(rel.clone());
-                }
-                // Written in place: a temporary and a rename per member took
-                // most of an extraction's time on Windows. An old file is
-                // unlinked, not truncated, so another hard link keeps its data.
-                if info.is_some() {
-                    fs::remove_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                }
-                if stale {
-                    // (an interrupted builder that wrote through a temporary left it beside the first member still to write)
-                    stale = false;
-                    let mut temporary = path.as_os_str().to_owned();
-                    temporary.push(".part");
-                    let _ = fs::remove_file(PathBuf::from(temporary));
-                }
-                let mut file = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                if let Err(error) = file.write_all(&data) {
-                    drop(file);
-                    let _ = fs::remove_file(&path);
-                    return Err(format!("{}: {error}", path.display()));
-                }
-                drop(file);
-                count += 1;
-                bytes += data.len() as u64;
-                done += 1;
-                progress(done, total);
             }
             if part == "romfs" {
                 let heads = out.join(HEADS_NAME);
