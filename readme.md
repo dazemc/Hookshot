@@ -116,7 +116,7 @@ and background load change these; they are development measurements, not univers
 | 25.6 GB `.nup` read | 94 s | **64 s** (46 s quiet) |
 | Shader census | 9.7 s | **3.88 s** |
 | Vulkan backend build | — | **100.6 s clean**, 0.7 s repeat |
-| First compile (66 objects → 335 units) | 10–20 min | **20.3 min cold** at the 4-job memory gate; **4.3 s warm** (335/335 units cached) |
+| First compile (66 objects → 335 units) | 10–20 min | **13.8 min cold** with memory-sized waves (up to 32 jobs as the giants finish); **4.3 s warm** (335/335 units cached) |
 | Game boot | — | 2,640 presents at 60 fps, 0 traps |
 
 The [technical reference](docs/fork.md) explains what is Rust, what is still Python, the upstream-port status, the

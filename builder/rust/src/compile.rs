@@ -414,7 +414,26 @@ pub fn parallel_for(needs: &[u64], available_mb: Option<u64>, cores: usize) -> u
     count.max(1).min(cores)
 }
 
-/// Compile a list of jobs, longest first, up to `jobs` at once.
+/// How many jobs each wave runs: the memory gate's count for the largest
+/// remaining job and those after it. A build's first wave is its giant
+/// functions (2-3 GB each, so few); once they are done the ordinary 6 MB
+/// units (~0.5 GB each) fit on most of the cores instead of the four the
+/// giants allowed for the whole build.
+pub fn wave_counts(needs: &[u64], available_mb: Option<u64>, cores: usize) -> Vec<usize> {
+    let mut counts = Vec::new();
+    let mut at = 0;
+    while at < needs.len() {
+        let n = parallel_for(&needs[at..], available_mb, cores).min(needs.len() - at);
+        counts.push(n);
+        at += n;
+    }
+    counts
+}
+
+/// Compile a list of jobs, longest first, up to `jobs` at once. With
+/// `needs` (the jobs' memory, in the same order) and memory known, the
+/// jobs run in waves whose size the memory gate decides as the giants
+/// finish; otherwise `parallel` jobs run all the time.
 pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
     let jobs: Vec<Value> = request
         .get("jobs")
@@ -423,14 +442,39 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
         .unwrap_or_default();
     let cache = PathBuf::from(request.get("cache").and_then(Value::as_str).unwrap_or(""));
     let hashes = (!cache.as_os_str().is_empty()).then(|| Mutex::new(Hashes::load(&cache)));
-    let limit = request.get("parallel").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let limit = if limit == 0 {
+    let asked = request.get("parallel").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let limit = if asked == 0 {
         crate::toolchain::default_jobs(3.5)
     } else {
-        limit
+        asked
     };
-    let mut jobs = jobs;
-    jobs.sort_by_key(|job| {
+    let cores = if asked == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        asked
+    };
+    let needs_requested: Option<Vec<u64>> =
+        request.get("needs").and_then(Value::as_array).map(|needs| {
+            needs
+                .iter()
+                .map(|need| need.as_u64().unwrap_or(0))
+                .collect()
+        });
+    let mut paired: Vec<(Value, u64)> = jobs
+        .into_iter()
+        .enumerate()
+        .map(|(index, job)| {
+            let need = needs_requested
+                .as_ref()
+                .and_then(|needs| needs.get(index))
+                .copied()
+                .unwrap_or(0);
+            (job, need)
+        })
+        .collect();
+    paired.sort_by_key(|(job, _)| {
         std::cmp::Reverse(
             job.get("src")
                 .and_then(Value::as_str)
@@ -439,42 +483,66 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
                 .unwrap_or(0),
         )
     });
+    let needs: Vec<u64> = paired.iter().map(|(_, need)| *need).collect();
+    let jobs: Vec<Value> = paired.into_iter().map(|(job, _)| job).collect();
+    let memory_scheduled = needs_requested
+        .as_ref()
+        .is_some_and(|n| n.len() == jobs.len())
+        && needs.iter().any(|need| *need > 0);
     let started = Instant::now();
     let mut compiled = 0usize;
     let mut cached = 0usize;
     let mut failed = Vec::new();
-    let next = AtomicUsize::new(0);
-    let results: Vec<Vec<(usize, Result<Value, String>)>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..limit.min(jobs.len()))
-            .map(|_| {
-                let next = &next;
-                let jobs = &jobs;
-                let hashes = hashes.as_ref();
-                scope.spawn(move || {
-                    let mut out = Vec::new();
-                    loop {
-                        let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(job) = jobs.get(index) else {
-                            break;
-                        };
-                        out.push((index, compile_one_with(job, root, hashes)));
-                    }
-                    out
+    let mut results: Vec<(usize, Result<Value, String>)> = Vec::new();
+    let run = |first: usize, count: usize| -> Vec<(usize, Result<Value, String>)> {
+        let end = first + count;
+        let next = AtomicUsize::new(first);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..count)
+                .map(|_| {
+                    let next = &next;
+                    let jobs = &jobs;
+                    let hashes = hashes.as_ref();
+                    scope.spawn(move || {
+                        let mut out = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, Ordering::Relaxed);
+                            if index >= end {
+                                break;
+                            }
+                            out.push((index, compile_one_with(&jobs[index], root, hashes)));
+                        }
+                        out
+                    })
                 })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|handle| handle.join().ok())
-            .collect()
-    });
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .flatten()
+                .collect()
+        })
+    };
+    if memory_scheduled && !jobs.is_empty() {
+        let available = request
+            .get("available_mb")
+            .and_then(Value::as_u64)
+            .or_else(crate::toolchain::available_mb);
+        let mut at = 0;
+        for count in wave_counts(&needs, available, cores) {
+            results.extend(run(at, count));
+            at += count;
+        }
+    } else if !jobs.is_empty() {
+        results.extend(run(0, limit.min(jobs.len())));
+    }
     if let Some(hashes) = hashes {
         hashes
             .into_inner()
             .unwrap_or_else(|e| e.into_inner())
             .save();
     }
-    for (index, result) in results.into_iter().flatten() {
+    for (index, result) in results {
         match result {
             Ok(value) if value["compiled"] == Value::Bool(true) => compiled += 1,
             Ok(value) if value["cached"] == Value::Bool(true) => cached += 1,
@@ -767,6 +835,21 @@ mod tests {
             key
         );
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn waves_use_the_cores_the_giants_were_holding_back() {
+        // (two 3 GB functions fit in 8 GB less the reserve, with room for
+        // one 0.5 GB unit; the seven small units left then all fit)
+        let needs = vec![3000, 3000, 500, 500, 500, 500, 500, 500, 500];
+        assert_eq!(wave_counts(&needs, Some(8_000), 8), vec![3, 6]);
+        // (four giants: two a wave, then one giant with both small units,
+        // then the last unit)
+        let needs = vec![3000, 3000, 3000, 3000, 500, 500];
+        assert_eq!(wave_counts(&needs, Some(8_000), 8), vec![2, 3, 1]);
+        // (unknown memory: one wave of every core; never zero jobs)
+        assert_eq!(wave_counts(&[100, 100, 100], None, 4), vec![3]);
+        assert_eq!(wave_counts(&[], Some(8_000), 8), Vec::<usize>::new());
     }
 
     #[test]

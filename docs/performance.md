@@ -18,7 +18,7 @@ Cold, from an empty work folder, in the order the engine runs:
 |---|---|---|
 | Unpack the .nup (25.6 GB) | 50.5 s with 4 workers; 51.3 s with 6; 62.0 s with 8 | read, verify and write 186,588 members; f2fs is the limit, not the CPU |
 | Lift (`lift.write`) | 25.8 s idle (72 s loaded) | discovery, translation, cache, chunks, patches, tables |
-| Compile the lifted/runtime objects | 20.3 min cold for 335 units at the 4-job memory gate (32-thread PC, 15.5 GiB); 4.3 s warm with all 335 objects cached; 1.84 GB peak RSS for one 26 MB chunk | clang -O1 on 6 MB compile units (one giant function per unit when it is larger) |
+| Compile the lifted/runtime objects | 13.8 min cold for 328 units with memory-sized waves (32-thread PC, 15.5 GiB): the giant functions run first at 2-3 GB each, then the ordinary 6 MB units use up to 32 jobs; 4.3 s warm with all 335 objects cached; 1.84 GB peak RSS for one 26 MB chunk | clang -O1 on 6 MB compile units (one giant function per unit when it is larger) |
 | Link `hookshot_game.so` | 2.7-4.8 s | 66 objects, 460 MB in, 428 MB out; unused by the game |
 | Link the host executable | 0.7-2.1 s | 255 objects (66 lifted + 189 host), 412 MB out, 1.1 GB RSS |
 | Link `hookshot_vk.so` | 0.08-0.18 s | 211 objects, 11.7 MB out |

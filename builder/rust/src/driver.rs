@@ -510,24 +510,31 @@ pub fn plan_json_with(
             .map(|src| crate::compile::compile_need_mb(Path::new(src)))
             .collect();
         // (RX_JOBS still overrides; else the memory available, not the total,
-        // decides how many of these fit: 6 MB units take ~0.45 GB each)
-        parallel = match std::env::var("RX_JOBS")
+        // decides how many of these fit, wave by wave: the giant functions
+        // run first at their 2-3 GB each, then the 6 MB units at ~0.5 GB
+        // share the cores the giants held back)
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let available = crate::toolchain::available_mb();
+        let asked = std::env::var("RX_JOBS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-        {
-            Some(jobs) => jobs.max(1),
-            None => crate::compile::parallel_for(
-                &needs,
-                crate::toolchain::available_mb(),
-                std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(1),
-            ),
+            .map(|jobs| jobs.max(1));
+        let memory_scheduled = asked.is_none() && available.is_some();
+        parallel = match asked {
+            Some(jobs) => jobs,
+            None if memory_scheduled => cores,
+            None => crate::compile::parallel_for(&needs, available, cores),
         };
-        compiled = crate::compile::many_json(
-            &json!({"jobs": jobs, "cache": work.join("objcache").to_string_lossy(), "parallel": parallel}),
-            &root,
-        )?;
+        let cache_path = work.join("objcache");
+        let cache = cache_path.to_string_lossy();
+        let request = if memory_scheduled {
+            json!({"jobs": jobs, "cache": cache, "parallel": cores, "needs": needs, "available_mb": available})
+        } else {
+            json!({"jobs": jobs, "cache": cache, "parallel": parallel})
+        };
+        compiled = crate::compile::many_json(&request, &root)?;
         let failed = compiled["failed"].as_array().cloned().unwrap_or_default();
         if failed.is_empty() {
             let objects: Vec<String> = fs::read_dir(work.join("obj"))
