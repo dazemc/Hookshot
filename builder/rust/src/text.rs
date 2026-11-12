@@ -67,6 +67,36 @@ pub fn stack_stores(text: &str) -> String {
 }
 
 /// Guest registers an instruction's C may write (bit n for x[n]).
+/// Replace an inline FPX guard by one helper call when the fast and exact
+/// argument lists agree and both write the same variable.
+pub fn outline_fpx(text: &str) -> String {
+    if !text.contains("RECOMP_FPX_OPEN") {
+        return text.to_owned();
+    }
+    let guard = Regex::new(r"\{if\(RECOMP_FPX_OPEN\(c\)&&RECOMP_LIKELY\(recomp_fpx_(\w+)\(([^;]*?),RECOMP_FPX_FZ\(c\),&(\w+)\)\)\)\{RECOMP_FPX_PROBE\(\d+\);\}else\{RECOMP_FPX_PROBE\(\d+\);(\w+)=recomp_fpe_(\w+)\(c,([^;]*?)\);\}\}").unwrap();
+    guard
+        .replace_all(text, |c: &regex::Captures| {
+            let fast = &c[1];
+            let fast_args = &c[2];
+            let out = &c[3];
+            let out2 = &c[4];
+            let exact = &c[5];
+            let exact_args = &c[6];
+            let nf = fast_args.split(',').count();
+            let ne = exact_args.split(',').count();
+            let prefix_matches = {
+                let a: Vec<&str> = fast_args.split(',').map(str::trim).collect();
+                let b: Vec<&str> = exact_args.split(',').map(str::trim).collect();
+                a.len() == b.len() && a.iter().zip(&b).all(|(x, y)| x == y)
+            };
+            if out != out2 || !prefix_matches || nf == 0 || ne == 0 {
+                return c[0].to_owned();
+            }
+            format!("{out}=a64_fpx_{fast}_{exact}(c,{exact_args});")
+        })
+        .into_owned()
+}
+
 pub fn widen_vstores(text: &str) -> String {
     if !text.contains("c->vreg[") || std::env::var_os("A64_NO_VSET").is_some() {
         return text.to_owned();
@@ -299,6 +329,12 @@ mod tests {
     fn sync_markers_are_removed() {
         assert_eq!(strip_sync("a\x01C3\x01b\x01L3\x01c"), "abc");
         assert_eq!(strip_sync("plain"), "plain");
+    }
+
+    #[test]
+    fn fpx_guards_become_one_helper_call() {
+        let text = "{if(RECOMP_FPX_OPEN(c)&&RECOMP_LIKELY(recomp_fpx_mul32(_a,_b,RECOMP_FPX_FZ(c),&_v))){RECOMP_FPX_PROBE(1);}else{RECOMP_FPX_PROBE(2);_v=recomp_fpe_mul32(c,_a,_b);}}";
+        assert_eq!(outline_fpx(text), "_v=a64_fpx_mul32_mul32(c,_a,_b);");
     }
 
     #[test]

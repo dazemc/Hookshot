@@ -837,7 +837,8 @@ impl<'a, C: Code> Lifter<'a, C> {
                         ));
                         falls = false;
                     } else {
-                        let text = crate::text::widen_vstores(text);
+                        let text = crate::text::outline_fpx(text);
+                        let text = crate::text::widen_vstores(&text);
                         let text = dead
                             .get(&pc)
                             .map(|mask| crate::text::drop_flag_stores(&text, *mask))
