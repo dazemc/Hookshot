@@ -48,7 +48,9 @@
 
 #include "host_shaders/astc_decoder_comp_spv.h"
 #include "host_shaders/bc_encoder_comp_spv.h"
+#include "host_shaders/bc7_encoder_comp_spv.h"
 #include "bc_levels.h"
+#include "texture_budget.h"
 #include "astc_bc_policy.h"
 #include "drawn_writeback.h"
 #include "igpu_budget.h"
@@ -156,7 +158,11 @@ VkFormat view_format_of(VkFormat image, bool astc_decoded, bool bc, int view_nvn
     if (astc_decoded) f = (view_nvn >= 0x87 && view_nvn <= 0x94) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     if (bc) {
         if (use != ViewUse::Sample) return VK_FORMAT_UNDEFINED;
-        f = f == VK_FORMAT_R8G8B8A8_SRGB ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+        const bool srgb = f == VK_FORMAT_R8G8B8A8_SRGB;
+        if (linear_twin(image) == VK_FORMAT_BC7_UNORM_BLOCK)
+            f = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+        else
+            f = srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
     }
     if (use == ViewUse::Storage) f = force_format != VK_FORMAT_UNDEFINED ? force_format : storage_view_format(f);
     if (use == ViewUse::Attachment && (is_astc(f) || is_bc(f))) return VK_FORMAT_UNDEFINED;
@@ -603,7 +609,18 @@ struct BcPush {
 VkDescriptorSetLayout bc_set = VK_NULL_HANDLE;
 VkPipelineLayout bc_layout = VK_NULL_HANDLE;
 VkPipeline bc_pipe = VK_NULL_HANDLE;
-constexpr uint32_t kBcDim = 2048, kBcLayers = 8;   // the scratch: the largest level a BC3 texture may have
+VkPipeline bc7_pipe = VK_NULL_HANDLE;
+bool bc7_ok = true;   // (false once BC7 is unsupported or its pipeline could not be made: BC3 from then on)
+constexpr uint32_t kBcDim = 2048, kBcLayers = 8;   // the scratch: the largest level a BC texture may have
+/// (hookshot) RX_VK_ASTC_BC7=1: big ASTC textures as BC7 instead of BC3. Both are 8 bits a texel; BC7's mode 6 keeps
+/// the colours' gradients and alpha much better (the encoder is host_shaders/bc7_encoder.comp).
+bool bc7_enabled() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_ASTC_BC7");
+        return e && atoi(e) != 0;
+    }();
+    return on && bc7_ok;
+}
 VkImage bc_scratch = VK_NULL_HANDLE;
 VmaAllocation bc_scratch_alloc = nullptr;
 VkImageView bc_scratch_view = VK_NULL_HANDLE;
@@ -680,8 +697,16 @@ bool bc_ready() {
     // (the Developer section's ASTC as RGBA8 row, or RX_VK_ASTC_RGBA8 for a run: no BC3, the AMD texture workaround)
     const char* rgba8 = getenv("RX_VK_ASTC_RGBA8");
     if (!astc_ready() || (rgba8 ? !env_value_off(rgba8) : opts.astc_rgba8 != 0) || !dev.features.textureCompressionBC) return false;
+    bool bc7 = bc7_enabled();
+    VkFormat bc_format = bc7 ? VK_FORMAT_BC7_UNORM_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
     VkFormatProperties fp{};
-    vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_BC3_UNORM_BLOCK, &fp);
+    vkGetPhysicalDeviceFormatProperties(dev.physical, bc_format, &fp);
+    if (bc7 && !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
+        // (this GPU has BC but not BC7: the texture is BC3, not RGBA8)
+        bc7 = false, bc7_ok = false;
+        bc_format = VK_FORMAT_BC3_UNORM_BLOCK;
+        vkGetPhysicalDeviceFormatProperties(dev.physical, bc_format, &fp);
+    }
     if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) return false;
     const VkDescriptorSetLayoutBinding b[2] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
@@ -698,22 +723,30 @@ bool bc_ready() {
     pi.pushConstantRangeCount = 1;
     pi.pPushConstantRanges = &pr;
     if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &bc_layout) != VK_SUCCESS) return false;
-    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = sizeof BC_ENCODER_COMP_SPV;
-    mi.pCode = BC_ENCODER_COMP_SPV;
-    VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
-    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    ci.stage.module = m;
-    ci.stage.pName = "main";
-    ci.layout = bc_layout;
-    const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &bc_pipe);
-    vkDestroyShaderModule(dev.device, m, nullptr);
-    if (r != VK_SUCCESS) return false;
+    auto make_pipe = [&](const uint32_t* code, size_t bytes, VkPipeline& pipe) {
+        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mi.codeSize = bytes;
+        mi.pCode = code;
+        VkShaderModule m = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        ci.stage.module = m;
+        ci.stage.pName = "main";
+        ci.layout = bc_layout;
+        const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe);
+        vkDestroyShaderModule(dev.device, m, nullptr);
+        return r == VK_SUCCESS;
+    };
+    if (!make_pipe(BC_ENCODER_COMP_SPV, sizeof BC_ENCODER_COMP_SPV, bc_pipe)) return false;
+    if (bc7 && !make_pipe(BC7_ENCODER_COMP_SPV, sizeof BC7_ENCODER_COMP_SPV, bc7_pipe)) {
+        // (the BC7 pipeline could not be made: BC3, not RGBA8. The next bc7_enabled() answers false too, so the encoders
+        // and the textures made from now on take bc_pipe)
+        bc7_ok = false, bc7 = false;
+    }
     state = 1;
-    logf("vk: big ASTC textures are kept as BC3 (re-encoded on the GPU; ASTC as RGBA8 or RX_VK_ASTC_RGBA8=1: as RGBA8)");
+    logf("vk: big ASTC textures are kept as %s (re-encoded on the GPU; ASTC as RGBA8 or RX_VK_ASTC_RGBA8=1: as RGBA8)", bc7 ? "BC7" : "BC3");
     return true;
 }
 
@@ -751,7 +784,7 @@ void bc_encode_resized(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t ow,
 void bc_encode_into(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t n, Texture& dst, uint32_t level,
                     uint32_t layer, int dx, int dy, VkImageView from = VK_NULL_HANDLE) {
     full_barrier(cmd);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bc_pipe);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bc7_enabled() ? bc7_pipe : bc_pipe);
     VkDescriptorImageInfo ii{VK_NULL_HANDLE, from ? from : bc_scratch_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo bi{bc_out, 0, VK_WHOLE_SIZE};
     VkWriteDescriptorSet wr[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -1853,13 +1886,11 @@ bool texture_size_ok(VkImageType type, uint32_t w, uint32_t h, uint32_t z, uint3
     return w <= most && h <= most && z <= lim.maxImageDimension3D && layers <= lim.maxImageArrayLayers &&
            (samples <= 1 || samples == 2 || samples == 4 || samples == 8 || samples == 16);
 }
-/// (hookshot) One level of an image as the texture budget counts it (create): its texels, or for an ASTC image the GPU samples
-/// itself (Intel's) its blocks of bw x bh texels, which are what its 16 bytes a unit are. Counted as texels, those were 16 bytes a
-/// texel, 16 to 144 times their size: a UHD 770 counted 17608 MB of textures against an integrated GPU's 2560 MB budget while
-/// every allocation of the process was 4766 MB, so the budget's eviction ran at every frame (tests/test_native_astc_texture_count.py)
+/// One mip level in texels (bw = bh = 1), or whole blocks for a compressed image (texture_budget.h).
+/// (Counted as texels, an ASTC image the GPU samples itself was 16 bytes a texel, 16 to 144 times its size, and
+/// BC1/BC4 twice theirs: tests/test_texture_budget.cpp)
 uint64_t texture_level_units(uint32_t w, uint32_t h, uint32_t d, uint32_t bw, uint32_t bh) {
-    w = std::max(1u, w), h = std::max(1u, h), d = std::max(1u, d), bw = std::max(1u, bw), bh = std::max(1u, bh);
-    return (uint64_t)((w + bw - 1) / bw) * ((h + bh - 1) / bh) * d;
+    return texture_budget::level_units(w, h, d, bw, bh);
 }
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {
     PROF_EXACT();   // (texture_get's slow path: PROF_TEXGET samples the rest)
@@ -1897,12 +1928,12 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // 8192 x 8192 x 68 ASTC: 24 GB as RGBA8)
         static const uint32_t max_dim = getenv("RX_VK_TEX_MAX_DIM") ? (uint32_t)atoi(getenv("RX_VK_TEX_MAX_DIM")) : 2048;
         static const uint64_t max_bytes = (uint64_t)(getenv("RX_VK_TEX_MAX_MB") ? atoi(getenv("RX_VK_TEX_MAX_MB")) : 1536) << 20;
-        const uint32_t texel = astc ? 4 : std::max(1, bpb / std::max(1, bw * bh));
+        const bool blocks = !astc && (is_bc(x.format) || is_astc(x.format));
+        const uint32_t texel = texture_budget::estimate_unit_bytes(astc, blocks, bpb, bw, bh);
         auto bytes_at = [&](uint32_t skip) {
-            uint64_t px = 0;
-            for (uint32_t l = skip; l < x.levels; l++)
-                px += (uint64_t)std::max(1u, x.width >> l) * std::max(1u, x.height >> l) * std::max(1u, x.depth >> l);
-            return px * x.layers * texel * std::max(1, d.samples);
+            const uint64_t px = texture_budget::chain_units(x.width, x.height, x.depth, x.levels, skip,
+                                                            blocks ? (uint32_t)bw : 1u, blocks ? (uint32_t)bh : 1u);
+            return texture_budget::bytes(px, x.layers, d.samples, texel);
         };
         // (decoded ASTC only by size: uncompressed maps may be read at exact texel coordinates, and the GPU may
         // render into them, where a level left out is wrong)
@@ -2003,7 +2034,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
                          n_rgba8, (unsigned long long)mb_saved);
                 x.width = ew, x.height = eh, x.levels = el;
                 x.bc = true, x.bc_resized = resize;
-                x.format = VK_FORMAT_BC3_UNORM_BLOCK;
+                x.format = bc7_enabled() ? VK_FORMAT_BC7_UNORM_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
             } else {
                 n_rgba8++;
                 if (n_rgba8 <= 4 || (n_rgba8 & (n_rgba8 - 1)) == 0)
@@ -2012,7 +2043,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
             }
         } else if (bc_candidate && bc_ready()) {
             x.bc = true;
-            x.format = VK_FORMAT_BC3_UNORM_BLOCK;
+            x.format = bc7_enabled() ? VK_FORMAT_BC7_UNORM_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
         }
     }
     const VkFormatProperties fp = format_props(x.format);
@@ -2129,13 +2160,14 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
                  x.levels, (int)x.format, d.format);
         return nullptr;
     }
-    // what it costs: the level chain's texels (an ASTC image the GPU samples itself: its blocks, texture_level_units)
-    const bool astc_blocks = !astc && is_astc(x.format);
-    uint64_t px = 0;
-    for (uint32_t l = 0; l < x.levels; l++)
-        px += texture_level_units(x.width >> l, x.height >> l, x.depth >> l, astc_blocks ? (uint32_t)bw : 1u, astc_blocks ? (uint32_t)bh : 1u);
-    const uint32_t texel = x.bc || is_bc(x.format) ? 1 : astc ? 4 : std::max(1, from ? (from == 3 ? 4 : from == 6 ? 8 : 16) : bpb);
-    x.bytes = x.sparse ? 0 : px * x.layers * texel * x.samples;   // (a sparse image's: as its layers are bound)
+    // what it costs: whole blocks for native BC/ASTC and re-encoded BC3, texels for other images.
+    // Re-encoded BC3 has 4x4, 16-byte blocks, not the source ASTC's block dimensions.
+    const bool blocks = is_bc(x.format) || is_astc(x.format);
+    const uint32_t unit_w = x.bc ? 4u : blocks ? (uint32_t)bw : 1u;
+    const uint32_t unit_h = x.bc ? 4u : blocks ? (uint32_t)bh : 1u;
+    const uint64_t px = texture_budget::chain_units(x.width, x.height, x.depth, x.levels, 0, unit_w, unit_h);
+    const uint32_t texel = texture_budget::counted_unit_bytes(x.bc, astc, from, bpb);
+    x.bytes = x.sparse ? 0 : texture_budget::bytes(px, x.layers, x.samples, texel);   // (a sparse image's: as its layers are bound)
     // (the budget counts what the allocator gave it: the texels' 8% short of that over a scene's 2000 textures, 3228 MB counted for 3504
     // MB held, and a budget of 4035 MB took 4300. RX_VK_COUNT_BY_ESTIMATE=1: the texels)
     static const bool by_estimate = env_on("RX_VK_COUNT_BY_ESTIMATE");
@@ -2587,7 +2619,8 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
             if (partial) for (const auto& r : dirty) part += r.second - r.first;
             logf("vk: slow upload %.1f ms: #%u %#llx %ux%ux%u x%u levels %u NVN %#x%s%s, %llu of %llu KB%s", ms, tex->id,
                  (unsigned long long)tex->gpu, tex->width, tex->height, tex->depth, tex->layers, tex->levels,
-                 tex->nvn_format, tex->astc ? " ASTC" : "", tex->bc ? " (BC3)" : "",
+                 tex->nvn_format, tex->astc ? " ASTC" : "",
+                 tex->bc ? (linear_twin(tex->format) == VK_FORMAT_BC7_UNORM_BLOCK ? " (BC7)" : " (BC3)") : "",
                  (unsigned long long)((partial ? part : tex->guest_size) >> 10), (unsigned long long)(tex->guest_size >> 10),
                  tex->uploaded ? " again" : "");
         }
@@ -2661,6 +2694,7 @@ VkImageView texture_view(Texture* tex, const nvn_tex* t, const nvn_view* v, VkIm
     const VkFormat f = view_format_of(tex->format, tex->astc, tex->bc, nf, use, force_format);
     if (f == VK_FORMAT_UNDEFINED) return VK_NULL_HANDLE;
     const bool depth = is_depth_format(tex->format);
+
     const uint32_t vl = view_level(v);
     uint32_t level0 = image_level(tex, vl);
     uint32_t nlevels = v && v->set_levels && v->nlevels ? (vl + v->nlevels > tex->skip ? vl + v->nlevels - tex->skip - level0 : 1)
@@ -4184,6 +4218,7 @@ void texture_frame(uint64_t completed) {
     const uint64_t pressure = by_blocks ? used : used - std::min(used, reclaim);
     pool_pressed = known && pressure > allowed / 10 * 9;   // (the target pool given back meanwhile)
     compact.pressed = known && vram_compact::pressed(used, allowed);   // (hookshot, RX_VK_COMPACT: by the driver's own count)
+    const uint64_t size_budget = budget;   // (the budget as a size, before the rules that take an excess off it: rule_target)
     if (known && pressure > allowed / 10 * 9) {
         const uint64_t over = pressure - allowed / 10 * 9;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
@@ -4215,15 +4250,21 @@ void texture_frame(uint64_t completed) {
     // not grow, and what this evicts frees space inside the blocks that the count keeps. Ten frames later it squeezed again: a
     // ratchet. On a 4 GB RX 5500M (3337 MB used of 3337, 1224 MB free in the blocks) a paused game, whose scene draws nothing,
     // lost 1700 MB of textures in seconds, made again on unpausing (the long wait), and the HUD's drawn textures went with them.
-    // RX_VK_SQUEEZE_ALWAYS=1: as before
+    // But only while the count is within the allowance: past it the driver pages VRAM out to system memory, whatever room the
+    // blocks hold (#2156: an RTX 5050 8 GB at 7602 MB used of 6982 allowed, 1649 MB free in the blocks, paged 4.5 GB and ran at
+    // 14-25 fps; v2.0.14, without this wait, squeezed there. Ported from Revens2's a4c7cb3). RX_VK_SQUEEZE_ALWAYS=1: as before
     static const bool squeeze_always = env_on("RX_VK_SQUEEZE_ALWAYS");
-    const bool room_in_blocks = !squeeze_always && block_free >= allowed / 8;
+    const bool room_in_blocks = !squeeze_always && used <= allowed && block_free >= allowed / 8;
     if (known && !by_blocks && used > allowed / 100 * 97 && !room_in_blocks) {
         const uint64_t over = used - allowed / 100 * 97;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
         rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
     }
-    const uint64_t rule_to = vram_compact::rule_target(total_bytes, rule_budget);
+    // (hookshot) the 90% rule and the driver's limit let go of their excess, not of an eighth of the cache: vram_compact.h.
+    // RX_VK_EVICT_EXCESS=0: to 7/8 of their budget, as before
+    static const bool excess_only = !getenv("RX_VK_EVICT_EXCESS") || atoi(getenv("RX_VK_EVICT_EXCESS")) != 0;
+    const uint64_t rule_to = excess_only ? vram_compact::rule_target(total_bytes, size_budget, rule_budget)
+                                         : vram_compact::rule_target(total_bytes, rule_budget);
     // (hookshot, RX_VK_COMPACT: the driver's limit asks for more than the reserve does: a pass over the budget, to 7/8 of it, as
     // before. Rare once the reserve is set: its line is 17 points under the limit's and counts the textures' free space out, so
     // this takes more than that share of the allowance free in their pool. Otherwise the pass is the hold's, and what the
