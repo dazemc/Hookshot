@@ -502,12 +502,13 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
    hookshot_options.ini beside the executable when it has them: pad_<button>=<HOS_PAD_* position, -1 none> and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
    first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
-   stick's and the camera's directions. A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
+   stick's and the camera's directions, and the ocarina's five note controls (which take a gamepad input too).
+   A key can be a mouse button (1 2 4 5 6: left, right, middle, 4, 5), which counts
    only while the mouse is captured ---- */
 static const char *const bind_names[HOS_KEY_N] = {"a", "b", "x", "y", "ls", "rs", "l", "r", "zl", "zr", "plus",
                                                   "minus", "left", "up", "right", "down", "move_up", "move_down",
                                                   "move_left", "move_right", "cam_up", "cam_down", "cam_left",
-                                                  "cam_right"};
+                                                  "cam_right", "note_l", "note_r", "note_a", "note_y", "note_x"};
 static const signed char pad_default[HOS_SW_N] = {
     HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST, HOS_PAD_LSTICK, HOS_PAD_RSTICK, HOS_PAD_LSHOULDER,
     HOS_PAD_RSHOULDER, HOS_PAD_LTRIGGER, HOS_PAD_RTRIGGER, HOS_PAD_START, HOS_PAD_BACK, HOS_PAD_LEFT, HOS_PAD_UP,
@@ -518,12 +519,21 @@ static const signed char pad_default[HOS_SW_N] = {
 static const unsigned char key_default[HOS_KEY_N][2] = {
     {'E'}, {VK_SHIFT}, {VK_SPACE}, {VK_LBUTTON}, {VK_CONTROL}, {'C'}, {'Q'}, {'R'}, {'Z', VK_RBUTTON}, {'X', 'F'},
     {VK_TAB, VK_RETURN}, {'M'}, {'1'}, {'2'}, {'3'}, {'4'}, {'W'}, {'S'}, {'A'}, {'D'}, {VK_UP, 'I'}, {VK_DOWN, 'K'},
-    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}};
-static volatile LONG pad_bind[HOS_SW_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
+    {VK_LEFT, 'J'}, {VK_RIGHT, 'L'}, {0}, {0}, {0}, {0}, {0}};   /* (the five note rows start unset: oc_pad_word) */
+static int is_note_row(int i) { return i >= HOS_KEY_OC_NOTE_L && i <= HOS_KEY_OC_NOTE_X; }
+static int has_pad(int i) { return i < HOS_SW_N || is_note_row(i); }
+#ifndef VK_XBUTTON1
+#define VK_XBUTTON1 0x05
+#define VK_XBUTTON2 0x06
+#endif
+/* (a mouse button bound to a note row would be seen by nobody: oc_notes never reads the mouse) */
+static int is_mouse_vk(int vk) { return vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON ||
+                                        vk == VK_XBUTTON1 || vk == VK_XBUTTON2; }
+static volatile LONG pad_bind[HOS_KEY_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
 
 static void binds_default(void) {
     for (int i = 0; i < HOS_KEY_N; i++) {
-        if (i < HOS_SW_N) InterlockedExchange(&pad_bind[i], pad_default[i]);
+        if (has_pad(i)) InterlockedExchange(&pad_bind[i], i < HOS_SW_N ? pad_default[i] : -1);   /* (the note rows: unset) */
         for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
     }
 }
@@ -556,7 +566,7 @@ static void binds_load(void) {
             const int pad = !strncmp(line, "pad_", 4), keys = !strncmp(line, "key_", 4);
             had_keys |= keys;
             for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
-                if (strcmp(line + 4, bind_names[i]) || (pad && i >= HOS_SW_N)) continue;
+                if (strcmp(line + 4, bind_names[i]) || (pad && !has_pad(i))) continue;
                 changed++;
                 if (pad) {
                     const int v = atoi(eq + 1);
@@ -587,35 +597,50 @@ static void binds_load(void) {
 }
 int hos_binding(int set, int button, int slot) {
     binds_load();
-    if (button < 0 || button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1)
+    if (button < 0 || button >= HOS_KEY_N || slot < 0 || slot > 1 || (set == HOS_BIND_PAD && !has_pad(button)))
         return set == HOS_BIND_PAD ? -1 : 0;
     return set == HOS_BIND_PAD ? (slot ? -1 : (int)pad_bind[button]) : (int)key_bind[button][slot];
 }
 /* A gamepad input moved to another button gives that one this button's old input (one button an input, none left
-   without); a key moved to it is taken from the others */
+   without); a key moved to it is taken from the others. The ocarina's note rows are outside both rules: they take
+   nothing and are not taken from, so one input can be a note and its other control at once (the note wait consumes
+   it as a note, oc_notes) */
 void hos_bind(int set, int button, int slot, int code) {
     binds_load();
     if (button < 0) {
         binds_default();
         return;
     }
-    if (button >= (set == HOS_BIND_PAD ? HOS_SW_N : HOS_KEY_N) || slot < 0 || slot > 1) return;
+    if (button >= HOS_KEY_N || slot < 0 || slot > 1) return;
     if (set == HOS_BIND_PAD) {
-        if (slot || code < -1 || code >= HOS_PAD_N) return;
+        if (!has_pad(button) || slot || code < -1 || code >= HOS_PAD_N) return;
         const LONG old = pad_bind[button];
-        for (int i = 0; i < HOS_SW_N; i++)
-            if (i != button && code >= 0 && pad_bind[i] == code) InterlockedExchange(&pad_bind[i], old);
+        if (button < HOS_SW_N)   /* (among the Switch's buttons: the swap; the note rows keep theirs) */
+            for (int i = 0; i < HOS_SW_N; i++)
+                if (i != button && code >= 0 && pad_bind[i] == code) InterlockedExchange(&pad_bind[i], old);
         InterlockedExchange(&pad_bind[button], code);
     } else {
         if (code < 0 || code > 255) return;
-        for (int i = 0; i < HOS_KEY_N; i++)
-            for (int k = 0; k < 2; k++)
-                if (code && key_bind[i][k] == code) InterlockedExchange(&key_bind[i][k], 0);
+        if (is_note_row(button) && is_mouse_vk(code)) return;   /* (a note is a key or a pad button, never a mouse click) */
+        if (!is_note_row(button))
+            for (int i = 0; i < HOS_KEY_N; i++)
+                if (!is_note_row(i))
+                    for (int k = 0; k < 2; k++)
+                        if (code && key_bind[i][k] == code) InterlockedExchange(&key_bind[i][k], 0);
         InterlockedExchange(&key_bind[button][slot], code);
     }
 }
 
+/* ---- (hookshot) the ocarina's five note controls, driven by the wait flag nx2/oot_patches.py's patch sets ---- */
+volatile uint64_t hos_oc_note_bits;
+volatile int hos_oc_wait;
+volatile int hos_oc_last_kind;
+volatile unsigned hos_oc_beat;   /* (stamped by the wait action's tick: a wait nobody ticks is not a wait) */
+static LONG oc_consumed_keys[256];
+static uint64_t oc_consumed_pads;
+
 static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
+static int pad_after_menu;          /* (the menu just closed: the pads wait until they are let go; oc_pad_word too) */
 uint32_t hos_pad_raw(void) { return (uint32_t)pad_raw_now; }
 
 /* A stick axis cut at the dead zone, as XInput's and SDL's pads both are (pad_sdl.c): zone is the Insert menu's "Stick
@@ -715,7 +740,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
     binds_load();
     uint64_t b = 0;
     for (int i = 0; i < HOS_SW_N; i++)
-        if (pad_bind[i] >= 0 && (raw >> pad_bind[i] & 1)) b |= 1ULL << i;
+        if (pad_bind[i] >= 0 && (raw >> pad_bind[i] & 1) && !(oc_consumed_pads >> pad_bind[i] & 1)) b |= 1ULL << i;
     cached_buttons = b;
     memcpy(cached_stick, s, sizeof s);
     *buttons |= b;
@@ -728,10 +753,6 @@ static int pads_in_background(const char *env, int menu) {
     return env ? atoi(env) != 0 : menu != 0;
 }
 
-#ifndef VK_XBUTTON1
-#define VK_XBUTTON1 0x05
-#define VK_XBUTTON2 0x06
-#endif
 /* A mouse button counts only while the mouse is captured, and one held when the capture began only after it was let go
    (the click that captures never reaches the game) */
 static int mouse_vk_slot(int vk) {
@@ -748,6 +769,7 @@ static int bound_down(int i, int mouse) {
     for (int k = 0; k < 2; k++) {
         const int vk = (int)key_bind[i][k];
         if (vk <= 0) continue;
+        if (oc_consumed_keys[vk]) continue;   /* (drives an ocarina note this frame, not this control: oc_notes) */
         const int m = mouse_vk_slot(vk);
         if (m >= 0 ? mouse && mouse_armed[m] && key(vk) : kmap_down(key_bind[i][k], key)) return 1;
     }
@@ -803,6 +825,68 @@ static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int 
     return mode > 0;
 }
 
+/* (the ocarina's note layer, rebuilt every read_input(): the note rows' held state, then their inputs marked consumed) */
+static void oc_notes(void) {
+    binds_load();
+    int wait = hos_oc_wait;
+    /* (a wait nobody ticks is not a wait: an action a pause cancelled must not keep eating the shared keys) */
+    if (wait == 1) {
+        static uint64_t last_beat;
+        static int64_t beat_ns;
+        const uint64_t beat = hos_oc_beat;
+        const int64_t now = hos_now_ns();
+        if (beat != last_beat) last_beat = beat, beat_ns = now;
+        else if (now - beat_ns > 500000000LL) wait = hos_oc_wait = 0;
+    }
+    static int last_wait;
+    if (wait != last_wait) {
+        last_wait = wait;
+        hos_log("oc: the note wait turned %s (the action's kind %d)",
+                wait == 1 ? "on (buttons)" : wait == 2 ? "on (another way)" : "off", hos_oc_last_kind);
+    }
+    memset(oc_consumed_keys, 0, sizeof oc_consumed_keys);
+    oc_consumed_pads = 0;
+    uint64_t bits = 0;
+    if (wait != 1) {
+        hos_oc_note_bits = 0;
+        return;
+    }
+    for (int i = 0; i < 5; i++) {
+        const int row = HOS_KEY_OC_NOTE_L + i;
+        int held = bound_down(row, 0);
+        if (!held && pad_bind[row] >= 0 && (pad_raw_now >> pad_bind[row] & 1)) held = 1;
+        if (held) bits |= 1ULL << i;
+    }
+    for (int i = 0; i < 5; i++) {
+        const int row = HOS_KEY_OC_NOTE_L + i;
+        if (pad_bind[row] >= 0) oc_consumed_pads |= 1ULL << pad_bind[row];
+        for (int k = 0; k < 2; k++) {
+            const int vk = (int)key_bind[row][k];
+            if (vk > 0 && mouse_vk_slot(vk) < 0) oc_consumed_keys[vk] = 1;
+        }
+    }
+    hos_oc_note_bits = bits;
+}
+
+/* (npad_states writes the game's one merged word: during a button wait its five note buttons are the note controls) */
+static uint64_t oc_pad_word(uint64_t buttons) {
+    if (hos_oc_wait != 1) return buttons;
+    /* (no notes where read_input gives the game no player input either: menu open, pads held after it, background) */
+    if (rx_option(1, 0) || pad_after_menu || !game_in_front()) return buttons;
+    static const uint64_t note_to[5] = {1ULL << HOS_SW_L, 1ULL << HOS_SW_R, 1ULL << HOS_SW_A,
+                                        1ULL << HOS_SW_Y, 1ULL << HOS_SW_X};
+    uint64_t w = buttons;
+    for (int i = 0; i < 5; i++) {
+        const int row = HOS_KEY_OC_NOTE_L + i;
+        if (pad_bind[row] < 0 && !key_bind[row][0] && !key_bind[row][1])
+            continue;   /* (unset: that button plays on) */
+        /* (kind 2, the song lesson, teaches the game's own note buttons: the remap adds to them, never replaces) */
+        if (hos_oc_last_kind != 2) w &= ~note_to[i];
+        if (hos_oc_note_bits & (1ULL << i)) w |= note_to[i];
+    }
+    return w;
+}
+
 static void read_input(uint64_t *buttons, int32_t stick[4]) {
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
@@ -811,6 +895,7 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
     /* (hookshot) HOS_CONTROL: the control bridge's presses (host/control.c); one that asked to be exclusive keeps the
        player's devices out while it lasts */
     if (hos_control_input(buttons, stick)) return;
+    oc_notes();   /* (marks the note rows' inputs consumed before the pads and keys below are read) */
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
@@ -841,10 +926,9 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         uint64_t pb = 0;
         int32_t ps[4] = {0};
         pads_read(&pb, ps);
-        static int after_menu;
-        if (rx_option(1, 0)) after_menu = 1;
-        else if (after_menu && !pad_raw_now) after_menu = 0;
-        if (!after_menu) {
+        if (rx_option(1, 0)) pad_after_menu = 1;
+        else if (pad_after_menu && !pad_raw_now) pad_after_menu = 0;
+        if (!pad_after_menu) {
             *buttons |= pb;
             stick_max(stick, ps);
         }
@@ -960,7 +1044,7 @@ static void npad_states(Ctx *c) {
         uint64_t e = out + (uint64_t)i * STATE_SIZE;
         memset(GP(e), 0, STATE_SIZE);
         G64(e) = (uint64_t)(s - i);
-        G64(e + 8) = buttons;
+        G64(e + 8) = oc_pad_word(buttons);   /* (while the game waits for a note button, the five are the controls: oc_notes) */
         memcpy(GP(e + 16), stick, 16);
         G32(e + 32) = connected ? ATTR_CONNECTED : 0;
     }

@@ -272,8 +272,9 @@ record it again, and make a new tour list. The folder's layout stays the same.
 case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
 `gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=5`,
 `microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>` and `key_<button>`:
-the README's [Controls](../readme.md#controls)). A value outside a row's range is clamped when it is read. Where the
-number is not the obvious one:
+the README's [Controls](../readme.md#controls)). The ocarina's five note rows (`note_l`, `note_r`, `note_a`, `note_y`,
+`note_x`) take both a `pad_` and a `key_` line; unset, the game's own buttons play the notes. A value outside a row's
+range is clamped when it is read. Where the number is not the obvious one:
 
 | Key | Values |
 |---|---|

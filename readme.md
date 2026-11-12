@@ -102,7 +102,9 @@ The engine also takes one JSON command on stdin; `hookshot_engine --help` and th
 Press **Insert**, **F1** or **Esc** to open the Insert menu. It has Graphics, Audio, Controls, Debug/cheats and
 developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, field of view, camera speed, text speed and the debug
 teleport are there. The in-game controls and the full option list are in the [technical reference](docs/fork.md) and in
-the builder's own help.
+the builder's own help. The Controls page also gives the ocarina's five note rows of their own, `Ocarina note (L)`,
+`(R)`, `(A)`, `(Y)` and `(X)`, unset by default: until you bind one, the game's own button plays it, and a bound note
+answers only its own key or gamepad input while the game waits for a note.
 
 ## Benchmarks
 
