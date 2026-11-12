@@ -401,6 +401,47 @@ impl<'a, C: Code> Lifter<'a, C> {
         None
     }
 
+    fn read_table_targets(
+        &self,
+        tables: &[u64],
+        base: u64,
+        shift: u8,
+        count: usize,
+        size: u8,
+        signed: bool,
+        lo: u64,
+        hi: u64,
+    ) -> Vec<u64> {
+        let mut targets = Vec::new();
+        for table in tables {
+            for i in 0..count {
+                let at = table.wrapping_add(i as u64 * size as u64);
+                let Some(bytes) = self.code.read(at, size as usize) else {
+                    break;
+                };
+                let entry = match (size, signed) {
+                    (1, true) => bytes[0] as i8 as i64,
+                    (1, false) => bytes[0] as i64,
+                    (2, true) => i16::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (2, false) => u16::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (4, true) => i32::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (4, false) => u32::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (8, true) => i64::from_le_bytes(bytes.try_into().unwrap()),
+                    (8, false) => u64::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    _ => break,
+                };
+                let target = base.wrapping_add((entry as u64).wrapping_shl(shift as u32));
+                if !(lo <= target && target < hi && self.code.in_code(target)) {
+                    break;
+                }
+                targets.push(target);
+            }
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        targets
+    }
+
     /// A direct bounded jump table: recognise `adrp/add` table setups and
     /// `ldr/ldrsw` entries in the window before the BR. Table addresses that
     /// are only known through the CFG are left to jt_missing.
@@ -516,6 +557,10 @@ impl<'a, C: Code> Lifter<'a, C> {
             }
         }
         let Some(value) = values.get(&reg).cloned() else {
+            self.stats.insert(
+                "jt_no_value",
+                self.stats.get("jt_no_value").unwrap_or(&0) + 1,
+            );
             return self.adr_targets(br_pc, reg);
         };
         let (base, load, shift) = match value {
@@ -524,7 +569,11 @@ impl<'a, C: Code> Lifter<'a, C> {
                 (load @ V::Load { .. }, V::Const(base)) => (base, load, shift),
                 _ => return self.adr_targets(br_pc, reg),
             },
-            _ => return self.adr_targets(br_pc, reg),
+            _ => {
+                self.stats
+                    .insert("jt_not_add", self.stats.get("jt_not_add").unwrap_or(&0) + 1);
+                return self.adr_targets(br_pc, reg);
+            }
         };
         let V::Load {
             table,
@@ -533,6 +582,10 @@ impl<'a, C: Code> Lifter<'a, C> {
             signed,
         } = load
         else {
+            self.stats.insert(
+                "jt_not_load",
+                self.stats.get("jt_not_load").unwrap_or(&0) + 1,
+            );
             return self.adr_targets(br_pc, reg);
         };
         let tables: Vec<u64> = match *table {
@@ -570,6 +623,10 @@ impl<'a, C: Code> Lifter<'a, C> {
             _ => return self.adr_targets(br_pc, reg),
         };
         if tables.is_empty() {
+            self.stats.insert(
+                "jt_no_table",
+                self.stats.get("jt_no_table").unwrap_or(&0) + 1,
+            );
             self.jt_missing.insert(br_pc, reg);
             return None;
         }
@@ -582,34 +639,16 @@ impl<'a, C: Code> Lifter<'a, C> {
             None => (if size == 1 { 256 } else { 1024 }, false),
         };
         let (lo, hi) = self.function_extent(br_pc);
-        let mut targets = Vec::new();
-        for table in tables {
-            for i in 0..count {
-                let at = table + i as u64 * size as u64;
-                let Some(bytes) = self.code.read(at, size as usize) else {
-                    break;
-                };
-                let entry = match (size, signed) {
-                    (1, true) => bytes[0] as i8 as i64,
-                    (1, false) => bytes[0] as i64,
-                    (2, true) => i16::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                    (2, false) => u16::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                    (4, true) => i32::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                    (4, false) => u32::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                    (8, true) => i64::from_le_bytes(bytes.try_into().unwrap()),
-                    (8, false) => u64::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                    _ => break,
-                };
-                let target = base.wrapping_add((entry as u64).wrapping_shl(shift as u32));
-                if !(lo <= target && target < hi && self.code.in_code(target)) {
-                    break;
-                }
-                targets.push(target);
-            }
+        let mut targets =
+            self.read_table_targets(&tables, base, shift, count, size, signed, lo, hi);
+        if targets.is_empty() && bounded {
+            targets = self.read_table_targets(&tables, base, shift, 1024, size, signed, lo, hi);
         }
-        targets.sort_unstable();
-        targets.dedup();
         if targets.is_empty() {
+            self.stats.insert(
+                "jt_no_targets",
+                self.stats.get("jt_no_targets").unwrap_or(&0) + 1,
+            );
             self.jt_missing.insert(br_pc, reg);
             return None;
         }
