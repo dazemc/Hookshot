@@ -61,6 +61,7 @@ pub struct Lifter<'a, C: Code> {
     pub jt_missing: BTreeMap<u64, u8>,
     pub plt: BTreeMap<u64, (u64, u64)>,
     pub last_table_debug: Option<String>,
+    pub names: BTreeMap<u64, String>,
     pub stats: BTreeMap<&'static str, usize>,
 }
 
@@ -79,6 +80,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             jt_missing: BTreeMap::new(),
             plt: BTreeMap::new(),
             last_table_debug: None,
+            names: BTreeMap::new(),
             stats: BTreeMap::new(),
         }
     }
@@ -148,6 +150,34 @@ impl<'a, C: Code> Lifter<'a, C> {
                 self.plt.insert(entry, target);
             }
         }
+        // A function calling __setjmp gets its return addresses walked too.
+        let mut returns = Vec::new();
+        for body in self.funcs.values() {
+            for (pc, kind) in body {
+                if let Kind::Bl(target) = kind {
+                    let callee = self.callee(*target);
+                    if self
+                        .names
+                        .get(&callee)
+                        .map(|name| matches!(name.as_str(), "__setjmp" | "setjmp" | "_setjmp"))
+                        .unwrap_or(false)
+                    {
+                        returns.push(pc + 4);
+                    }
+                }
+            }
+        }
+        returns.sort_unstable();
+        returns.dedup();
+        for entry in returns {
+            if !self.funcs.contains_key(&entry) && self.code.in_code(entry) {
+                let (body, labels) = self.walk(entry);
+                if !body.is_empty() {
+                    self.funcs.insert(entry, body);
+                    self.labels.insert(entry, labels);
+                }
+            }
+        }
         self.stats.insert("jump_tables", self.jt.len());
         self.stats.insert("jt_missing", self.jt_missing.len());
         self.stats.insert("plt_stubs", self.plt.len());
@@ -209,6 +239,16 @@ impl<'a, C: Code> Lifter<'a, C> {
         } else {
             Some(targets)
         }
+    }
+
+    fn callee(&self, mut target: u64) -> u64 {
+        for _ in 0..4 {
+            let Some((next, _)) = self.plt.get(&target) else {
+                break;
+            };
+            target = *next;
+        }
+        target
     }
 
     fn plt_target(&self, entry: u64) -> Option<(u64, u64)> {
@@ -873,6 +913,7 @@ pub fn coverage_json(exefs: &str, pcs: &[u64]) -> Result<serde_json::Value, Stri
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.eh_starts = image.eh_starts().to_vec();
+    lift.names = image.names().clone();
     lift.discover();
     let rows: Vec<serde_json::Value> = pcs
         .iter()
@@ -898,6 +939,7 @@ pub fn debug_json(exefs: &str, br: u64, reg: u8, table: u64) -> Result<serde_jso
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.eh_starts = image.eh_starts().to_vec();
+    lift.names = image.names().clone();
     lift.discover();
     let reaching: Vec<String> = lift
         .reaching(br, Loc::Reg(reg), 50000, 0)
@@ -941,6 +983,7 @@ pub fn tables_json(exefs: &str) -> Result<serde_json::Value, String> {
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.eh_starts = image.eh_starts().to_vec();
+    lift.names = image.names().clone();
     lift.discover();
     Ok(serde_json::json!({
         "functions": lift.funcs.len(),
@@ -948,6 +991,7 @@ pub fn tables_json(exefs: &str) -> Result<serde_json::Value, String> {
         "plt_stubs": lift.plt.len(),
         "missing": lift.jt_missing.keys().map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
         "keys": lift.jt.keys().map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
+        "func_keys": lift.funcs.keys().map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
         "missing_in_body": lift.jt_missing.keys().map(|pc| (format!("{pc:x}"), lift.funcs.values().any(|body| body.contains_key(pc)))).collect::<Vec<_>>(),
         "jt_missing": lift.jt_missing.len(),
         "targets": lift.jt.values().map(Vec::len).sum::<usize>(),
