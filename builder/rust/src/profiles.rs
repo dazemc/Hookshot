@@ -99,7 +99,23 @@ pub fn save_dir(user: &Path, uid: &str) -> PathBuf {
     user.join("save").join(uid)
 }
 
+/// A profile id names one folder below `save/`: 32 hex digits, as
+/// host/nn_fs.c and profiles.txt use. Anything else (an empty id, `..`, a
+/// separator) would name a folder outside the profile's own, so it is
+/// refused before it reaches a path.
+fn profile_id(uid: &str) -> Result<&str, String> {
+    if uid.len() == 32 && uid.bytes().all(|byte| byte.is_ascii_hexdigit()) && uid != "0".repeat(32)
+    {
+        Ok(uid)
+    } else {
+        Err(format!(
+            "\"{uid}\" is not a profile id (32 hex digits): no save folder was used"
+        ))
+    }
+}
+
 pub fn folder_to_show(user: &Path, uid: &str) -> Option<PathBuf> {
+    profile_id(uid).ok()?;
     for path in [save_dir(user, uid), user.join("save"), user.to_path_buf()] {
         if path.is_dir() {
             return Some(path);
@@ -210,6 +226,7 @@ fn backup(user: &Path, uid: &str) -> Result<Option<PathBuf>, String> {
 }
 
 pub fn remove(folder: &str, uid: &str) -> Result<Value, String> {
+    let uid = profile_id(uid)?;
     if uid == DEFAULT {
         return Err("The default profile cannot be removed: the game plays it when it is started without the launcher.".into());
     }
@@ -228,6 +245,7 @@ pub fn remove(folder: &str, uid: &str) -> Result<Value, String> {
 }
 
 pub fn export(folder: &str, uid: &str, parent: &str) -> Result<Value, String> {
+    let uid = profile_id(uid)?;
     let user = user_dir(folder);
     let list = load(&user);
     let name = list
@@ -240,7 +258,18 @@ pub fn export(folder: &str, uid: &str, parent: &str) -> Result<Value, String> {
     if let Ok(entries) = fs::read_dir(&saves) {
         for entry in entries.flatten() {
             let item = entry.file_name().to_string_lossy().into_owned();
-            if item.starts_with("slot_") && entry.path().is_dir() {
+            if !item.starts_with("slot_") {
+                continue;
+            }
+            // (a linked slot would copy what it points to: any folder of
+            // this PC, not the save)
+            if crate::saves::is_link(&entry.path()) {
+                return Err(format!(
+                    "A linked save file cannot be exported safely: {}",
+                    entry.path().display()
+                ));
+            }
+            if entry.file_type().map_err(err)?.is_dir() {
                 slots.push(item);
             }
         }
@@ -279,15 +308,41 @@ pub fn export(folder: &str, uid: &str, parent: &str) -> Result<Value, String> {
         dest = PathBuf::from(format!("{} ({k})", base.display()));
         k += 1;
     }
-    fs::create_dir(&dest).map_err(err)?;
-    for slot in &slots {
-        copy_tree(&saves.join(slot), &dest.join(slot))?;
+    // (a parent inside the profile's save folder would copy the export into
+    // the save, and a parent inside a slot would copy it into itself)
+    if crate::saves::inside(&dest, &saves) {
+        return Err(format!(
+            "Choose a folder outside the profile's save folder ({}), not {}.",
+            saves.display(),
+            parent.display()
+        ));
     }
-    for file in ["account.sav", "option.sav"] {
-        let source = saves.join(file);
-        if source.is_file() {
-            fs::copy(&source, dest.join(file)).map_err(err)?;
+    fs::create_dir(&dest).map_err(err)?;
+    let copied = (|| -> Result<(), String> {
+        for slot in &slots {
+            copy_tree(&saves.join(slot), &dest.join(slot))?;
         }
+        for file in ["account.sav", "option.sav"] {
+            let source = saves.join(file);
+            if source.symlink_metadata().is_err() {
+                continue;
+            }
+            if crate::saves::is_link(&source) {
+                return Err(format!(
+                    "A linked save file cannot be exported safely: {}",
+                    source.display()
+                ));
+            }
+            if source.is_file() {
+                fs::copy(&source, dest.join(file)).map_err(err)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = copied {
+        // (no half a save left behind to be imported later)
+        let _ = fs::remove_dir_all(&dest);
+        return Err(error);
     }
     Ok(json!({"path": dest.to_string_lossy()}))
 }
@@ -297,7 +352,9 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
     for entry in fs::read_dir(source).map_err(err)?.flatten() {
         let kind = entry.file_type().map_err(err)?;
         let to = target.join(entry.file_name());
-        if kind.is_symlink() {
+        // (a Windows junction is a reparse point, not a symbolic link, and
+        // file_type() reports it as a folder: is_link sees both)
+        if crate::saves::is_link(&entry.path()) {
             return Err(format!(
                 "A linked save file cannot be exported safely: {}",
                 entry.path().display()
@@ -361,5 +418,179 @@ mod tests {
         let moved = removed["moved"].as_str().unwrap();
         assert!(Path::new(moved).join("slot_00/progress.sav").is_file());
         assert!(!save_dir(&user, &uid).exists());
+    }
+
+    fn make_save(folder: &Path, tag: &str) {
+        fs::create_dir_all(folder.join("slot_00")).unwrap();
+        fs::write(folder.join("account.sav"), format!("account-{tag}")).unwrap();
+        fs::write(folder.join("option.sav"), format!("option-{tag}")).unwrap();
+        fs::write(
+            folder.join("slot_00/progress.sav"),
+            format!("progress-{tag}"),
+        )
+        .unwrap();
+        fs::write(folder.join("slot_00/caption.sav"), format!("caption-{tag}")).unwrap();
+    }
+
+    fn exports(parent: &Path) -> Vec<String> {
+        fs::read_dir(parent)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn export_copies_the_save_into_a_new_folder() {
+        let folder = temp();
+        let user = folder.join("user");
+        fs::create_dir_all(user.join("save")).unwrap();
+        let folder = folder.to_string_lossy().to_string();
+        let uid = add(&folder, "Link").unwrap()["selected"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let saves = save_dir(&user_dir(&folder), &uid);
+        make_save(&saves, "ONE");
+        let parent = Path::new(&folder).join("exports");
+        fs::create_dir_all(&parent).unwrap();
+
+        let value = export(&folder, &uid, &parent.to_string_lossy()).unwrap();
+        let dest = PathBuf::from(value["path"].as_str().unwrap());
+        assert!(dest.starts_with(&parent), "{}", dest.display());
+        assert_eq!(
+            fs::read(dest.join("slot_00/progress.sav")).unwrap(),
+            b"progress-ONE"
+        );
+        assert_eq!(fs::read(dest.join("account.sav")).unwrap(), b"account-ONE");
+        assert_eq!(fs::read(dest.join("option.sav")).unwrap(), b"option-ONE");
+        assert!(!dest.join("slot_01").exists());
+
+        // (a second export in the same minute gets its own folder)
+        let again = export(&folder, &uid, &parent.to_string_lossy()).unwrap();
+        let second = PathBuf::from(again["path"].as_str().unwrap());
+        assert_ne!(dest, second);
+        assert!(dest.is_dir());
+        assert!(second.is_dir());
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn a_profile_id_must_name_one_folder_below_save() {
+        let folder = temp();
+        let user = folder.join("user");
+        fs::create_dir_all(user.join("save")).unwrap();
+        fs::write(user.join("save/keep.txt"), b"keep").unwrap();
+        let victim = user.join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("keep.txt"), b"keep").unwrap();
+        let parent = folder.join("exports");
+        fs::create_dir_all(&parent).unwrap();
+        let folder = folder.to_string_lossy().to_string();
+        let zeros = "0".repeat(32);
+
+        for bad in ["", "..", "../victim", "not-an-id", zeros.as_str()] {
+            let error = remove(&folder, bad).unwrap_err();
+            assert!(error.contains("not a profile id"), "{bad:?}: {error}");
+            assert!(user.join("save/keep.txt").is_file(), "{bad:?}");
+            assert!(victim.join("keep.txt").is_file(), "{bad:?}");
+            let error = export(&folder, bad, &parent.to_string_lossy()).unwrap_err();
+            assert!(error.contains("not a profile id"), "{bad:?}: {error}");
+            assert!(victim.join("keep.txt").is_file(), "{bad:?}");
+            assert!(folder_to_show(&user, bad).is_none(), "{bad:?}");
+        }
+        assert!(exports(&parent).is_empty());
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_a_linked_save_and_leaves_no_half_folder() {
+        let folder = temp();
+        let user = folder.join("user");
+        fs::create_dir_all(user.join("save")).unwrap();
+        let folder = folder.to_string_lossy().to_string();
+        let uid = add(&folder, "Link").unwrap()["selected"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let saves = save_dir(&user_dir(&folder), &uid);
+        make_save(&saves, "ONE");
+        let parent = Path::new(&folder).join("exports");
+        fs::create_dir_all(&parent).unwrap();
+        let secret = Path::new(&folder).join("secret.txt");
+        fs::write(&secret, b"not a save").unwrap();
+
+        // (a loose file that is a link would copy what it names)
+        fs::remove_file(saves.join("account.sav")).unwrap();
+        std::os::unix::fs::symlink(&secret, saves.join("account.sav")).unwrap();
+        let error = export(&folder, &uid, &parent.to_string_lossy()).unwrap_err();
+        assert!(error.contains("linked save file"), "{error}");
+        assert!(exports(&parent).is_empty(), "{:?}", exports(&parent));
+
+        // (a slot that is a link would copy the folder it names)
+        fs::remove_file(saves.join("account.sav")).unwrap();
+        fs::write(saves.join("account.sav"), b"account-ONE").unwrap();
+        let external = Path::new(&folder).join("external");
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("progress.sav"), b"outside").unwrap();
+        fs::remove_dir_all(saves.join("slot_00")).unwrap();
+        std::os::unix::fs::symlink(&external, saves.join("slot_00")).unwrap();
+        let error = export(&folder, &uid, &parent.to_string_lossy()).unwrap_err();
+        assert!(error.contains("linked save file"), "{error}");
+        assert!(exports(&parent).is_empty(), "{:?}", exports(&parent));
+        assert_eq!(fs::read(&secret).unwrap(), b"not a save");
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn export_refuses_a_folder_inside_the_save() {
+        let folder = temp();
+        let user = folder.join("user");
+        fs::create_dir_all(user.join("save")).unwrap();
+        let folder = folder.to_string_lossy().to_string();
+        let uid = add(&folder, "Link").unwrap()["selected"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let saves = save_dir(&user_dir(&folder), &uid);
+        make_save(&saves, "ONE");
+        let parent = saves.join("slot_00");
+        let before = exports(&parent);
+        let error = export(&folder, &uid, &parent.to_string_lossy()).unwrap_err();
+        assert!(
+            error.contains("outside the profile's save folder"),
+            "{error}"
+        );
+        assert_eq!(exports(&parent), before);
+        let _ = fs::remove_dir_all(folder);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_a_linked_folder_inside_the_save() {
+        let folder = temp();
+        let user = folder.join("user");
+        fs::create_dir_all(user.join("save")).unwrap();
+        let folder = folder.to_string_lossy().to_string();
+        let uid = add(&folder, "Link").unwrap()["selected"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let saves = save_dir(&user_dir(&folder), &uid);
+        make_save(&saves, "ONE");
+        let parent = Path::new(&folder).join("into-save");
+        std::os::unix::fs::symlink(saves.join("slot_00"), &parent).unwrap();
+        let before = exports(&saves.join("slot_00"));
+        let error = export(&folder, &uid, &parent.to_string_lossy()).unwrap_err();
+        assert!(
+            error.contains("outside the profile's save folder"),
+            "{error}"
+        );
+        assert_eq!(exports(&saves.join("slot_00")), before);
+        let _ = fs::remove_dir_all(folder);
     }
 }
