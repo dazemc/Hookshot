@@ -11,6 +11,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import 'a11y.dart';
 import 'blocs/builder_bloc.dart';
 import 'blocs/launcher_bloc.dart';
 import 'blocs/update_bloc.dart';
@@ -125,7 +126,7 @@ class _HookshotAppState extends State<HookshotApp> {
 
   Widget _switch(String key, Widget child) {
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 220),
+      duration: HsMotion.duration(context, 220),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       transitionBuilder: (child, animation) {
@@ -287,26 +288,37 @@ class _UpdateWorkingPage extends StatelessWidget {
                         child: const Icon(LucideIcons.refreshCw, size: 30, color: Colors.white),
                       ),
                       const SizedBox(height: 20),
-                      Text(
-                        title,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: HsColors.ink),
+                      Semantics(
+                        header: true,
+                        child: Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: HsColors.ink),
+                        ),
                       ),
                       const SizedBox(height: 8),
                       ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 500),
-                        child: Text(
-                          note,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 13.5, height: 1.45, color: HsColors.inkSoft),
+                        child: HsLiveStatus(
+                          text: note,
+                          child: Text(
+                            note,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 13.5, height: 1.45, color: HsColors.inkSoft),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 24),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(99),
-                        child: const SizedBox(
-                          height: 4,
-                          child: ProgressBar(value: null, strokeWidth: 4),
+                      HsProgressSemantics(
+                        label: title,
+                        percent: null,
+                        detail: note,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(99),
+                          child: const SizedBox(
+                            height: 4,
+                            child: ProgressBar(value: null, strokeWidth: 4),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 22),
@@ -405,10 +417,13 @@ class _UpdateFailedPage extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 18),
-                      const Text(
-                        'The update stopped',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: HsColors.ink),
+                      Semantics(
+                        header: true,
+                        child: const Text(
+                          'The update stopped',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 23, fontWeight: FontWeight.w700, color: HsColors.ink),
+                        ),
                       ),
                       const SizedBox(height: 7),
                       const Text(
@@ -417,7 +432,7 @@ class _UpdateFailedPage extends StatelessWidget {
                         style: TextStyle(fontSize: 13.5, height: 1.45, color: HsColors.inkSoft),
                       ),
                       const SizedBox(height: 20),
-                      HsBanner(kind: HsBannerKind.warning, title: 'Error details', message: error),
+                      HsBanner(kind: HsBannerKind.warning, title: 'Error details', message: error, live: true),
                     ],
                   ),
                 ),

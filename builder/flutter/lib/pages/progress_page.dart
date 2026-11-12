@@ -5,6 +5,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../a11y.dart';
 import '../blocs/builder_bloc.dart';
 import '../theme.dart';
 import 'widgets.dart';
@@ -71,8 +72,11 @@ class _ProgressPageState extends State<ProgressPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(state.title,
-                        style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold, color: HsColors.ink)),
+                    Semantics(
+                      header: true,
+                      child: Text(state.title,
+                          style: const TextStyle(fontSize: 23, fontWeight: FontWeight.bold, color: HsColors.ink)),
+                    ),
                     const SizedBox(height: 4),
                     const HsNote('Hookshot is working through the build. You can keep using your PC.'),
                     if (state.damagedCount > 0) ...[
@@ -149,20 +153,27 @@ class _ProgressPageState extends State<ProgressPage> {
               children: [
                 SizedBox(
                   height: 14,
-                  child: Row(
-                    children: [
-                      Expanded(child: ProgressBar(value: working ? null : percent, strokeWidth: 4)),
-                      const SizedBox(width: 8),
-                      Text(percent == null ? '0%' : '${percent.toStringAsFixed(0)}%',
-                          style: const TextStyle(fontSize: 10, color: HsColors.inkSoft)),
-                    ],
+                  child: HsProgressSemantics(
+                    label: 'Build progress',
+                    percent: percent,
+                    child: Row(
+                      children: [
+                        Expanded(child: ProgressBar(value: working ? null : percent, strokeWidth: 4)),
+                        const SizedBox(width: 8),
+                        Text(percent == null ? '0%' : '${percent.toStringAsFixed(0)}%',
+                            style: const TextStyle(fontSize: 10, color: HsColors.inkSoft)),
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(state.stageText,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 10.5, color: HsColors.inkSoft)),
+                HsLiveStatus(
+                  text: state.stageText,
+                  child: Text(state.stageText,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 10.5, color: HsColors.inkSoft)),
+                ),
                 const SizedBox(height: 3),
                 for (var i = 0; i < 4; i++)
                   SizedBox(
@@ -194,13 +205,17 @@ class _ProgressPageState extends State<ProgressPage> {
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(child: ProgressBar(value: working ? null : percent)),
-                    const SizedBox(width: 10),
-                    Text(percent == null ? '0%' : '${percent.toStringAsFixed(0)}%',
-                        style: const TextStyle(fontSize: 11, color: HsColors.inkSoft)),
-                  ],
+                HsProgressSemantics(
+                  label: 'Build progress',
+                  percent: percent,
+                  child: Row(
+                    children: [
+                      Expanded(child: ProgressBar(value: working ? null : percent)),
+                      const SizedBox(width: 10),
+                      Text(percent == null ? '0%' : '${percent.toStringAsFixed(0)}%',
+                          style: const TextStyle(fontSize: 11, color: HsColors.inkSoft)),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 18),
                 Expanded(
@@ -214,7 +229,7 @@ class _ProgressPageState extends State<ProgressPage> {
                     current: stage,
                   ),
                 ),
-                HsStatusLine(state.stageText, icon: LucideIcons.refreshCw),
+                HsStatusLine(state.stageText, icon: LucideIcons.refreshCw, live: true),
               ],
             ),
     );

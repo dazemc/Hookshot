@@ -21,7 +21,9 @@ class HsColors {
   static const lineStrong = Color(0xFF3d434c);
   static const ink = Color(0xFFedeff2);
   static const inkSoft = Color(0xFFa2a9b3);
-  static const inkFaint = Color(0xFF6e7681);
+  // 5.8:1 on the page and 5.3:1 on raised cards, so the small labels that use
+  // it still meet WCAG AA (4.5:1) instead of the old #6e7681 (3.9:1).
+  static const inkFaint = Color(0xFF8b939d);
   static const brand = Color(0xFF3d63e6);
   static const brandHover = Color(0xFF4b70f0);
   static const brandInk = Color(0xFFdfe6ff);
@@ -29,6 +31,10 @@ class HsColors {
   static const goHover = Color(0xFF70c09a);
   static const goInk = Color(0xFF06150e);
   static const bad = Color(0xFFe2776b);
+  // The focus ring: light enough to stand out on the page, cards and the
+  // brand-blue buttons (4.1:1 against the brand fill, 13:1 on raised cards).
+  static const focusOuter = Color(0xFFdfe6ff);
+  static const focusInner = Color(0xFF14161a);
   static const white = Color(0xFFFFFFFF);
   static final glass = mix(white, page, 0x0D / 255);
   static final glassLine = mix(white, page, 0x17 / 255);
@@ -58,6 +64,15 @@ FluentThemeData hsTheme() => FluentThemeData(
       scaffoldBackgroundColor: HsColors.page,
       accentColor: _brandAccent(),
       fontFamily: 'Inter',
+      // Fluent's default FocusThemeData has no border, so the controls it
+      // already makes focusable showed no ring. This one is visible on both
+      // the dark page and the blue primary buttons.
+      focusTheme: const FocusThemeData(
+        borderRadius: BorderRadius.all(Radius.circular(6)),
+        primaryBorder: BorderSide(width: 2, color: HsColors.focusOuter),
+        secondaryBorder: BorderSide(color: HsColors.focusInner),
+        renderOutside: true,
+      ),
     );
 
 TextStyle hsText(double size, {FontWeight w = FontWeight.normal, Color? color, bool mono = false}) => TextStyle(

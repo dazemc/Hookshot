@@ -6,6 +6,7 @@ import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../a11y.dart';
 import '../blocs/builder_bloc.dart';
 import '../blocs/update_bloc.dart';
 import '../config.dart' as cfg;
@@ -127,7 +128,7 @@ class FilesPage extends StatelessWidget {
                             ),
                           if (state.checkText.isNotEmpty) ...[
                             const SizedBox(height: 12),
-                            HsStatusLine(state.checkText),
+                            HsStatusLine(state.checkText, live: true),
                           ],
                         ],
                       ),
@@ -349,37 +350,46 @@ class _KindChoice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final border = selected ? HsColors.brand : HsColors.glassLine;
-    return GestureDetector(
+    return Semantics(
+      container: true,
+      button: true,
+      selected: selected,
+      label: '$title. $subtitle',
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-        decoration: BoxDecoration(
-          color: selected ? HsColors.brand.withValues(alpha: 0.13) : HsColors.page.withValues(alpha: 0.35),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: border, width: selected ? 1.5 : 1),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, size: 17, color: selected ? HsColors.brandHover : HsColors.inkFaint),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w600,
-                          color: selected ? HsColors.ink : HsColors.inkSoft)),
-                  const SizedBox(height: 2),
-                  Text(subtitle, style: const TextStyle(fontSize: 11, color: HsColors.inkFaint)),
-                ],
-              ),
+      child: ExcludeSemantics(
+        child: GestureDetector(
+          onTap: onTap,
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedContainer(
+            duration: HsMotion.duration(context, 120),
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+            decoration: BoxDecoration(
+              color: selected ? HsColors.brand.withValues(alpha: 0.13) : HsColors.page.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: border, width: selected ? 1.5 : 1),
             ),
-            if (selected) const Icon(LucideIcons.circleCheck, size: 14, color: HsColors.brandHover),
-          ],
+            child: Row(
+              children: [
+                Icon(icon, size: 17, color: selected ? HsColors.brandHover : HsColors.inkFaint),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: selected ? HsColors.ink : HsColors.inkSoft)),
+                      const SizedBox(height: 2),
+                      Text(subtitle, style: const TextStyle(fontSize: 11, color: HsColors.inkFaint)),
+                    ],
+                  ),
+                ),
+                if (selected) const Icon(LucideIcons.circleCheck, size: 14, color: HsColors.brandHover),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -444,21 +454,24 @@ class _PathRowState extends State<_PathRow> {
           const SizedBox(width: 10),
         ],
         Expanded(
-          child: TextBox(
-            controller: _controller,
-            placeholder: widget.placeholder,
-            placeholderStyle: const TextStyle(color: HsColors.inkFaint, fontWeight: FontWeight.w300),
-            onChanged: (value) {
-              _editTimer?.cancel();
-              _editTimer = Timer(const Duration(milliseconds: 350), () {
-                if (mounted) widget.onChanged(value);
-              });
-            },
-            onSubmitted: (value) {
-              _editTimer?.cancel();
-              widget.onSubmitted(value);
-            },
-            style: const TextStyle(fontSize: 12, fontFamilyFallback: hsMonoFamilies, color: HsColors.ink),
+          child: Semantics(
+            label: widget.label ?? widget.placeholder,
+            child: TextBox(
+              controller: _controller,
+              placeholder: widget.placeholder,
+              placeholderStyle: const TextStyle(color: HsColors.inkFaint, fontWeight: FontWeight.w300),
+              onChanged: (value) {
+                _editTimer?.cancel();
+                _editTimer = Timer(const Duration(milliseconds: 350), () {
+                  if (mounted) widget.onChanged(value);
+                });
+              },
+              onSubmitted: (value) {
+                _editTimer?.cancel();
+                widget.onSubmitted(value);
+              },
+              style: const TextStyle(fontSize: 12, fontFamilyFallback: hsMonoFamilies, color: HsColors.ink),
+            ),
           ),
         ),
         const SizedBox(width: 9),
@@ -518,32 +531,38 @@ class _OptionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 1),
-          child: Checkbox(checked: checked, onChanged: (value) => onChanged(value ?? false)),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => onChanged(!checked),
-            child: Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: HsColors.ink)),
-                  const SizedBox(height: 3),
-                  Text(detail, style: const TextStyle(fontSize: 11.5, height: 1.35, color: HsColors.inkFaint)),
-                ],
+    // Merge the checkbox and its visible label into one semantics node, so a
+    // screen reader says "Prepare shaders…, checked" instead of an unlabelled
+    // checkbox followed by loose text.
+    return MergeSemantics(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Checkbox(checked: checked, onChanged: (value) => onChanged(value ?? false)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onChanged(!checked),
+              child: Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: HsColors.ink)),
+                    const SizedBox(height: 3),
+                    Text(detail, style: const TextStyle(fontSize: 11.5, height: 1.35, color: HsColors.inkFaint)),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -560,24 +579,31 @@ class _SpaceMeter extends StatelessWidget {
     }
     final enough = gb >= 45;
     final color = enough ? HsColors.go : HsColors.bad;
-    return Row(
-      children: [
-        const Icon(LucideIcons.hardDrive, size: 14, color: HsColors.inkFaint),
-        const SizedBox(width: 8),
-        Expanded(
-          child: ProgressBar(
-            value: (gb / 45).clamp(0.0, 1.0) * 100,
-            activeColor: color,
-            backgroundColor: HsColors.track,
-            strokeWidth: 4,
-          ),
+    final free = '${gb.toStringAsFixed(0)} GB free · 45 GB recommended';
+    return Semantics(
+      container: true,
+      label: 'Disk space. $free${enough ? '' : '. Not enough space'}',
+      child: ExcludeSemantics(
+        child: Row(
+          children: [
+            const Icon(LucideIcons.hardDrive, size: 14, color: HsColors.inkFaint),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ProgressBar(
+                value: (gb / 45).clamp(0.0, 1.0) * 100,
+                activeColor: color,
+                backgroundColor: HsColors.track,
+                strokeWidth: 4,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              free,
+              style: TextStyle(fontSize: 11.5, color: enough ? HsColors.inkSoft : color),
+            ),
+          ],
         ),
-        const SizedBox(width: 12),
-        Text(
-          '${gb.toStringAsFixed(0)} GB free · 45 GB recommended',
-          style: TextStyle(fontSize: 11.5, color: enough ? HsColors.inkSoft : color),
-        ),
-      ],
+      ),
     );
   }
 }

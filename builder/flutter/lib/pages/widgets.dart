@@ -6,6 +6,7 @@ import 'package:bitsdojo_window/bitsdojo_window.dart';
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
+import '../a11y.dart';
 import '../config.dart' show builderVersion, toolsRoot;
 import '../theme.dart';
 
@@ -15,7 +16,11 @@ class BrandLogo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final file = File('${toolsRoot()}/assets/hookshot.png');
-    if (file.existsSync()) return Image.file(file, height: 30, filterQuality: FilterQuality.medium);
+    if (file.existsSync()) {
+      // The wordmark beside it already names the builder; a second "logo"
+      // announcement is noise.
+      return Image.file(file, height: 30, filterQuality: FilterQuality.medium, excludeFromSemantics: true);
+    }
     return const SizedBox.shrink();
   }
 }
@@ -72,27 +77,34 @@ class StepsPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const names = ['Game files', 'Build', 'Play'];
-    return Container(
-      padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(
-        color: HsColors.raised,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: HsColors.glassLine),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (var i = 0; i < names.length; i++) _step(names[i], i),
-        ],
+    final current = on.clamp(0, names.length - 1);
+    return Semantics(
+      container: true,
+      label: 'Step ${current + 1} of ${names.length}: ${names[current]}',
+      child: ExcludeSemantics(
+        child: Container(
+          padding: const EdgeInsets.all(3),
+          decoration: BoxDecoration(
+            color: HsColors.raised,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: HsColors.glassLine),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < names.length; i++) _step(context, names[i], i),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _step(String name, int i) {
+  Widget _step(BuildContext context, String name, int i) {
     final done = i < on;
     final current = i == on;
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 240),
+      duration: HsMotion.duration(context, 240),
       curve: Curves.easeOutCubic,
       padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 6),
       decoration: current
@@ -105,7 +117,7 @@ class StepsPill extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           AnimatedSize(
-            duration: const Duration(milliseconds: 200),
+            duration: HsMotion.duration(context, 200),
             curve: Curves.easeOutCubic,
             child: done
                 ? const Padding(
@@ -115,7 +127,7 @@ class StepsPill extends StatelessWidget {
                 : const SizedBox.shrink(),
           ),
           AnimatedDefaultTextStyle(
-            duration: const Duration(milliseconds: 200),
+            duration: HsMotion.duration(context, 200),
             curve: Curves.easeOutCubic,
             style: TextStyle(
               fontSize: 12,
@@ -139,7 +151,7 @@ class HsPopIn extends StatelessWidget {
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
       tween: Tween(begin: 0.82, end: 1),
-      duration: const Duration(milliseconds: 420),
+      duration: HsMotion.duration(context, 420),
       curve: Curves.easeOutBack,
       builder: (context, value, child) => Transform.scale(scale: value, child: child),
       child: child,
@@ -260,9 +272,12 @@ class HsCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Text(title!.toUpperCase(),
-                      style: const TextStyle(
-                          fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.9, color: HsColors.inkSoft)),
+                  child: Semantics(
+                    header: true,
+                    child: Text(title!.toUpperCase(),
+                        style: const TextStyle(
+                            fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.9, color: HsColors.inkSoft)),
+                  ),
                 ),
                 if (trailing != null) trailing!,
               ],
@@ -312,7 +327,11 @@ class HsBanner extends StatelessWidget {
   final String title;
   final String? message;
   final Widget? action;
-  const HsBanner({super.key, required this.kind, required this.title, this.message, this.action});
+
+  /// Announce the banner when its text changes. Used for errors that arrive
+  /// while the page stays open.
+  final bool live;
+  const HsBanner({super.key, required this.kind, required this.title, this.message, this.action, this.live = false});
 
   @override
   Widget build(BuildContext context) {
@@ -326,7 +345,7 @@ class HsBanner extends StatelessWidget {
       HsBannerKind.warning => LucideIcons.triangleAlert,
       HsBannerKind.success => LucideIcons.circleCheck,
     };
-    return Container(
+    final banner = Container(
       width: double.infinity,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -355,6 +374,10 @@ class HsBanner extends StatelessWidget {
         ],
       ),
     );
+    if (!live) return banner;
+    if (action != null) return Semantics(container: true, liveRegion: true, child: banner);
+    final spoken = message == null ? title : '$title. $message';
+    return HsLiveStatus(text: spoken, child: banner);
   }
 }
 
@@ -370,83 +393,99 @@ class HsStageTrack extends StatelessWidget {
   final int current; // -1 nothing started, stages.length all done
   const HsStageTrack({super.key, required this.stages, required this.current});
 
+  String _stageLabel(int i) {
+    final status = i < current
+        ? 'done'
+        : i == current
+            ? 'in progress'
+            : 'not started';
+    final note = stages[i].note;
+    return '${stages[i].label}, $status${note == null ? '' : '. $note'}';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (var i = 0; i < stages.length; i++)
-          SizedBox(
-            height: i == stages.length - 1 ? 40 : 56,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: 22,
-                  child: Column(
-                    children: [
-                      _dot(i),
-                      if (i < stages.length - 1)
-                        Expanded(
-                          child: Center(
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 260),
-                              curve: Curves.easeOutCubic,
-                              width: 2,
-                              color: i < current ? HsColors.go : HsColors.glassLine,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(
-                                stages[i].label,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: i == current ? FontWeight.w600 : FontWeight.normal,
-                                  color: i <= current ? HsColors.ink : HsColors.inkFaint,
+          Semantics(
+            container: true,
+            label: _stageLabel(i),
+            child: ExcludeSemantics(
+              child: SizedBox(
+                height: i == stages.length - 1 ? 40 : 56,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 22,
+                      child: Column(
+                        children: [
+                          _dot(context, i),
+                          if (i < stages.length - 1)
+                            Expanded(
+                              child: Center(
+                                child: AnimatedContainer(
+                                  duration: HsMotion.duration(context, 260),
+                                  curve: Curves.easeOutCubic,
+                                  width: 2,
+                                  color: i < current ? HsColors.go : HsColors.glassLine,
                                 ),
                               ),
                             ),
-                            if (i == current)
-                              const Padding(
-                                padding: EdgeInsets.only(left: 8),
-                                child: SizedBox(width: 12, height: 12, child: ProgressRing(strokeWidth: 2)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    stages[i].label,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: i == current ? FontWeight.w600 : FontWeight.normal,
+                                      color: i <= current ? HsColors.ink : HsColors.inkFaint,
+                                    ),
+                                  ),
+                                ),
+                                if (i == current)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 8),
+                                    child: SizedBox(width: 12, height: 12, child: ProgressRing(strokeWidth: 2)),
+                                  ),
+                              ],
+                            ),
+                            if (stages[i].note != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(stages[i].note!,
+                                    style: const TextStyle(fontSize: 11.5, color: HsColors.inkFaint)),
                               ),
                           ],
                         ),
-                        if (stages[i].note != null)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2),
-                            child:
-                                Text(stages[i].note!, style: const TextStyle(fontSize: 11.5, color: HsColors.inkFaint)),
-                          ),
-                      ],
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
       ],
     );
   }
 
-  Widget _dot(int i) {
+  Widget _dot(BuildContext context, int i) {
     if (i < current) {
       return AnimatedContainer(
-        duration: const Duration(milliseconds: 260),
+        duration: HsMotion.duration(context, 260),
         curve: Curves.easeOutCubic,
         width: 20,
         height: 20,
@@ -456,7 +495,7 @@ class HsStageTrack extends StatelessWidget {
     }
     if (i == current) {
       return AnimatedContainer(
-        duration: const Duration(milliseconds: 260),
+        duration: HsMotion.duration(context, 260),
         curve: Curves.easeOutCubic,
         width: 20,
         height: 20,
@@ -468,7 +507,7 @@ class HsStageTrack extends StatelessWidget {
       );
     }
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 260),
+      duration: HsMotion.duration(context, 260),
       curve: Curves.easeOutCubic,
       width: 20,
       height: 20,
@@ -504,9 +543,13 @@ class _HsLogViewState extends State<HsLogView> {
 
   void _toEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_controller.hasClients) return;
-      _controller.animateTo(_controller.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 120), curve: Curves.easeOutCubic);
+      if (!mounted || !_controller.hasClients) return;
+      final end = _controller.position.maxScrollExtent;
+      if (HsMotion.reduced(context)) {
+        _controller.jumpTo(end);
+        return;
+      }
+      _controller.animateTo(end, duration: const Duration(milliseconds: 120), curve: Curves.easeOutCubic);
     });
   }
 
@@ -530,23 +573,27 @@ class _HsLogViewState extends State<HsLogView> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: widget.expand ? null : 220,
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: HsColors.logBg,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: HsColors.glassLine),
-      ),
-      child: Scrollbar(
-        controller: _controller,
-        child: ListView.builder(
+    return Semantics(
+      container: true,
+      label: 'Build log',
+      child: Container(
+        height: widget.expand ? null : 220,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: HsColors.logBg,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: HsColors.glassLine),
+        ),
+        child: Scrollbar(
           controller: _controller,
-          reverse: true,
-          itemCount: widget.lines.length,
-          itemExtent: 17,
-          itemBuilder: (context, i) => SelectableText(widget.lines[widget.lines.length - 1 - i],
-              style: const TextStyle(fontSize: 11, color: HsColors.inkSoft, fontFamilyFallback: hsMonoFamilies)),
+          child: ListView.builder(
+            controller: _controller,
+            reverse: true,
+            itemCount: widget.lines.length,
+            itemExtent: 17,
+            itemBuilder: (context, i) => SelectableText(widget.lines[widget.lines.length - 1 - i],
+                style: const TextStyle(fontSize: 11, color: HsColors.inkSoft, fontFamilyFallback: hsMonoFamilies)),
+          ),
         ),
       ),
     );
@@ -558,11 +605,16 @@ class HsStatusLine extends StatelessWidget {
   final String text;
   final Color color;
   final IconData icon;
-  const HsStatusLine(this.text, {super.key, this.color = HsColors.inkSoft, this.icon = LucideIcons.info});
+
+  /// Announce [text] when it changes. Use it for state that updates while the
+  /// page stays open (build stages, update checks), not for clocks.
+  final bool live;
+  const HsStatusLine(this.text,
+      {super.key, this.color = HsColors.inkSoft, this.icon = LucideIcons.info, this.live = false});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
@@ -575,6 +627,7 @@ class HsStatusLine extends StatelessWidget {
         ),
       ],
     );
+    return live ? HsLiveStatus(text: text, child: row) : row;
   }
 }
 

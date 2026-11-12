@@ -63,15 +63,18 @@ class _ReadyPageState extends State<ReadyPage> {
                                 ),
                               ),
                               const SizedBox(width: 14),
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('Your game is ready',
-                                        style:
-                                            TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: HsColors.ink)),
-                                    SizedBox(height: 3),
-                                    Text('The build completed successfully.',
+                                    Semantics(
+                                      header: true,
+                                      child: const Text('Your game is ready',
+                                          style: TextStyle(
+                                              fontSize: 22, fontWeight: FontWeight.bold, color: HsColors.ink)),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    const Text('The build completed successfully.',
                                         style: TextStyle(fontSize: 12.5, color: HsColors.inkSoft)),
                                   ],
                                 ),
@@ -118,7 +121,8 @@ class _ReadyPageState extends State<ReadyPage> {
               ),
             ),
             HsFooter(
-              leading: const HsStatusLine('Ready to play', icon: LucideIcons.circleCheck, color: HsColors.go),
+              leading:
+                  const HsStatusLine('Ready to play', icon: LucideIcons.circleCheck, color: HsColors.go, live: true),
               actions: [
                 HsButton.quiet(label: 'Open folder', onPressed: () => openFolder(state.folder)),
                 HsButton.quiet(
@@ -182,9 +186,12 @@ class ProblemPage extends StatelessWidget {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(state.cancelled ? 'Build cancelled' : 'The build stopped',
-                                        style: const TextStyle(
-                                            fontSize: 22, fontWeight: FontWeight.bold, color: HsColors.ink)),
+                                    Semantics(
+                                      header: true,
+                                      child: Text(state.cancelled ? 'Build cancelled' : 'The build stopped',
+                                          style: const TextStyle(
+                                              fontSize: 22, fontWeight: FontWeight.bold, color: HsColors.ink)),
+                                    ),
                                     const SizedBox(height: 3),
                                     Text(
                                         state.cancelled
@@ -198,7 +205,8 @@ class ProblemPage extends StatelessWidget {
                           ),
                           const SizedBox(height: 20),
                           if (!state.cancelled)
-                            HsBanner(kind: HsBannerKind.warning, title: 'Error details', message: state.error)
+                            HsBanner(
+                                kind: HsBannerKind.warning, title: 'Error details', message: state.error, live: true)
                           else
                             const HsStatusLine('No files were changed.', icon: LucideIcons.circleStop),
                           if (state.damagedCount > 0) ...[
