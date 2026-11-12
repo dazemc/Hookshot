@@ -72,6 +72,40 @@ fn write_blob(path: &Path, data: &[u8]) -> Result<(), String> {
     fs::write(path, data).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Linux FFmpeg flags: HOOKSHOT_FFMPEG's static prefix first (the AppImage's
+/// build, with dav1d for OoT's AV1 movies), else the system's through
+/// pkg-config. build.py's order, so a prefix a player set is not ignored.
+fn ffmpeg_linux_from<F>(prefix: Option<&Path>, pkg: F) -> (Vec<String>, Vec<String>)
+where
+    F: FnOnce() -> (Vec<String>, Vec<String>),
+{
+    if let Some(prefix) = prefix.filter(|path| path.join("lib/libavcodec.a").is_file()) {
+        let mut libs = Vec::new();
+        for library in FFMPEG_LIBRARIES {
+            libs.push(
+                prefix
+                    .join(format!("lib/lib{library}.a"))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        let dav1d = prefix.join("lib/libdav1d.a");
+        if dav1d.is_file() {
+            libs.push(dav1d.to_string_lossy().into_owned());
+        }
+        libs.extend(["-lm".into(), "-lpthread".into()]);
+        return (vec![format!("-I{}", prefix.join("include").display())], libs);
+    }
+    pkg()
+}
+
+fn ffmpeg_linux() -> (Vec<String>, Vec<String>) {
+    let prefix = std::env::var_os("HOOKSHOT_FFMPEG").map(PathBuf::from);
+    ffmpeg_linux_from(prefix.as_deref(), || {
+        pkg_config(&["libavcodec", "libswscale", "libswresample", "libavutil"])
+    })
+}
+
 fn pkg_config(names: &[&str]) -> (Vec<String>, Vec<String>) {
     let query = |flag: &str| -> Vec<String> {
         Command::new("pkg-config")
@@ -290,8 +324,7 @@ fn link_linux_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> 
         "-ffp-contract=off".to_owned(),
         "-mcx16".to_owned(),
     ]);
-    let (ffmpeg_flags, ffmpeg_libs) =
-        pkg_config(&["libavcodec", "libswscale", "libswresample", "libavutil"]);
+    let (ffmpeg_flags, ffmpeg_libs) = ffmpeg_linux();
     let mut deps = Vec::new();
     for folder in [
         &rt64,
@@ -1387,6 +1420,38 @@ mod tests {
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         folder
+    }
+
+    #[test]
+    fn a_static_ffmpeg_prefix_wins_over_pkg_config() {
+        let prefix = temp("ffmpeg-static");
+        fs::create_dir_all(prefix.join("lib")).unwrap();
+        fs::create_dir_all(prefix.join("include/libavcodec")).unwrap();
+        for library in FFMPEG_LIBRARIES {
+            fs::write(prefix.join(format!("lib/lib{library}.a")), b"lib").unwrap();
+        }
+        fs::write(prefix.join("lib/libdav1d.a"), b"lib").unwrap();
+        let (flags, libs) = ffmpeg_linux_from(Some(&prefix), || {
+            panic!("a complete static prefix must not ask pkg-config")
+        });
+        assert_eq!(flags, [format!("-I{}", prefix.join("include").display())]);
+        assert!(libs.contains(&prefix.join("lib/libavcodec.a").to_string_lossy().into_owned()));
+        assert!(libs.contains(&prefix.join("lib/libdav1d.a").to_string_lossy().into_owned()));
+        assert!(libs.iter().any(|lib| lib == "-lm"));
+        assert!(!libs.iter().any(|lib| lib == "-lavcodec"));
+        let _ = fs::remove_dir_all(prefix);
+    }
+
+    #[test]
+    fn a_prefix_without_libavcodec_falls_back_to_pkg_config() {
+        let prefix = temp("ffmpeg-partial");
+        fs::create_dir_all(prefix.join("lib")).unwrap();
+        let (flags, libs) = ffmpeg_linux_from(Some(&prefix), || {
+            (vec!["-I/usr/include".into()], vec!["-lavcodec".into()])
+        });
+        assert_eq!(flags, ["-I/usr/include"]);
+        assert_eq!(libs, ["-lavcodec"]);
+        let _ = fs::remove_dir_all(prefix);
     }
 
     #[test]
