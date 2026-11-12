@@ -53,6 +53,7 @@
 #include "fallback_depth_hold.h"   // (a mesh fallback's depth-only draws held while its colour draw builds)
 #include "pcache_read.h"          // (a pipeline cache's header checked before the rest of the file is read)
 #include "driver_faults.h"
+#include "device_fault_query.h"   // (when a lost device's report asks VK_EXT_device_fault)
 #include "fallback_pipeline_state.h"   // (the fallback's pipeline state and the strides a bind invalidates)
 #include "fallback_size_policy.h"
 
@@ -3760,16 +3761,26 @@ void checkpoints_report() {
     static bool done;
     if (done) return;
     done = true;
-    if (env_on("RX_VK_FAULT_INFO")) device_fault_report();   // (now, while the process is still alive: the faulting address)
+    const bool fault_forced = device_fault_query::forced(getenv("RX_VK_FAULT_INFO"));
+    if (fault_forced) device_fault_report();   // (now, while the process is still alive: the faulting address)
     {   // (RX_VK_FLASH_RECORD=<program,...>: those programs' last draws, sizes and all)
         const uint64_t f = texture_frame_no();
         draw_records_log(f > 6 ? f - 6 : 0, f);
     }
     // (checkpoints first: on NVIDIA vkGetDeviceFaultInfoEXT has not come back after a fault, which lost the report)
+    // (without either, AMD and Intel ask for the fault info automatically; on NVIDIA it stays off, even with the
+    // checkpoints switched off: device_fault_query.h)
+    const bool fault_auto = device_fault_query::automatic(dev.props.vendorID == 0x10DE, dev.checkpoints,
+                                                          marker_words != nullptr, getenv("RX_VK_FAULT_AUTO"));
     logf("vk: device lost: reading %s", dev.checkpoints ? "the checkpoints"
                                         : marker_words ? "the buffer markers"
-                                                       : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
-    struct FaultLast { ~FaultLast() { if (env_on("RX_VK_FAULT_INFO")) device_fault_report(); } } fault_last;
+                                        : fault_auto ? "the fault info (automatic; RX_VK_FAULT_AUTO=0 turns it off, "
+                                                       "RX_VK_CHECKPOINTS=1 for markers)"
+                                                     : "the fault info (RX_VK_CHECKPOINTS=1 for markers)");
+    struct FaultLast {
+        bool wanted;
+        ~FaultLast() { if (wanted) device_fault_report(); }
+    } fault_last{fault_forced || fault_auto};
     const auto watched = [] {
         std::lock_guard lk(watch_mu);
         for (int i = 0; i < 40; i++)
