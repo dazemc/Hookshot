@@ -150,6 +150,17 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.compile_one" => compile::compile_one_json(&request, &kit::root()),
         "build.compile_many" => compile::many_json(&request, &kit::root()),
+        "build.plan" => compile::plan_json(&request, &kit::root()),
+        "build.eta" => {
+            let pending: Vec<f64> = request
+                .get("pending")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_f64).collect())
+                .unwrap_or_default();
+            Ok(
+                json!({"seconds": compile::eta_left(&pending, request.get("jobs").and_then(Value::as_u64).unwrap_or(1) as usize)}),
+            )
+        }
         "build.split_big" => {
             let files: Vec<String> = request
                 .get("files")

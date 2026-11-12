@@ -62,7 +62,62 @@ fn cache_put(object: &Path, key: &str, cache: &Path) -> Result<(), String> {
 
 /// Compile one source. Returns whether it was built now or came from the
 /// stamp/cache, how long it took, and the compiler's error if any.
-/// Compile a list of jobs, longest first, up to `jobs` at once.
+/// Which jobs this run really compiles: an object stamped with its key, or
+/// one already in the shared cache, is only linked in.
+pub fn plan_json(request: &Value, root: &Path) -> Result<Value, String> {
+    let jobs = request
+        .get("jobs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let cache = PathBuf::from(request.get("cache").and_then(Value::as_str).unwrap_or(""));
+    let mut work = Vec::new();
+    let mut keys = Vec::new();
+    for job in jobs {
+        let source = PathBuf::from(job.get("src").and_then(Value::as_str).unwrap_or(""));
+        let object = PathBuf::from(job.get("obj").and_then(Value::as_str).unwrap_or(""));
+        let flags: Vec<String> = job
+            .get("flags")
+            .and_then(Value::as_array)
+            .map(|flags| {
+                flags
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let deps = match job.get("deps_file").and_then(Value::as_str) {
+            Some(path) if !path.is_empty() => fs::read(path).map_err(|e| format!("{path}: {e}"))?,
+            _ => Vec::new(),
+        };
+        let key = object_key(&source, &flags, &deps, root)?;
+        keys.push(
+            json!({"src": source.to_string_lossy(), "obj": object.to_string_lossy(), "key": key}),
+        );
+        let stamp = append(&object, ".sha1");
+        let stamped = object.is_file()
+            && fs::read_to_string(&stamp)
+                .map(|old| old == key)
+                .unwrap_or(false);
+        let cached = cache.join(format!("{key}.o")).is_file();
+        if !stamped && !cached {
+            work.push(job);
+        }
+    }
+    Ok(json!({"work": work, "keys": keys}))
+}
+
+/// How long the rest of the compile takes with this many compilers.
+pub fn eta_left(pending: &[f64], jobs: usize) -> f64 {
+    if pending.is_empty() {
+        return 0.0;
+    }
+    let longest = pending.iter().copied().fold(0.0f64, f64::max);
+    longest.max(pending.iter().sum::<f64>() / jobs.max(1) as f64)
+}
+
+/// Compile a list of jobs, longest first, up to `jobs` at once./// Compile a list of jobs, longest first, up to `jobs` at once.
 pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
     let jobs: Vec<Value> = request
         .get("jobs")
@@ -215,6 +270,36 @@ pub fn compile_one_json(request: &Value, root: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eta_is_the_slower_of_the_work_and_the_longest_file() {
+        assert_eq!(eta_left(&[], 4), 0.0);
+        assert_eq!(eta_left(&[10.0, 2.0, 2.0], 2), 10.0);
+        assert_eq!(eta_left(&[4.0, 4.0, 4.0], 2), 6.0);
+    }
+
+    #[test]
+    fn plan_skips_a_stamped_or_cached_object() {
+        let base = std::env::temp_dir().join(format!("hookshot-rust-plan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let source = base.join("a.c");
+        fs::write(&source, "int a;\n").unwrap();
+        let object = base.join("a.o");
+        let cache = base.join("cache");
+        let job = json!({"cc": "cc", "src": source, "obj": object, "cache": cache, "flags": ["-O1"], "deps_file": ""});
+        let request = json!({"jobs": [job.clone()], "cache": cache});
+        let plan = plan_json(&request, &base).unwrap();
+        assert_eq!(plan["work"].as_array().unwrap().len(), 1);
+        let key = plan["keys"][0]["key"].as_str().unwrap();
+        fs::write(&object, b"object").unwrap();
+        let mut stamp = object.as_os_str().to_owned();
+        stamp.push(".sha1");
+        fs::write(stamp, key).unwrap();
+        let plan = plan_json(&request, &base).unwrap();
+        assert_eq!(plan["work"].as_array().unwrap().len(), 0);
+        let _ = fs::remove_dir_all(base);
+    }
 
     #[test]
     fn flags_ignore_includes_and_paths() {
