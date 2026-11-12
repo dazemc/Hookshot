@@ -1752,7 +1752,16 @@ pub fn write_json(
     }))
 }
 pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
-    let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
+    let standalone = std::env::var("HOOKSHOT_EMIT_STANDALONE").ok().as_deref() == Some("1");
+    let hle = if standalone {
+        crate::standalone::hle_symbols(exefs)?
+    } else {
+        Vec::new()
+    };
+    let mut image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &hle, &[])?;
+    if standalone {
+        image.add_adr_entries(4);
+    }
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.eh_starts = image.eh_starts().to_vec();
     lift.names = image.names().clone();
