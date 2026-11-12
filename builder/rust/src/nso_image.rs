@@ -29,6 +29,7 @@ pub struct Symbol {
     pub bind: String,
     pub defined: bool,
     pub value: u64,
+    #[allow(dead_code)]
     pub size: u64,
 }
 

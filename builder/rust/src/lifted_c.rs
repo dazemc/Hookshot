@@ -26,6 +26,37 @@ pub struct Span<'a> {
     pub end: usize,
 }
 
+/// Like `spans`, but a note line directly above a definition belongs to it
+/// (chunks.split_big keeps a function's note with it).
+pub fn spans_noted(text: &str) -> Vec<Span<'_>> {
+    let mut starts = Vec::new();
+    let mut at = 0;
+    let mut note: Option<usize> = None;
+    for line in text.split_inclusive('\n') {
+        let clean = line.trim_end_matches(['\n', '\r']);
+        if clean.starts_with("/* ") && clean.ends_with(" */") {
+            note = Some(at);
+        } else if let Some(address) = definition(clean) {
+            starts.push((address, note.take().unwrap_or(at)));
+        } else {
+            note = None;
+        }
+        at += line.len();
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, (address, start))| Span {
+            address,
+            start: *start,
+            end: starts
+                .get(i + 1)
+                .map(|(_, next)| *next)
+                .unwrap_or(text.len()),
+        })
+        .collect()
+}
+
 pub fn spans(text: &str) -> Vec<Span<'_>> {
     let mut starts = Vec::new();
     let mut at = 0;

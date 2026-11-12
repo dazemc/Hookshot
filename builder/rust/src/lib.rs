@@ -5,6 +5,7 @@
 //! released by `hookshot_engine_free`. The same commands are available from
 //! the CLI for tests and for development without Flutter.
 
+mod chunks;
 mod compile;
 mod diagnostics;
 mod disk;
@@ -148,6 +149,24 @@ pub fn dispatch(text: &str) -> String {
         ),
         "build.compile_one" => compile::compile_one_json(&request, &kit::root()),
         "build.compile_many" => compile::many_json(&request, &kit::root()),
+        "build.split_big" => {
+            let files: Vec<String> = request
+                .get("files")
+                .and_then(Value::as_array)
+                .map(|files| {
+                    files
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            chunks::split_big_json(
+                &string(&request, "gen").unwrap_or_default(),
+                &files,
+                request.get("budget").and_then(Value::as_u64).unwrap_or(0),
+            )
+        }
         "build.toolchain" => Ok(toolchain::json()),
         "build.seed_pipelines" => stage::seed_pipelines_json(
             &string(&request, "root").unwrap_or_default(),

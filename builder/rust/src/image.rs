@@ -246,6 +246,7 @@ impl Image {
             .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
+    #[allow(dead_code)]
     fn read_u32(&self, address: u64) -> Option<u32> {
         let at = address.checked_sub(self.base)? as usize;
         self.mem
@@ -563,6 +564,7 @@ impl Image {
         Ok(meta)
     }
 
+    #[allow(dead_code)]
     pub fn module_addresses(&self) -> Vec<(String, u64, usize)> {
         self.modules
             .iter()
@@ -574,6 +576,7 @@ impl Image {
         self.entries.len()
     }
 
+    #[allow(dead_code)]
     pub fn names(&self) -> &BTreeMap<u64, String> {
         &self.names
     }
