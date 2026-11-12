@@ -104,7 +104,9 @@ The engine also takes one JSON command on stdin; `hookshot_engine --help` and th
 Press **Insert**, **F1** or **Esc** to open the Insert menu. It has Graphics, Audio, Gameplay, Controls, Debug/cheats
 and developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, field of view, camera speed, text speed and the
 debug teleport are there. The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame
-generation and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The
+generation and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong).
+Mesh shaders is not a row: `RX_VK_MESH_SHADERS=native` or `compute` in `hookshot_env.txt` (or the environment) chooses
+it for a launch, and an existing `mesh_shaders=` line in `hookshot_options.ini` still chooses as its old row did. The
 Controls page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`,
 unset by default: until you bind one, the game's own button plays it, and a bound note answers only its own key or
 gamepad input while the game waits for a note. The in-game controls and the full option list are in the

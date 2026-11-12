@@ -564,10 +564,6 @@ const char* tx_robust(int v) {
     static const char* t[] = {"Auto", "Off", "On"};
     return (unsigned)v < 3 ? t[v] : t[0];
 }
-const char* tx_mesh_mode(int v) {
-    static const char* t[] = {"Automatic", "Native", "Compute"};
-    return (unsigned)v < 3 ? t[v] : t[0];
-}
 const char* tx_preset(int v) {
     static const char* t[] = {"Custom", "Minimum (4GB)", "Low (6GB)", "Balanced (8GB)", "High (12GB)", "Ultra (16GB+)"};
     return t[std::min(std::max(v, 0), 5)];
@@ -726,10 +722,6 @@ const char* hn_astc_rgba8(int, int variant) {
                                        : nullptr;
 }
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
-MENU_HINTS(hn_mesh_mode, 0, "The GPU's own mesh shaders where it has them, the compute path where it has not (on Linux "
-           "AMD always the compute path: RADV's mesh shaders stop the GPU, issue 2245).",
-           "The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.",
-           "The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a little slower.")
 MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the game's own rate too.",
            "And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.",
            "And a graph of the last 4 seconds' frame times, with a line at the Game frame rate cap's.",
@@ -840,9 +832,8 @@ Row rows[] = {
     {TAB_GRAPHICS, "VRAM budget", &opts.vram_budget, 0, kVramBudgets - 1, 1, tx_vram_budget,
      "How much video memory the game's textures may use, and its copies of game memory with them. Lower it if the game "
      "stutters after a while of play; a preset sets it.", hn_vram_budget, false, true},
-    {TAB_GRAPHICS, "Mesh shaders", &opts.mesh_mode, 0, 2, 1, tx_mesh_mode,
-     "How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which "
-     "every GPU has. Applies after a restart.", hn_mesh_mode, true, true},
+    // (no Mesh shaders row: changing it translated every shader again at the next start, for nothing a player gains. A launch
+    // switch now, RX_VK_MESH_SHADERS: gpu/vk/mesh_mode.h. An old mesh_shaders= line still chooses, and save() keeps it)
 
     // Audio
     {TAB_AUDIO, "Volume", &opts.volume, 0, 100, 5, tx_percent,
@@ -1307,7 +1298,6 @@ const char* ini_key(const Row& r) {
     if (r.value == &opts.upscale) return "upscaling";
     if (r.value == &opts.dlss) return "dlss";   // (as opts.dlss and RX_VK_DLSS)
     if (r.value == &opts.handheld) return "handheld_profile";   // (the Profile row; host/nn_applet.c reads it at the start)
-    if (r.value == &opts.mesh_mode) return "mesh_shaders";   // (gpu/vk/vk_main.cpp reads it as the device is made)
     static char k[32];
     size_t n = 0;
     for (const char* p = r.name; *p && n + 1 < sizeof k; p++) k[n++] = *p == ' ' ? '_' : (char)tolower(*p);
@@ -1419,6 +1409,8 @@ void save() {
             const std::string key(line, (size_t)(eq - line));
             // (memory_budget too: save() writes it, and the file's old line, kept after it, won at the next start)
             bool mine = key == "microphone_device" || key == "options_version" || key == "memory_budget";
+            // (mesh_shaders is not the menu's any more, but it is kept: an old file's line still chooses at the start
+            // (gpu/vk/mesh_mode.h), so a save must not silently put that file back on Automatic)
             for (const Row& r : rows)
                 if (!mine && r.value && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
