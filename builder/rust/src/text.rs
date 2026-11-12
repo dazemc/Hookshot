@@ -3,6 +3,7 @@
 
 use regex::Regex;
 use serde_json::{Value, json};
+use std::sync::OnceLock;
 
 fn fp_write(text: &str) -> bool {
     if text.contains("&c->x[29]") {
@@ -139,7 +140,8 @@ pub fn mark_groups(text: &str) -> String {
     if std::env::var_os("A64_MARK_EACH").is_some() {
         return text.to_owned();
     }
-    let head = Regex::new(r"\nvoid f_[0-9a-f]+\(").unwrap();
+    static HEAD: OnceLock<Regex> = OnceLock::new();
+    let head = HEAD.get_or_init(|| Regex::new(r"\nvoid f_[0-9a-f]+\(").unwrap());
     let mut starts: Vec<usize> = vec![0];
     starts.extend(head.find_iter(text).map(|m| m.start() + 1));
     starts.push(text.len());
@@ -251,8 +253,10 @@ fn ends_run(line: &str) -> bool {
     if (line.contains('{') || line.contains('}')) && !balanced(line) {
         return true;
     }
-    let call = Regex::new(r"\b([A-Za-z_]\w*)\s*\(").unwrap();
-    let plain = Regex::new(r"^(?:if|for|while|sizeof|memcpy|memset|UINT64_C|INT64_C|fabsf|fabs|__builtin_add_overflow|recomp_(?:load|ldp|store|stp)(?:8|16|32|64)(?:_sp)?|recomp_(?:fixed_to_fp|fp_to_fixed|fp_to_int|fp_estimate|umulh|smulh|aes_sbox)|a64_(?:vset64|vset128|vset_lo|vst16|fcmp32|fcmp64|vfcmp)|a64_v?fpx_\w+)$").unwrap();
+    static CALL: OnceLock<Regex> = OnceLock::new();
+    static PLAIN: OnceLock<Regex> = OnceLock::new();
+    let call = CALL.get_or_init(|| Regex::new(r"\b([A-Za-z_]\w*)\s*\(").unwrap());
+    let plain = PLAIN.get_or_init(|| Regex::new(r"^(?:if|for|while|sizeof|memcpy|memset|UINT64_C|INT64_C|fabsf|fabs|__builtin_add_overflow|recomp_(?:load|ldp|store|stp)(?:8|16|32|64)(?:_sp)?|recomp_(?:fixed_to_fp|fp_to_fixed|fp_to_int|fp_estimate|umulh|smulh|aes_sbox)|a64_(?:vset64|vset128|vset_lo|vst16|fcmp32|fcmp64|vfcmp)|a64_v?fpx_\w+)$").unwrap());
     for c in call.captures_iter(line) {
         if !plain.is_match(&c[1]) {
             return true;
@@ -263,7 +267,8 @@ fn ends_run(line: &str) -> bool {
         || line.contains("L_")
         || line.contains("(c,c->x[")
     {
-        let end = Regex::new(r"^\s*L_[0-9a-f]+:|\bgoto\b|\breturn\b|recomp_(?:store|stp)\d+\(c,c->x\[\d+\],|recomp_load\d+\(c,c->x\[\d+\]\)").unwrap();
+        static END: OnceLock<Regex> = OnceLock::new();
+        let end = END.get_or_init(|| Regex::new(r"^\s*L_[0-9a-f]+:|\bgoto\b|\breturn\b|recomp_(?:store|stp)\d+\(c,c->x\[\d+\],|recomp_load\d+\(c,c->x\[\d+\]\)").unwrap());
         return end.is_match(line);
     }
     false
@@ -483,8 +488,11 @@ pub fn reg_writes(text: &str) -> u32 {
 /// Remove the context synchronization markers when registers stay in the
 /// context (the default build).
 pub fn strip_sync(text: &str) -> String {
-    let marker = Regex::new("\x01[CBRALT][0-9]+\x01").unwrap();
-    marker.replace_all(text, "").into_owned()
+    static MARKER: OnceLock<Regex> = OnceLock::new();
+    MARKER
+        .get_or_init(|| Regex::new("\x01[CBRALT][0-9]+\x01").unwrap())
+        .replace_all(text, "")
+        .into_owned()
 }
 
 pub fn local_count() -> usize {
@@ -544,7 +552,8 @@ pub fn localize_regs(text: &str, local_count: usize, dirty: (&[u32], &[u32])) ->
             .map(|n| format!("x{n}_ = c->x[{n}]; "))
             .collect::<String>()
     };
-    let marker = Regex::new("\x01([CBRALT])([0-9]+)\x01").unwrap();
+    static MARKER: OnceLock<Regex> = OnceLock::new();
+    let marker = MARKER.get_or_init(|| Regex::new("\x01([CBRALT])([0-9]+)\x01").unwrap());
     let expanded = marker
         .replace_all(&replaced, |caps: &regex::Captures| {
             let kind = caps[1].chars().next().unwrap();
