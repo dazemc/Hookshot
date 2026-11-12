@@ -146,7 +146,8 @@ jobs:
             jq -r '"failed=\(.compiled.failed | length)"' "$RUNNER_TEMP/vk-build.json" >&2 || true
             jq -r '.compiled.failed[0:3][]? | "\(.src): \(.error)"' "$RUNNER_TEMP/vk-build.json" 2>/dev/null |
               cut -c1-500 >&2 || true
-            jq -r '.link.error // empty' "$RUNNER_TEMP/vk-build.json" >&2 || true
+            jq -r '.link.output // empty' "$RUNNER_TEMP/vk-build.json" 2>/dev/null |
+              tail -20 | cut -c1-500 >&2 || true
             jq -r '.undefined[0:5][]? | "undefined: \(.)"' "$RUNNER_TEMP/vk-build.json" >&2 || true
           }
           report

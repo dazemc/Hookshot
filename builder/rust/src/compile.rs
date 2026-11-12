@@ -494,11 +494,10 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
     let mut cached = 0usize;
     let mut failed = Vec::new();
     let mut results: Vec<(usize, Result<Value, String>)> = Vec::new();
-    let run = |first: usize, count: usize| -> Vec<(usize, Result<Value, String>)> {
-        let end = first + count;
+    let run = |first: usize, workers: usize, end: usize| -> Vec<(usize, Result<Value, String>)> {
         let next = AtomicUsize::new(first);
         std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..count)
+            let handles: Vec<_> = (0..workers)
                 .map(|_| {
                     let next = &next;
                     let jobs = &jobs;
@@ -530,11 +529,11 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
             .or_else(crate::toolchain::available_mb);
         let mut at = 0;
         for count in wave_counts(&needs, available, cores) {
-            results.extend(run(at, count));
+            results.extend(run(at, count, at + count));
             at += count;
         }
     } else if !jobs.is_empty() {
-        results.extend(run(0, limit.min(jobs.len())));
+        results.extend(run(0, limit.min(jobs.len()), jobs.len()));
     }
     if let Some(hashes) = hashes {
         hashes
@@ -857,6 +856,37 @@ mod tests {
         assert_eq!(eta_left(&[], 4), 0.0);
         assert_eq!(eta_left(&[10.0, 2.0, 2.0], 2), 10.0);
         assert_eq!(eta_left(&[4.0, 4.0, 4.0], 2), 6.0);
+    }
+
+    #[test]
+    fn every_job_runs_even_with_fewer_workers() {
+        let base =
+            std::env::temp_dir().join(format!("hookshot-rust-many-fixed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let cache = base.join("cache");
+        let mut jobs = Vec::new();
+        for i in 0..5 {
+            let source = base.join(format!("f{i}.c"));
+            fs::write(
+                &source,
+                format!("int hookshot_fixed_{i}(void) {{ return {i}; }}\n"),
+            )
+            .unwrap();
+            jobs.push(json!({"cc": "cc", "src": source, "obj": base.join(format!("f{i}.o")), "cache": cache, "flags": ["-O0"], "deps_file": ""}));
+        }
+        let request = json!({"jobs": jobs, "parallel": 2, "cache": cache});
+        let answer = many_json(&request, &base).unwrap();
+        if answer["failed"]
+            .as_array()
+            .is_some_and(|failed| !failed.is_empty())
+        {
+            let _ = fs::remove_dir_all(base);
+            return; // no C compiler on this machine
+        }
+        assert_eq!(answer["planned"], 5);
+        assert_eq!(answer["compiled"], 5);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
