@@ -173,6 +173,40 @@ fn the_pipeline_cache_is_read_and_written_without_full_size_heap_copies() {
 }
 
 #[test]
+fn a_native_io_failure_keeps_the_old_pipeline_cache() {
+    // (upstream's fixture: every create, map, flush, close and replace refusal around the same production helper; the old
+    // cache stays readable, a temporary is cleaned, and a read failure is unavailable, not another translator's file)
+    let repo = root();
+    let dir = scratch("pipeline-cache-io-fault-dir");
+    let run = compile_and_run(
+        "pipeline-cache-io-fault",
+        &repo.join("tests/pipeline_cache_io_fault_test.cpp"),
+        &[repo.join("gpu/vk")],
+        &[],
+        &[],
+        Some(&dir),
+    );
+    let _ = fs::remove_dir_all(&dir);
+    let Some(run) = run else {
+        eprintln!("skipping the pipeline cache I/O fault fixture: no C++ compiler");
+        return;
+    };
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert!(stdout.contains("\"oldOutputPreserved\":true"), "{stdout}");
+    assert!(stdout.contains("\"retryPassed\":true"), "{stdout}");
+    assert!(stdout.contains("\"ownedTemporariesCleaned\":true"), "{stdout}");
+    assert!(
+        stdout.contains("\"readIoFailureNotIncompatible\":true"),
+        "{stdout}"
+    );
+}
+
+#[test]
 fn a_pipeline_cache_header_is_checked_before_the_file_is_mapped() {
     let Some(run) = run_fixture("pcache-read", "tests/pcache_read_test.cpp") else {
         eprintln!("skipping the pipeline cache header fixture: no C++ compiler");

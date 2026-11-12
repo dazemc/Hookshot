@@ -229,8 +229,9 @@ pub fn write(work: &Path, times: &mut BuildTimes) -> Result<Option<f64>, String>
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({"schema": 1, "builds": []}));
-    if data.get("schema").is_none() {
-        data["schema"] = json!(1);
+    // (a file another version of the tools wrote is not this schema: start again, as the Python builder's load_times did)
+    if data.get("schema").and_then(Value::as_u64) != Some(1) {
+        data = json!({"schema": 1, "builds": []});
     }
     if !data.get("builds").is_some_and(Value::is_array) {
         data["builds"] = json!([]);
@@ -408,6 +409,111 @@ mod tests {
                 "unexpected build key {key}"
             );
         }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn build_times(total: f64) -> BuildTimes {
+        BuildTimes {
+            kind: "build".to_owned(),
+            total_seconds: total,
+            compile_seconds: 1.0,
+            stages: BTreeMap::new(),
+            counts: BTreeMap::new(),
+            previous_seconds: None,
+        }
+    }
+
+    #[test]
+    fn a_broken_or_foreign_build_times_file_starts_again() {
+        let dir = scratch("build-times-foreign");
+        let path = dir.join("build_times.json");
+        fs::write(&path, "{not json").unwrap();
+        let mut times = build_times(20.0);
+        assert_eq!(write(&dir, &mut times).unwrap(), None);
+        let value: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["schema"], 1);
+        assert_eq!(value["builds"].as_array().unwrap().len(), 1);
+
+        fs::write(&path, r#"{"schema": 99, "builds": [{"total_seconds": 3.0}]}"#).unwrap();
+        let mut times = build_times(20.0);
+        assert_eq!(
+            write(&dir, &mut times).unwrap(),
+            None,
+            "another schema is not this file's history"
+        );
+        let value: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["schema"], 1);
+        assert_eq!(value["builds"].as_array().unwrap().len(), 1);
+        assert!(value["builds"][0]["total_seconds"].is_number());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_newest_builds_are_kept_and_the_last_one_is_named() {
+        let dir = scratch("build-times-keep");
+        for i in 0..KEEP_BUILDS + 5 {
+            let mut times = build_times(i as f64 + 10.0);
+            let previous = write(&dir, &mut times).unwrap();
+            if i == 0 {
+                assert_eq!(previous, None);
+            } else {
+                assert_eq!(previous, Some(i as f64 + 9.0));
+            }
+            assert_eq!(times.previous_seconds, previous);
+        }
+        let value: Value = serde_json::from_str(
+            &fs::read_to_string(dir.join("build_times.json")).unwrap(),
+        )
+        .unwrap();
+        let builds = value["builds"].as_array().unwrap();
+        assert_eq!(builds.len(), KEEP_BUILDS);
+        assert_eq!(
+            builds.last().unwrap()["total_seconds"].as_f64(),
+            Some((KEEP_BUILDS + 4) as f64 + 10.0)
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_summary_puts_each_stage_before_its_parts() {
+        let mut times = build_times(20.0);
+        times.stages.insert("driver.read".to_owned(), 2.0);
+        times.stages.insert("lift.total".to_owned(), 4.0);
+        times.stages.insert("lift.discover".to_owned(), 1.5);
+        times.stages.insert("driver.compile".to_owned(), 10.0);
+        times.stages.insert("compile.planning".to_owned(), 2.0);
+        times.stages.insert("driver.link".to_owned(), 3.0);
+        times.stages.insert("custom.stage".to_owned(), 7.0);
+        let lines = times.summary_lines();
+        assert_eq!(lines[0], "where the time went:");
+        let at = |needle: &str| {
+            lines
+                .iter()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("no {needle} line in {lines:?}"))
+        };
+        assert!(at("read") < at("lift") && at("lift") < at("compile"));
+        assert!(at("lift") < at("discover"));
+        assert!(at("compile") < at("planning"));
+        assert!(at("compile") < at("link"));
+        assert!(at("custom.stage") > at("compile"), "an unknown stage is last");
+        assert!(
+            lines.iter().any(|line| line.contains("custom.stage")),
+            "an unknown stage is still shown"
+        );
+        assert!(lines.last().unwrap().starts_with("the build took "));
+    }
+
+    #[test]
+    fn a_write_failure_is_reported_and_keeps_the_build() {
+        let dir = scratch("build-times-write-failure");
+        let work = dir.join("not-a-folder");
+        fs::write(&work, b"a file, not a work folder").unwrap();
+        let mut times = build_times(20.0);
+        let error = write(&work, &mut times).expect_err("a work folder that is a file");
+        assert!(error.contains("not-a-folder"), "{error}");
         let _ = fs::remove_dir_all(dir);
     }
 }
