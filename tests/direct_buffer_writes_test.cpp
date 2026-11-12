@@ -46,6 +46,7 @@ static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uin
 static bool wb_skips_log() { return false; }
 static void wb_skip_note(uint64_t, uint64_t) {}
 static bool mirror_on() { return mirrors; }
+static void note_in_place_read(bool = false) {}   // (the readback's part wait: tests/wb_pages_test.cpp checks the page/part matching)
 static Pool* pool_of(uint64_t guest, uint64_t size) {
     ++lookups;
     return have_pool && guest >= pool.lo && guest <= pool.hi && size <= pool.hi - guest ? &pool : nullptr;
@@ -66,6 +67,7 @@ struct Host { const uint8_t* (*gpu_ptr)(uint64_t, uint64_t*); uint64_t (*gpu_gue
 static Host interface{gpu_ptr, gpu_guest};
 static Host* host = &interface;
 
+uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
 #include "direct_write_actual.inc"
 
 static void readback_disabled(bool off) {
@@ -91,6 +93,10 @@ static void page_state(uint64_t guest, uint64_t size, bool expected) {
         const uint64_t after = (guest + size + 4095) & ~4095ull;
         ever = true;
         require(memory_writeback_value(after, 1, &ever) == 0 && !ever, "registered a page beyond the written range");
+        // (written in place: no part of its submission is enough for a read of it, the whole submission is waited for)
+        uint64_t part = 1, whole = 0;
+        require(memory_writeback_value(guest, size, nullptr, &part, &whole) == mem_rec_value && part == 0 && whole == mem_rec_value,
+                "a range written in place must wait for its whole submission");
     }
 }
 

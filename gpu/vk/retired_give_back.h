@@ -34,6 +34,13 @@ constexpr bool due(Mode m, uint64_t idle_ms, uint64_t wait_ms, uint64_t floor_ms
     return idle_ms >= wait_ms || (pressure && idle_ms >= floor_ms);
 }
 
+/// Whether a retired pool's import may go back: a pool with no mirror (never made, given back, or refused) and no
+/// mirror inheritance still pending. A refused pool has no mirror either; left out, every such pool kept its import,
+/// pinned system memory the driver counts as the GPU's shared memory, for the rest of the session.
+constexpr bool import_goes_back(bool mirror_none, bool mirror_refused, bool inherit_pending) {
+    return (mirror_none || mirror_refused) && !inherit_pending;
+}
+
 /// What the driver still counts of the heap's use less what is queued to be freed once the GPU is past it (pending):
 /// a give-back does not lower the heap's use until then, and a second valve reading it would free for the same bytes.
 constexpr uint64_t settled(uint64_t used, uint64_t pending) { return used > pending ? used - pending : 0; }

@@ -20,4 +20,29 @@ inline void finished_in(Map& value_rec, uint64_t value, uint64_t seq) {
     else if (it->second < seq) it->second = seq;
 }
 
+// (the same for a recording's part (Recording::part -> its seq on the recordings' timeline): parts are submitted in
+// order, but a test and a replay's segments may note one twice; the newest seq stays)
+template <class Map>
+inline void part_finished_in(Map& part_rec, uint64_t part, uint64_t seq) {
+    auto it = part_rec.find(part);
+    if (it == part_rec.end()) part_rec.emplace_hint(part_rec.end(), part, seq);
+    else if (it->second < seq) it->second = seq;
+}
+
+/// The recording that submitted this part: true when known (the seq in *seq), false when it is not (yet, or older
+/// than the map keeps).
+template <class Map>
+inline bool part_known(const Map& part_rec, uint64_t part, uint64_t* seq) {
+    auto it = part_rec.find(part);
+    if (it == part_rec.end()) return false;
+    *seq = it->second;
+    return true;
+}
+
+/// A part older than the newest one in the map will never be submitted now: a wait for it would wait for nothing.
+template <class Map>
+inline bool part_impossible(const Map& part_rec, uint64_t part) {
+    return !part_rec.empty() && part_rec.rbegin()->first > part;
+}
+
 } // namespace rec_value

@@ -13,6 +13,7 @@ using retired_give_back::Mode;
 using retired_give_back::due;
 using retired_give_back::kLiveBudgetCap;
 using retired_give_back::live_budget;
+using retired_give_back::import_goes_back;
 using retired_give_back::mode;
 using retired_give_back::settled;
 using retired_give_back::want;
@@ -46,6 +47,13 @@ static_assert(due(Mode::GRACE, kWait, kWait, kFloor, false), "the wait: over");
 static_assert(!due(Mode::GRACE, kFloor - 1, kWait, kFloor, true), "under pressure: still not before the short wait");
 static_assert(due(Mode::GRACE, kFloor, kWait, kFloor, true), "under pressure: the short wait");
 static_assert(due(Mode::GRACE, 0, kWait, 0, true), "RX_VK_RETIRE_MIN_SECS=0: under pressure, at once");
+
+// (a retired pool with no mirror goes back; a refused mirror is no mirror, or its import stayed pinned for the session)
+static_assert(import_goes_back(true, false, false), "a pool with no mirror goes back");
+static_assert(import_goes_back(false, true, false), "a pool whose mirror was refused goes back too");
+static_assert(!import_goes_back(false, false, false), "a pool with a mirror stays");
+static_assert(!import_goes_back(true, false, true), "a pool still inheriting a mirror stays");
+static_assert(!import_goes_back(false, true, true), "a refused pool still inheriting stays");
 
 // (the watermarks)
 static_assert(want(6 * kGB, 8 * kGB, kHigh, kLow) == 0, "75%: under the high watermark");
