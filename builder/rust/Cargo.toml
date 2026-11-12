@@ -13,6 +13,11 @@ default-members = [".", "zbic"]
 name = "hookshot_engine"
 crate-type = ["cdylib", "rlib"]
 
+# (the build-time report and regression gate; its tests live in tests/build_times.rs)
+[[bin]]
+name = "build_times"
+path = "../../scripts/build_times.rs"
+
 [build-dependencies]
 cc = "1"
 

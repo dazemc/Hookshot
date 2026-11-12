@@ -88,21 +88,32 @@ fn a_lost_device_reports_the_fault_without_nvidias_checkpoints() {
     }
 
     // The automatic read where neither NVIDIA's checkpoints nor the buffer markers can name the fault: AMD's RADV and
-    // Intel. Where they can, the report stays behind RX_VK_FAULT_INFO (the NVIDIA hang).
+    // Intel. Where they can, the report stays behind RX_VK_FAULT_INFO (the NVIDIA hang). The rule moved to
+    // device_fault_query.h when RX_VK_FAULT_AUTO was added; the C++ fixture there covers its truth table.
     let checkpoints = block(&draw, "void checkpoints_report() {");
     assert!(
-        checkpoints.contains("const bool fault_auto = device_fault_query::automatic("),
-        "the fault report no longer decides whether it is automatic"
-    );
-    assert!(
-        checkpoints.contains("struct FaultLast {")
-            && checkpoints.contains("~FaultLast() { if (wanted) device_fault_report(); }")
-            && checkpoints.contains("} fault_last{fault_forced || fault_auto};"),
+        checkpoints.contains("device_fault_query::forced(getenv(\"RX_VK_FAULT_INFO\"))")
+            && checkpoints.contains("if (fault_forced) device_fault_report();"),
         "the fault report is not automatic where there is nothing else to read, or lost its RX_VK_FAULT_INFO guard"
     );
     assert!(
-        checkpoints.contains("if (fault_forced) device_fault_report();"),
-        "the opt-in early fault read is gone"
+        checkpoints.contains(
+            "device_fault_query::automatic(dev.props.vendorID == 0x10DE, dev.checkpoints"
+        ) && checkpoints.contains("marker_words != nullptr, getenv(\"RX_VK_FAULT_AUTO\"))"),
+        "the automatic fault read no longer asks the device_fault_query rule"
+    );
+    assert!(
+        checkpoints.contains("fault_last{fault_forced || fault_auto}"),
+        "the last report no longer reads the fault info when the rule wants it"
+    );
+    let rule = read("gpu/vk/device_fault_query.h");
+    assert!(
+        rule.contains(
+            "return !nvidia && !checkpoints && !markers && !(auto_env && env_value_off(auto_env));"
+        ) && rule.contains(
+            "return forced(info_env) || automatic(nvidia, checkpoints, markers, auto_env);"
+        ),
+        "device_fault_query no longer keeps NVIDIA and RX_VK_FAULT_AUTO out of the automatic read"
     );
     assert!(
         checkpoints.contains("dev.checkpoints ? \"the checkpoints\"")

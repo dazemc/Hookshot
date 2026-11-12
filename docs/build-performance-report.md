@@ -124,3 +124,61 @@ printf '%s' '{"command":"build.all","exefs":"<work>/exefs","romfs":"<out>/romfs"
 
 The engine reports each stage, the unit count, the cache hits and the wall time in its JSON responses;
 upstream's `build_times.json` (`#2693`) is the same idea on the Python path.
+
+## Reproducible runs and the regression gate
+
+A successful `build.all` writes `build_times.json` in its work folder. The file keeps the last 20
+builds' stage seconds, counts and totals, and holds no game path or game content. `scripts/build_times.rs`
+reads it, prints the stage table, and compares a run with an authored baseline:
+
+```sh
+cd builder/rust
+
+# where a build's time went (the same rows the build ends with)
+cargo run --quiet --bin build_times -- table <work>/build_times.json
+
+# a run against the baseline, with a JSON and a Markdown summary for a PR
+cargo run --quiet --bin build_times -- compare <work>/build_times.json \
+    tests/fixtures/build_times/baseline.json \
+    --json target/build-times.json --markdown target/build-times.md
+```
+
+The table has one row for each benchmark stage — `checks`, `read`, `lift`, `compile`, its
+`planning`/`compiling` parts and `links`, and `finish` — plus the host, Vulkan, assets, shader and
+prepare stages when the record has them. A stage the record lacks is shown as `-`, not guessed.
+
+The comparison uses `run <= baseline * (1 + percent / 100) + seconds` for every stage and for the
+total. The default is **+10% + 2 s**, so a short stage is not failed by noise; a baseline may set its
+own tolerance, and `--tolerance-percent`/`--tolerance-seconds` override it for one run:
+
+```json
+{
+  "schema": 1,
+  "baseline": true,
+  "tolerance": { "percent": 10.0, "seconds": 2.0 },
+  "total_seconds": 1180.0,
+  "stages": { "driver.read": 50.0, "lift.total": 25.0, "driver.compile": 820.0 }
+}
+```
+
+A baseline can also be another `build_times.json` (`--baseline-build latest|N` picks its build).
+A baseline stage missing from the run fails the gate; `--allow-missing` reports it without failing,
+for a record from an older tool. A stage the baseline does not have is reported as `new` and does
+not fail. Exit codes are `0` inside tolerance, `1` for a regression or a missing stage, and `2` for
+an unreadable file or unknown schema.
+
+The summaries are stable: canonical stage order, rounded numbers, no build date, no file name and no
+path, so two runs of the same record produce byte-identical JSON and Markdown. They carry the stage
+seconds and shares, the baseline, the allowed limit, the change and the verdict. They are written for
+a PR comment or a build artifact, not as a substitute for the raw record.
+
+The tool also reads the earlier Python record (`format: 1`, with `phases` instead of `stages`), so an
+old `build_times.json` still compares with a new one. The authored fixtures under
+`builder/rust/tests/fixtures/build_times/` are hand-written numbers with no game data; the tests check
+the schema, both record shapes, a missing stage, a stage over tolerance and the stable summaries.
+`cargo test --workspace` runs them with the rest of the game-free checks.
+
+What this measures is wall-clock time per build stage, on the machine and work folder that produced
+the record. It is a regression gate for the same class of run (cold against cold, warm against warm),
+not a cross-machine benchmark: a baseline from another CPU, disk or cache state is not comparable
+without a new authored baseline.

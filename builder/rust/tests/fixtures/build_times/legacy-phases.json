@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "builds": [
+    {
+      "when": "2026-11-12 12:00:00",
+      "kind": "build",
+      "modules": 335,
+      "compiled": 100,
+      "compile_seconds": 1300.0,
+      "total_seconds": 1800.0,
+      "phases": {
+        "checks": 2.0,
+        "read": 10.0,
+        "lift": 331.0,
+        "lift: image and discovery": 70.0,
+        "lift: emit and write": 170.5,
+        "lift: patches": 7.9,
+        "compile": 1300.0,
+        "compile: planning": 9.0,
+        "compile: compiling": 1282.0,
+        "compile: linking hookshot.exe": 3.0,
+        "compile: linking hookshot_vk.so": 0.0,
+        "finish": 57.0
+      }
+    }
+  ]
+}

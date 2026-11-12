@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "builds": [
+    {
+      "when": "2026-11-12 12:00:00",
+      "kind": "build",
+      "total_seconds": 1200.0,
+      "compile_seconds": 828.0,
+      "stages": {
+        "driver.read": 50.5,
+        "driver.assets": 2.5,
+        "lift.total": 25.8,
+        "lift.discover": 10.0,
+        "lift.emit": 12.0,
+        "driver.compile": 828.0,
+        "compile.planning": 9.0,
+        "compile.compiling": 815.5,
+        "driver.link": 3.0,
+        "driver.copy": 0.5,
+        "host.build": 95.0,
+        "vk.build": 100.0,
+        "package": 10.2,
+        "shaders": 12.0,
+        "prepare": 20.0
+      },
+      "counts": {
+        "chunks": 491,
+        "units": 812,
+        "parallel": 8,
+        "game_compiled": 100,
+        "game_cached": 712,
+        "lift_cache_hits": 294000,
+        "lift_cache_misses": 522
+      },
+      "summary": [
+        "where the time went:",
+        "  read                                  50 s",
+        "  lift                                  26 s",
+        "  compile                              828 s",
+        "the build took 0:20:00, compiled in 0:13:48"
+      ]
+    }
+  ]
+}
