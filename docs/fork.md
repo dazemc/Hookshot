@@ -127,6 +127,10 @@ commits, not upstream ancestors. Ported recently:
   #2154); six background workers on 16-thread machines (#2440); part of the image pool's blocks are made at the start
   (#2438); retired imports on Windows AMD/Intel go back after a grace wait instead of being kept for the session
   (#1906).
+- **Shader fix #1830**: noperspective varyings are written times Position.w and undone in the fragment stage, so AMD
+  interpolates the Royal Family Tomb water right; sirit names an undefined operand instead of aborting, and
+  `RX_VK_LOWER_SKIP` leaves programs unlowered for bisection. A headless RTX 4070 Ti boot ran 10,185 presents at 60 fps
+  with 52,729 programs translated and no traps; the AMD water itself has not been checked on AMD hardware.
 - **11 Vulkan fixes**: texture table, span aging, split fence wait, recorder packet, Intel storage loop, subgroup
   barrier, mesh grass hold, pipeline-cache header, 250 ms readback, RADV mesh default, Intel uniform snapshot.
 - **7 host fixes**: update downgrade guard, menu option order, Steam gyro, Aux/splitter audio, window title/class,
@@ -144,9 +148,9 @@ Do not port game-derived pipeline lists or generated game data.
 
 `source-regressions.yml` runs Rust tests on Linux and Windows, Flutter tests/analyze, three SPIR-V fixture builds and
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
-All five workflows are green on `74a7fd15`. The pre-release `v2.2.0-rs.3` was built from that commit and carries the
+All five workflows are green on `1f298413`. The pre-release `v2.2.0-rs.3` was built from `74a7fd15` and carries the
 two DLSS/V-Sync fixes, the compile-wave scheduler, the worker, mirror and image-pool changes, and the retired-import
-wait. `v2.2.0-rs.2` (from `1c3cfc62`) has the first three.
+wait. The #1830 shader fix came after `rs.3`; `v2.2.0-rs.2` (from `1c3cfc62`) has the first three.
 
 The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
 app and Rust engine without Python; the pre-release (`v2.2.0-rs.3`) is published with the AppImage and the
