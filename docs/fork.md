@@ -121,6 +121,14 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **FSR 3.1 on the temporal chain (#2305, upstream `579c6d48`)**: FSR 3.1 is now the chain's third engine, so it
+  receives the same colour, depth, jitter and skinned-character motion as DLSS and FSR 4 instead of camera motion
+  alone; Link and the other characters keep their outlines while they move. The chain reverses depth for FSR's
+  passes (`TemporalFrame::depth_reversed`, with DLSS-G's `depthInverted` following it), FSR's depth constants come
+  from the unjittered projection, a failed evaluation retries next frame instead of turning the engine off, and the
+  reactive mask is shared with DLSS. `RX_VK_FSR3_CHAIN=0` keeps the old own-inputs path for comparisons. A
+  game-free Rust source check (`builder/rust/tests/fsr3_chain.rs`) covers the wiring; `tests/temporal_jitter_test.cpp`
+  covers FSR 3.1's jitter slot and `RX_VK_FSR_JITTER=0`.
 - **2 DLSS/V-Sync fixes**: V-Sync Auto follows the Frame Gen runtime's real frame limit (#2701); a failed DLSS
   feature is retried when a menu setting changes, not for the rest of the run (#2550).
 - **4 Vulkan memory/perf fixes**: GPU-written mirrors are kept instead of remade empty (cyan after a pause or reload,
@@ -155,8 +163,9 @@ commits, not upstream ancestors. Ported recently:
 - Earlier: teleport minimap repair, save-folder links, FPS sound/solver/water/time-of-day, AMD/Intel shader fixes,
   terrain/writeback/heap fixes, NUP/Python builder fixes.
 
-Remaining large areas are FSR 3.1, Native HDR, Reflex, AV1/dav1d, keyboard prompts, FOV, aspect-ratio/menu features,
-hardware-specific Vulkan fixes, Flutter equivalents of the Tk/WPF UI commits, docs and game-derived pipeline assets.
+Remaining large areas are FSR 3.1's HDR colour (it still takes the chain's LDR pair; upstream lists that as a
+follow-up), Native HDR, Reflex, AV1/dav1d, keyboard prompts, FOV, aspect-ratio/menu features, hardware-specific
+Vulkan fixes, Flutter equivalents of the Tk/WPF UI commits, docs and game-derived pipeline assets.
 Do not port game-derived pipeline lists or generated game data.
 
 ## CI and release
