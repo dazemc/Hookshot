@@ -247,6 +247,9 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 | `HOS_RESERVE_CORE_MASK=<hex>` | The replay's core by mask (for example `0x80`), over the choice of the last performance core; a value that is not hex is logged and ignored |
+| `HOS_NATIVE_ZSTD=1/2` | The game's streamed-file decode on the host's libzstd 1.5.7 instead of its lifted copy: 1 gives the virtual core up while it decodes, 2 keeps it. Off by default (unset or 0): the lifted code runs as before |
+| `HOS_SHORT_SLEEP_POLLERS=<n>` | On 7+ logical processors, how many of the game's threads may yield through a sub-millisecond sleep at once (default a quarter of the processors; 0: every short sleep yields, as before). The frame's serial threads and the host's own sleeps always yield |
+| `HOS_SPIN_OTHER_US=<us>` | The spin before a wait sleeps for threads off the frame's path (default 5 us on 7+ logical processors, never more than `HOS_SPIN_US`; set it to `HOS_SPIN_US` for one spin for all, as before) |
 
 ### Building
 
