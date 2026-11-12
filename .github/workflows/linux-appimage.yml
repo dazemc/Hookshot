@@ -1,9 +1,11 @@
-# The Linux AppImage (x86_64): Hookshot Builder with the compiler, Python, libraries and the Vulkan back end it builds the
-# game with on the player's PC (scripts/linux/deps.sh, scripts/linux/appimage.sh). No game data is involved.
-# Built in Ubuntu 22.04, the oldest system it is for (glibc 2.35). A workflow artifact on every run; for a release, also
-# an asset of its release (scripts/release_upload.sh, shared with the Windows builder workflow). A release is a tag
-# pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag). On any other push to main,
-# the same files replace those of the nightly prerelease, the latest development build.
+# The Linux AppImage (x86_64): Hookshot Builder (Flutter), its Rust engine, the a64emit translator and the sources a game
+# is built from. No Python runtime and no game data are in it: the player's own clang builds the game from the sources the
+# image carries, as a checkout would. Built in Ubuntu 22.04, the oldest system it is for (glibc 2.35).
+#
+# A workflow artifact on every run; for a release, also an asset of its release (scripts/release_upload.sh, shared with
+# the Windows builder workflow). A release is a tag pushed by hand, or the tag the Release workflow passes when it calls
+# this one (inputs.tag). On any other push to main, the same files replace those of the nightly prerelease, the latest
+# development build.
 name: Linux AppImage
 on:
   push:
@@ -28,6 +30,10 @@ permissions:
 env:
   # (the release this run is for: the tag passed by the Release workflow, or a pushed tag; empty on other runs)
   RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '') }}
+  # (the builder app's toolchain: the same major Flutter the app is developed with. The tarball's SHA-256 is checked)
+  FLUTTER_VERSION: '3.47.5'
+  FLUTTER_SHA256: '2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb'
+  RUST_VERSION: '1.99.1'
 concurrency:
   group: linux-appimage-${{ inputs.tag || github.ref }}
   # (a pull request's older run is cancelled; a push's or a tag's never is)
@@ -42,7 +48,7 @@ jobs:
       && github.ref_name != 'rc'
     runs-on: ubuntu-latest
     container: ubuntu:22.04
-    # (about 4 minutes with the dependencies cached; building them all, as a release does, takes longer)
+    # (Flutter's SDK and engine artifacts are the slow part, then the app and the engine)
     timeout-minutes: 60
     # (id-token and attestations: a release's build provenance)
     permissions:
@@ -65,35 +71,18 @@ jobs:
             done
           }
           base_packages() {
-            # (no software-properties-common: its dbus dependency's postinst hung for minutes in this container,
-            # and toolchain_packages adds the PPA without add-apt-repository's Launchpad REST calls)
             apt-get update &&
               apt-get install -y --no-install-recommends ca-certificates curl gpg
           }
           toolchain_packages() {
-            # (libstdc++ 13, from the toolchain PPA: C++20 <format>; linked in statically)
-            # add-apt-repository asks Launchpad's REST API for the signing key. That API returned 500 and hung
-            # (GPGKeyTemporarilyNotFoundError) until the three-minute timeout, three times in a row, on 2026-11-12.
-            # Add the signed source and its pinned key directly instead; apt still verifies every package.
-            key=C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5
-            keyfile=/etc/apt/trusted.gpg.d/ubuntu-toolchain-r-test.gpg
-            keytmp=$(mktemp)
-            curl -fsSL --proto '=https' --tlsv1.2 --retry 5 --retry-delay 5 --connect-timeout 15 --max-time 120 \
-              "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$key" -o "$keytmp" &&
-              gpg --show-keys --with-colons "$keytmp" 2>/dev/null | grep -qx "fpr:::::::::$key:" &&
-              gpg --dearmor <"$keytmp" >"$keyfile" &&
-              rm -f "$keytmp" &&
-              printf '%s\n' 'deb https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu/ jammy main' \
-                >/etc/apt/sources.list.d/ubuntu-toolchain-r-test.list &&
-              apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update &&
-              apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
-                install -y --no-install-recommends g++-13 libstdc++-13-dev &&
-              apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
-                install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
-                build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \
-                libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxinerama-dev \
-                libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
-                libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev
+            # (clang and lld build the Flutter runner and the a64emit translator; Flutter's Linux desktop needs GTK 3,
+            # cmake, ninja and pkg-config; cargo's curl/openssl crates need a cc, OpenSSL's headers and perl.
+            # xvfb is the check's display; zip and jq are the parts and the release upload, no Python anywhere)
+            apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
+              install -y --no-install-recommends \
+              git ca-certificates curl xz-utils zstd file unzip zip jq xvfb xauth \
+              clang lld cmake ninja-build pkg-config build-essential libssl-dev perl \
+              libgtk-3-dev libstdc++-12-dev libgl1 libgl1-mesa-dri libglx-mesa0 libegl1
           }
           retry_packages base_packages
           retry_packages toolchain_packages
@@ -108,72 +97,72 @@ jobs:
       - name: Trust the checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # (a release builds what the AppImage carries from its checked downloads: no built deps from a cache, which other
-      # runs write. Other runs take the built deps, without the downloads they were built from: deps.sh fetches only a
-      # part it has not built (its .<part> marks), and the downloads were most of the cache, about 1.4 of 2.3 GB)
+      # (the Flutter SDK, pinned and checked: no third-party action, and the same version locally and in CI)
       - if: env.RELEASE_TAG == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            build-linux/deps
-            !build-linux/deps/downloads
-          key: linux-deps-built-${{ hashFiles('scripts/linux/deps.sh', 'requirements.txt', 'nx2/prompt_requirements.txt') }}
-      - if: env.RELEASE_TAG != ''
+            /opt/flutter/bin/cache
+            /root/.pub-cache
+          key: flutter-${{ env.FLUTTER_VERSION }}-linux-${{ hashFiles('builder/flutter/pubspec.lock') }}
+      - name: Flutter
+        run: |
+          curl -fL --retry 5 --retry-delay 10 --proto '=https' --tlsv1.2 --connect-timeout 20 --max-time 900 \
+            -o "$RUNNER_TEMP/flutter.tar.xz" \
+            "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz"
+          echo "$FLUTTER_SHA256  $RUNNER_TEMP/flutter.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/flutter.tar.xz" -C /opt
+          git config --global --add safe.directory /opt/flutter
+          /opt/flutter/bin/flutter config --no-analytics >/dev/null || true
+          echo "/opt/flutter/bin" >> "$GITHUB_PATH"
+
+      # (cargo is not in the 22.04 container; rustup's minimal profile is rustc and cargo only)
+      - name: Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-delay 10 -o "$RUNNER_TEMP/rustup.sh" https://sh.rustup.rs
+          sh "$RUNNER_TEMP/rustup.sh" -y --profile minimal --default-toolchain "$RUST_VERSION" --no-modify-path
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - if: env.RELEASE_TAG == ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: build-linux/deps/downloads
-          key: linux-deps-downloads-${{ hashFiles('scripts/linux/deps.sh') }}
-
-      - name: Dependencies (LLVM, Python, FFmpeg with dav1d, SDL2, Vulkan headers)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/linux/deps.sh
-
-      # The Vulkan back end's compiled objects (nx2/build.py's object cache, build-linux/vk-work/objcache: each object
-      # under the SHA-1 of its source, its flags and the headers it can see), for pull requests: a pull request compiles
-      # only the files its change reaches, not all 209 (about 80-140 s here). Written after every build but a release's
-      # (a pull request's own, for its next push; main's, for every pull request). Read only by pull requests: a push to
-      # main compiles every object itself, as a release does, so the nightly and the releases never take one from a cache. The
-      # key also names the compiler (deps.sh pins LLVM) and this system's C and C++ library headers, which the objects'
-      # own keys leave out.
-      - name: Object cache key
-        if: env.RELEASE_TAG == ''
-        id: objkey
-        env:
-          COMPILER: ${{ hashFiles('scripts/linux/deps.sh') }}
-          SOURCES: ${{ hashFiles('gpu/**', 'third_party/imgui/**', 'third_party/zstd/**', 'host/posix/**', 'nx2/build.py') }}
-        run: |
-          system=$(dpkg-query -W -f '${Package}=${Version}\n' libc6-dev libstdc++-13-dev libstdc++-12-dev | sha256sum | cut -c1-16)
-          echo "prefix=linux-vk-objects-$COMPILER-$system-" >> "$GITHUB_OUTPUT"
-          echo "key=linux-vk-objects-$COMPILER-$system-$SOURCES" >> "$GITHUB_OUTPUT"
-      - if: env.RELEASE_TAG == '' && github.event_name == 'pull_request'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: build-linux/vk-work/objcache
-          key: ${{ steps.objkey.outputs.key }}
-          restore-keys: ${{ steps.objkey.outputs.prefix }}
+          path: |
+            /root/.cargo/registry
+            /root/.cargo/git
+          key: cargo-${{ env.RUST_VERSION }}-${{ hashFiles('builder/rust/Cargo.lock') }}
 
       # work/: the lists and the play profile made on the development PC (addresses and counts, no game code). When the
-      # repository does not carry them, the ones in the latest release's app part (named by its hookshot-setup.txt) are
-      # used; without either the game is built all the same, a little slower in play.
-      # (not this tag's own release: the Windows builder workflow can make it before this step runs. A fork with no release
-      # takes upstream's. Downloads are retried: GitHub answers 504 now and then)
+      # repository does not carry them, the newest published release's app part is read with curl and unzip: a fork with
+      # no release takes upstream's. Optional either way; no Python.
       - name: Play profile
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -f work/hot_order.txt ]; then echo "work/ is in the repository"; exit 0; fi
-          python3 -I scripts/release_parts.py previous /tmp/setup.txt --repo "$GITHUB_REPOSITORY" --repo NotRexed/Hookshot \
-            --skip-tag "$RELEASE_TAG" ||
-            { echo "no release with a setup list: built without the profile"; exit 0; }
-          python3 -I scripts/release_parts.py profile /tmp/setup.txt work ||
-            { echo "the profile did not download: built without it"; exit 0; }
-          ls -la work work/image
+          auth=()
+          [ -n "${GH_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+          for repo in "$GITHUB_REPOSITORY" NotRexed/Hookshot; do
+            api="https://api.github.com/repos/$repo/releases/latest"
+            list=$(curl -fsSL --retry 5 --retry-delay 10 "${auth[@]}" -H "Accept: application/vnd.github+json" "$api" 2>/dev/null |
+              sed -n 's/.*"browser_download_url": *"\([^"]*hookshot-setup\.txt\)".*/\1/p' | head -1) || true
+            [ -n "$list" ] || continue
+            curl -fsSL --retry 5 --retry-delay 10 -o "$RUNNER_TEMP/setup.txt" "$list" || continue
+            part=$(awk '$1 == "part" && $5 ~ /HookshotBuilder-app-/ { print $5; exit }' "$RUNNER_TEMP/setup.txt")
+            [ -n "$part" ] || continue
+            curl -fsSL --retry 5 --retry-delay 10 -o "$RUNNER_TEMP/app.zip" "$part" || continue
+            rm -rf "$RUNNER_TEMP/profile"
+            unzip -q "$RUNNER_TEMP/app.zip" 'HookshotBuilder/tools/work/*' -d "$RUNNER_TEMP/profile" || continue
+            mkdir -p work
+            cp -a "$RUNNER_TEMP/profile/HookshotBuilder/tools/work/." work/
+            echo "play profile from $repo"
+            ls -la work work/image 2>/dev/null || true
+            exit 0
+          done
+          echo "no release with a play profile: built without it"
 
       # (with its update information and .zsync, for AppImageUpdate and Gear Lever: this repository's latest release, for
       # the nightly the next nightly, and for a release candidate the rc release, which holds the newest release candidate
       # or release (scripts/release_rc.sh): it moves on to the next release candidate and its version's release, never
-      # back to an older release, as the builder's Release candidate Update track does, builder/linux/hookshot_builder.py)
+      # back to an older release, as the builder's Release candidate Update track does)
       - name: AppImage
         env:
           # (a release is named by its tag: a promoted version's commit also has its release candidate's tag, which git
@@ -183,46 +172,6 @@ jobs:
             ${{ env.RELEASE_TAG == '' && github.event_name == 'push' && github.ref == 'refs/heads/main' && 'nightly'
             || contains(env.RELEASE_TAG, '-') && 'rc' || 'latest' }}
         run: scripts/linux/appimage.sh
-
-      # (the object cache down to the objects this build used, as nx2/make_game.py prune_object_cache does: each object in
-      # sa/build/obj names its key in <obj>.sha1. Nothing goes when no stamp is found)
-      - name: Object cache for pull requests
-        if: env.RELEASE_TAG == ''
-        shell: bash
-        run: |
-          W=build-linux/vk-work
-          shopt -s nullglob
-          stamps=("$W"/sa/build/obj/*.sha1)
-          [ "${#stamps[@]}" -gt 0 ] || { echo "no object stamps: the cache is kept as it is"; exit 0; }
-          # (one key a line: a stamp holds its key with no line end, so cat would run them together)
-          awk '{ sub(/\r$/, ""); print }' "${stamps[@]}" | sort -u > "$RUNNER_TEMP/used.txt"
-          for f in "$W"/objcache/*.o; do
-            k=$(basename "$f" .o)
-            grep -qxF "$k" "$RUNNER_TEMP/used.txt" || rm -f "$f"
-          done
-          left=("$W"/objcache/*.o)
-          echo "objcache: ${#left[@]} objects, $(du -sh "$W/objcache" | cut -f1)"
-      - if: env.RELEASE_TAG == ''
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: build-linux/vk-work/objcache
-          key: ${{ steps.objkey.outputs.key }}
-
-      # (AMD FSR 4's Linux side, a build option the AppImage leaves off (gpu/vk/vk_fsr4.cpp: dlopen, the older backend
-      # description, the unit exposure; the descriptor buffers in vk_main.cpp): built once more in a copy of the back end's
-      # work folder, where only vk_fsr4.cpp compiles again. The AppImage above is not changed)
-      - name: hookshot_vk.so with AMD FSR 4 (build check)
-        shell: bash   # (this container's default is sh, which has no PIPESTATUS)
-        run: |
-          cp -r build-linux/vk-work "$RUNNER_TEMP/vk-fsr"
-          rm -f "$RUNNER_TEMP/vk-fsr/sa/build/hookshot_vk.so"   # (the AppImage's own, without FSR: the test below is this build's)
-          D="$PWD/build-linux/deps"
-          OOT_WORK="$RUNNER_TEMP/vk-fsr" EMSDK="$D/emsdk" RX_CPM="$D/cpm" RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 HOOKSHOT_FSR=1 \
-            "$D/python/bin/python3" -I nx2/build.py --standalone --jobs "$(nproc)" |
-            tee "$RUNNER_TEMP/vk-fsr.log"
-          test "${PIPESTATUS[0]}" -eq 0
-          grep -q "with AMD FSR 4" "$RUNNER_TEMP/vk-fsr.log"
-          test -f "$RUNNER_TEMP/vk-fsr/sa/build/hookshot_vk.so"
 
       # (a release's or the nightly's files, signed as built by this run: gh attestation verify <file> -R <this repository>)
       - if: env.RELEASE_TAG != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -241,14 +190,13 @@ jobs:
             build-linux/*.AppImage.zsync
           if-no-files-found: error
 
-      # (a player's build started from the AppImage itself, with no game, up to where the lifted game is needed: a file the
-      # AppImage does not carry fails here, not in every player's build. 2026-11-10: third_party/fonts, #1567. After the upload,
-      # so a failing image can be looked at; a release needs this job to pass)
-      - name: A player's build from the AppImage
-        run: scripts/linux/check_player_build.sh
+      # (the image a player downloads, not the checkout: the Flutter app starts under Xvfb, the engine answers, the
+      # translator is there, and no Python is in it. After the upload, so a failing image can be looked at)
+      - name: The image is a player's builder
+        run: scripts/linux/check_bundle.sh build-linux/Hookshot-*-x86_64.AppImage
 
-      # (the update parts of a release or of the nightly, for the release job: scripts/linux/make_parts.py. Not on other
-      # runs: about 240 MB)
+      # (the update parts of a release or of the nightly, for the release job: scripts/linux/make_parts.sh. Not on other
+      # runs: about the size of the image)
       - if: env.RELEASE_TAG != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
