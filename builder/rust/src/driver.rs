@@ -6,7 +6,6 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use sha1::Digest;
 
 use crate::kit;
 use crate::logo_rgba;
@@ -21,33 +20,26 @@ fn take_function(source: &str, signature: &str) -> Option<String> {
     Some(source[a..b].to_owned())
 }
 
-fn stamp_one(text: &mut String, path: &Path) {
-    let modified = fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|age| age.as_nanos())
-        .unwrap_or(0);
-    let len = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-    text.push_str(&format!("{} {} {modified}\n", path.display(), len));
-}
-
-/// What a link was made from: its objects and the compiler, by path, size and
-/// modification time. A cached build whose objects did not change can keep
-/// the 400 MB library instead of linking it again.
-fn link_stamp(objects: &[String], cc: &Path, lib: &Path) -> String {
-    let mut text = format!("hookshot-link-v1 {}\n", env!("CARGO_PKG_VERSION"));
-    let mut linker = sha1::Sha1::new();
-    linker.update(include_bytes!("linker.rs"));
-    text.push_str(&format!("linker {:x}\n", linker.finalize()));
-    stamp_one(&mut text, cc);
-    let mut objects = objects.to_vec();
-    objects.sort();
-    for object in &objects {
-        stamp_one(&mut text, Path::new(object));
+/// The lifted code's own compile flags: -O1, no debug info, the exact
+/// arithmetic and atomics the guest's C assumes, and no lifetime markers.
+/// The markers only help LLVM's stack-slot reuse; on a lifted chunk dropping
+/// them lowers each compiler's peak by about a tenth, so the memory gate fits
+/// more compiles at once, and the code runs as fast (clang 23).
+pub fn lifted_code_flags(windows: bool) -> Vec<String> {
+    let mut flags = vec!["-O1".to_owned(), "-g0".to_owned()];
+    if !windows {
+        flags.push("-fPIC".to_owned());
     }
-    text.push_str(&lib.to_string_lossy());
-    text
+    flags.extend([
+        "-Wno-everything".to_owned(),
+        "-ffp-contract=off".to_owned(),
+        "-mcx16".to_owned(),
+        "-DA64_POLLING".to_owned(),
+        "-DA64_WRITE_TRACK".to_owned(),
+        "-Xclang".to_owned(),
+        "-disable-lifetime-markers".to_owned(),
+    ]);
+    flags
 }
 
 /// The names the lift and the build write into the work folder: the files a
@@ -271,6 +263,7 @@ pub fn plan_json_with(
         Path::new(work).to_path_buf()
     };
     let root = kit::root();
+    crate::compile::reset_compdb(&work.join("build").join(crate::compile::COMPDB));
     let read = crate::timing::Stage::new("driver.read");
     let modules = nso::check_modules(exefs)?;
     let build = nso::build_id(&exefs.join("main"))?;
@@ -439,17 +432,7 @@ pub fn plan_json_with(
             path
         };
         let code_flags = {
-            let mut flags = vec!["-O1".to_owned(), "-g0".to_owned()];
-            if !crate::toolchain::windows() {
-                flags.push("-fPIC".to_owned());
-            }
-            flags.extend([
-                "-Wno-everything".to_owned(),
-                "-ffp-contract=off".to_owned(),
-                "-mcx16".to_owned(),
-                "-DA64_POLLING".to_owned(),
-                "-DA64_WRITE_TRACK".to_owned(),
-            ]);
+            let mut flags = lifted_code_flags(crate::toolchain::windows());
             // (a Windows cross build makes COFF objects for the same
             // host link: nx2/build.py's flags() starts with target())
             let target = crate::toolchain::native_target(false);
@@ -537,6 +520,15 @@ pub fn plan_json_with(
         } else {
             json!({"jobs": jobs, "cache": cache, "parallel": parallel})
         };
+        // (the game code's commands for clangd; the host's and the back
+        // end's stages add theirs to the same file)
+        let _ = crate::compile::write_compdb(
+            &work.join("build").join(crate::compile::COMPDB),
+            request["jobs"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        );
         planning.done();
         let compiling = crate::timing::Stage::new("compile.compiling");
         compiled = crate::compile::many_json(&request, &root)?;
@@ -567,25 +559,12 @@ pub fn plan_json_with(
             let lib = work.join("build").join("hookshot_game.so");
             let link_stage = crate::timing::Stage::new("driver.link");
             let cc = crate::toolchain::find("clang", false);
-            let stamp_path = lib.with_extension("link");
-            let stamp = link_stamp(&objects, &cc, &lib);
-            let cached = lib.is_file()
-                && fs::read_to_string(&stamp_path)
-                    .map(|old| old == stamp)
-                    .unwrap_or(false);
-            let link = if cached {
-                json!({"ok": true, "out": lib.to_string_lossy(), "output": "", "undefined": [], "cached": true})
-            } else {
-                crate::linker::link_json(&json!({
-                    "cc": cc.to_string_lossy(),
-                    "out": lib.to_string_lossy(),
-                    "objects": objects,
-                    "args": ["-shared", "-fPIC", "-o", lib.to_string_lossy()],
-                }))?
-            };
-            if link["ok"].as_bool().unwrap_or(false) && !cached {
-                let _ = fs::write(&stamp_path, &stamp);
-            }
+            let link = crate::linker::link_json(&json!({
+                "cc": cc.to_string_lossy(),
+                "out": lib.to_string_lossy(),
+                "objects": objects,
+                "args": ["-shared", "-fPIC", "-o", lib.to_string_lossy()],
+            }))?;
             link_stage.done();
             let copy_stage = crate::timing::Stage::new("driver.copy");
             if link["ok"].as_bool().unwrap_or(false) {
@@ -670,6 +649,48 @@ mod tests {
     /// translator built (`python -I third_party/a64-kit/lift/build_emit.py`).
     fn has_emitter() -> bool {
         crate::emitter::runtime_text(0).is_ok()
+    }
+
+    #[test]
+    fn lifted_code_is_compiled_without_lifetime_markers() {
+        for windows in [false, true] {
+            let flags = lifted_code_flags(windows);
+            assert!(
+                flags
+                    .windows(2)
+                    .any(|pair| pair[0] == "-Xclang" && pair[1] == "-disable-lifetime-markers"),
+                "{flags:?}"
+            );
+            assert!(flags.iter().any(|flag| flag == "-O1"));
+            assert_eq!(flags.iter().any(|flag| flag == "-fPIC"), !windows);
+            // (the option is a cc1 one: an unknown one stops a compile rather
+            // than being ignored, and the compiler on this PC takes it)
+            if crate::toolchain::find("clang", true).is_file() {
+                let source = std::env::temp_dir().join(format!(
+                    "hookshot-rust-lifetime-{}-{windows}.c",
+                    std::process::id()
+                ));
+                fs::write(
+                    &source,
+                    "extern void use(long *);\nlong f(long n) { long s = 0; for (long i = 0; i < n; i++) { long t[8]; use(t); s += t[i & 7]; } return s; }\n",
+                )
+                .unwrap();
+                let output = std::process::Command::new(crate::toolchain::find("clang", true))
+                    .args(&flags)
+                    .args(["-x", "c", "-S", "-emit-llvm", "-o", "-"])
+                    .arg(&source)
+                    .output();
+                let _ = fs::remove_file(&source);
+                if let Ok(output) = output {
+                    assert!(
+                        output.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    assert!(!String::from_utf8_lossy(&output.stdout).contains("llvm.lifetime"));
+                }
+            }
+        }
     }
 
     #[test]

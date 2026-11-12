@@ -432,6 +432,7 @@ fn link_linux_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> 
         .iter()
         .filter_map(|job| job["obj"].as_str().map(str::to_owned))
         .collect();
+    let _ = crate::compile::write_compdb(&work.join("build").join(crate::compile::COMPDB), &jobs);
     let compiled = crate::compile::many_json(
         &json!({"jobs": jobs, "cache": work.join("build/objcache"), "parallel": 8}),
         &root,
@@ -1344,6 +1345,7 @@ fn link_windows_inner(
         .iter()
         .filter_map(|job| job["obj"].as_str().map(str::to_owned))
         .collect();
+    let _ = crate::compile::write_compdb(&work.join("build").join(crate::compile::COMPDB), &jobs);
     let compiled = crate::compile::many_json(
         &json!({"jobs": jobs, "cache": cache, "parallel": parallel}),
         &root,
