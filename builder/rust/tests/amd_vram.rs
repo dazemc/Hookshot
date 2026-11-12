@@ -101,7 +101,7 @@ fn imports_are_four_megabytes_where_a_mirror_covers_the_padding() {
     let memory = fs::read_to_string(repo.join("gpu/vk/vk_memory.cpp")).expect("vk_memory.cpp");
     for needle in [
         "#include \"import_chunk.h\"",
-        "return mkwvk::import_chunk_size::bytes(e, mirror_on());",
+        "return import_chunk_size::bytes(mirror_on(), e != nullptr, e ? atoi(e) : 0);",
         "bool mirror_on();",
     ] {
         assert!(

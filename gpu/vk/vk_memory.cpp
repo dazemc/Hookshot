@@ -2053,7 +2053,10 @@ void prefetch_chunks(uint64_t lo, uint64_t hi, uint64_t chunk) {
 /// would only mean more imports. RX_VK_IMPORT_CHUNK_MB=16: as before
 bool mirror_on();
 uint64_t import_chunk() {
-    static const uint64_t chunk = import_chunk_size::bytes(getenv("RX_VK_IMPORT_CHUNK_MB"), mirror_on());
+    static const uint64_t chunk = [] {
+        const char* e = getenv("RX_VK_IMPORT_CHUNK_MB");
+        return import_chunk_size::bytes(mirror_on(), e != nullptr, e ? atoi(e) : 0);
+    }();
     return chunk;
 }
 /// (hookshot) A game pool across a chunk's end had each chunk imported on its own, at the first binding in it, and a later
@@ -3275,8 +3278,8 @@ void imports_give_back() {   // (pools_mu held)
     std::vector<std::map<uint64_t, Pool>::iterator> idle;
     for (auto it = imported.begin(); it != imported.end(); ++it) {
         const Pool& p = it->second;
-        if ((p.mstate == Pool::MIRROR_NONE || p.mstate == Pool::MIRROR_REFUSED) && p.last_value <= mem_completed &&
-            mem_rec_value > p.last_value + kImportIdle)
+        if ((p.mstate == Pool::MIRROR_NONE || p.mstate == Pool::MIRROR_REFUSED) && !p.inherit_pending &&
+            p.last_value <= mem_completed && mem_rec_value > p.last_value + kImportIdle)
             idle.push_back(it);
     }
     std::sort(idle.begin(), idle.end(), [](auto a, auto b) { return a->second.last_value < b->second.last_value; });

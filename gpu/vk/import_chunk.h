@@ -14,4 +14,11 @@ inline uint64_t bytes(const char* env, bool mirrors) {
     return (uint64_t)mb << 20;
 }
 
+/// The same, with the switch already parsed: `set` when RX_VK_IMPORT_CHUNK_MB has a value, `env_mb` its number (0 or
+/// negative: 0, no chunking). Used by the AMD/import fixture and by callers that read the switch once.
+inline uint64_t bytes(bool mirrors, bool set, int env_mb) {
+    const int mb = set ? (env_mb > 0 ? env_mb : 0) : (mirrors ? 4 : 16);
+    return (uint64_t)mb << 20;
+}
+
 }  // namespace mkwvk::import_chunk_size
