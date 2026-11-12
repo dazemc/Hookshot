@@ -1218,14 +1218,6 @@ pub fn write_json(
         .copied()
         .take(if limit == 0 { usize::MAX } else { limit })
         .collect();
-    let mut declared = entries.clone();
-    declared.extend(lift.hooks.keys().copied());
-    declared.sort_unstable();
-    declared.dedup();
-    let declarations: String = declared
-        .iter()
-        .map(|entry| format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"))
-        .collect();
     let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
@@ -1300,25 +1292,42 @@ pub fn write_json(
     written_entries.extend(lift.hooks.keys().copied());
     written_entries.sort_unstable();
     written_entries.dedup();
-    let mut chunk = format!("#include \"a64.h\"\n{declarations}");
+    let reference = regex::Regex::new(r"\bf_([0-9a-f]{8})\b").unwrap();
+    let header = |decls: &std::collections::BTreeSet<u64>| {
+        let mut text = String::from("#include \"a64.h\"\n");
+        for entry in decls {
+            text.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
+        }
+        text
+    };
+    let mut chunk = String::new();
+    let mut decls = std::collections::BTreeSet::new();
     let mut size = 0usize;
     let mut file = 0usize;
     let mut files = Vec::new();
     for (_, text) in emitted {
+        for caps in reference.captures_iter(&text) {
+            if let Ok(entry) = u64::from_str_radix(&caps[1], 16) {
+                decls.insert(entry);
+            }
+        }
         chunk.push_str(&text);
         size += text.len();
         if size >= chunk_bytes {
             let path = out.join(format!("code_{file:03}.c"));
-            std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
+            let body = format!("{}{}", header(&decls), chunk);
+            std::fs::write(&path, &body).map_err(|e| format!("{}: {e}", path.display()))?;
             files.push(path.to_string_lossy().into_owned());
             file += 1;
-            chunk = format!("#include \"a64.h\"\n{declarations}");
+            chunk.clear();
+            decls.clear();
             size = 0;
         }
     }
-    if size > 0 {
+    if !chunk.is_empty() {
         let path = out.join(format!("code_{file:03}.c"));
-        std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
+        let body = format!("{}{}", header(&decls), chunk);
+        std::fs::write(&path, &body).map_err(|e| format!("{}: {e}", path.display()))?;
         files.push(path.to_string_lossy().into_owned());
     }
     let mut table = String::from("#include \"a64.h\"\n");
