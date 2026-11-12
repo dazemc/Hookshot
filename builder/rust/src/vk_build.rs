@@ -42,20 +42,6 @@ pub fn windows_ngx_sources(root: &Path) -> [(&'static str, PathBuf); 2] {
     ]
 }
 
-/// zstd's decoder, plain C, as build.py's `zstd_jobs` lists it.
-const ZSTD_DECODER: [&str; 10] = [
-    "common/debug.c",
-    "common/entropy_common.c",
-    "common/error_private.c",
-    "common/fse_decompress.c",
-    "common/xxhash.c",
-    "common/zstd_common.c",
-    "decompress/huf_decompress.c",
-    "decompress/zstd_ddict.c",
-    "decompress/zstd_decompress.c",
-    "decompress/zstd_decompress_block.c",
-];
-
 /// Dear ImGui's objects: the overlays' library and its Vulkan backend.
 const IMGUI_SOURCES: [&str; 5] = [
     "imgui.cpp",
@@ -581,6 +567,7 @@ pub fn vk_flags_for(
         format!("-I{}", headers.vma.join("include").display()),
         format!("-I{}", vk.display()),
         format!("-I{}", gen_dir.display()),
+        format!("-I{}", root.join("third_party/zstd/lib").display()),
     ]);
     flags
 }
@@ -1075,7 +1062,8 @@ fn build_at_for(
         )),
         None => None,
     };
-    let zstd_deps = zstd_headers(&zstd)?;
+    let zbic = root.join("third_party/zbic");
+    let zbic_deps = tree_headers(std::slice::from_ref(&zbic))?;
     let posix_deps = tree_headers(&[root.join("host/posix")])?;
     let deps = |name: &str| build.join(name);
     let vk_lib_deps_file = deps("vk_deps_eden.bin");
@@ -1085,7 +1073,7 @@ fn build_at_for(
     let vdeps_ngx_file = deps("vk_deps_ngx.bin");
     let vdeps_fsr_file = deps("vk_deps_fsr.bin");
     let imgui_deps_file = deps("vk_deps_imgui_own.bin");
-    let zstd_deps_file = deps("vk_deps_zstd.bin");
+    let zbic_deps_file = deps("vk_deps_zbic.bin");
     let posix_deps_file = deps("vk_deps_posix.bin");
     for (path, text) in [
         (&vk_lib_deps_file, vk_lib_deps.as_str()),
@@ -1095,7 +1083,7 @@ fn build_at_for(
         (&vdeps_ngx_file, vdeps_ngx.as_deref().unwrap_or_default()),
         (&vdeps_fsr_file, vdeps_fsr.as_deref().unwrap_or_default()),
         (&imgui_deps_file, imgui_deps.as_str()),
-        (&zstd_deps_file, zstd_deps.as_str()),
+        (&zbic_deps_file, zbic_deps.as_str()),
         (&posix_deps_file, posix_deps.as_str()),
     ] {
         write_deps(path, text)?;
@@ -1124,19 +1112,18 @@ fn build_at_for(
             &cache,
         ));
     }
-    // (zstd's decoder)
-    let zflags = zstd_flags_for(platform);
-    for name in ZSTD_DECODER {
-        let src = zstd.join(name.replace('/', std::path::MAIN_SEPARATOR_STR));
-        let obj = obj_dir.join(format!(
-            "vk_zstd_{}.o",
-            name.rsplit('/')
-                .next()
-                .unwrap_or(name)
-                .trim_end_matches(".c")
-        ));
-        jobs.push(job(&cc, &src, &obj, &zflags, &zstd_deps_file, &cache));
-    }
+    // (hookshot) the program cache's zstd compression: third_party/zbic's single-file zstd, as nx2/build.py builds it
+    let mut zbic_flags = zstd_flags_for(platform);
+    zbic_flags.push("-DZSTD_ZBIC_SUPPORT=0".to_owned());
+    zbic_flags.push(format!("-I{}", zbic.display()));
+    jobs.push(job(
+        &cc,
+        &zbic.join("zstd.c"),
+        &obj_dir.join("vk_zstd_compress.o"),
+        &zbic_flags,
+        &zbic_deps_file,
+        &cache,
+    ));
     // (the bundled fonts)
     jobs.push(job(
         &cxx,
@@ -2317,7 +2304,9 @@ mod tests {
         let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
         // (the rule: ordinary vertex input asks for the dynamic stride, the fallback and native mesh do not)
         assert!(draw.contains("fallback_pipeline_state::dynamic_input_assembly(p.mesh)"));
-        assert!(draw.contains("fallback_pipeline_state::dynamic_vertex_stride(p.mesh, p.fallback)"));
+        assert!(
+            draw.contains("fallback_pipeline_state::dynamic_vertex_stride(p.mesh, p.fallback)")
+        );
         // (a fallback bind invalidates the dynamic strides: both skip caches are dropped, and the next ordinary draw rebinds)
         assert!(draw.contains(
             "fallback_pipeline_state::after_graphics_bind(p.fallback, last_vb_valid, vertex_set.on);"
@@ -2336,14 +2325,22 @@ mod tests {
         // (after the programs read in now were given, under the lock on the programs: a key read in now is given once)
         let lock = load.find("std::lock_guard lk(shader_mu);").unwrap();
         let now = load.find("fn(*p);").unwrap();
-        let earlier = load.find("fallback_loaded::each(programs, given, fn)").unwrap();
-        assert!(lock < now && now < earlier, "the fallback rule moved before the programs read in now");
+        let earlier = load
+            .find("fallback_loaded::each(programs, given, fn)")
+            .unwrap();
+        assert!(
+            lock < now && now < earlier,
+            "the fallback rule moved before the programs read in now"
+        );
         assert!(load.contains("fallback_loaded::on(getenv(\"RX_VK_FALLBACK_LOADED\"))"));
         assert!(load.contains("if (fallbacks && loaded_too) {"));
         assert!(load.contains("for (const auto& w : work) given.insert(w.first);"));
         // (the precompile asks for every fallback program and makes its compute pipelines before play)
         let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
-        let precompile = function(&draw, "void precompile_run(void (*progress)(size_t done, size_t total)) {");
+        let precompile = function(
+            &draw,
+            "void precompile_run(void (*progress)(size_t done, size_t total)) {",
+        );
         assert!(precompile.contains("else if (p.fallback) fallbacks.push_back(&p);"));
         assert!(precompile.contains("fallback_compute_pipelines(p);"));
         assert!(precompile.contains("}, all_computes, true);"));
@@ -2367,7 +2364,9 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
         assert!(draw.contains("device_fault_query::forced(getenv(\"RX_VK_FAULT_INFO\"))"));
-        assert!(draw.contains("device_fault_query::automatic(dev.props.vendorID == 0x10DE, dev.checkpoints,"));
+        assert!(draw.contains(
+            "device_fault_query::automatic(dev.props.vendorID == 0x10DE, dev.checkpoints,"
+        ));
         assert!(draw.contains("getenv(\"RX_VK_FAULT_AUTO\")"));
         assert!(draw.contains("fault_last{fault_forced || fault_auto}"));
         let report = function(&draw, "void checkpoints_report() {");
