@@ -39,7 +39,7 @@ the game and renderer and replaces the builder with one Flutter desktop app and 
 
 ## Download and play
 
-The pre-release `v2.2.0-rs.6` is built entirely by the Flutter + Rust pipeline: the Windows setup and the Linux
+The pre-release `v2.2.0-rs.7` is built entirely by the Flutter + Rust pipeline: the Windows setup and the Linux
 AppImage below. The AppImage is a development image, so building a game from it needs your distribution's clang and
 Vulkan, SPIR-V and VMA headers; a source build needs nothing extra.
 
