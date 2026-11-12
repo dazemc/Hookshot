@@ -465,6 +465,7 @@ pub fn dispatch(text: &str) -> String {
                 "faces": written.faces,
                 "hint": written.hint,
                 "ring": written.ring,
+                "textures": written.textures,
             })
         }),
         "build.polls" => {

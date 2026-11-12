@@ -5,13 +5,16 @@
 use std::path::Path;
 
 pub mod bfotf;
+pub mod bntx;
 pub mod cache;
 pub mod cff;
 pub mod cmap;
 pub mod faces;
 pub mod font;
 pub mod layout;
+pub mod raster;
 pub mod restbl;
+pub mod textures;
 pub mod zs;
 
 pub const FONT: &str = "Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs";
@@ -24,6 +27,8 @@ pub struct Written {
     pub faces: Vec<String>,
     pub hint: bool,
     pub ring: bool,
+    /// The per-face texture entries written (0: the game's own textures).
+    pub textures: usize,
     /// The previous complete set was unchanged and kept (nothing drawn).
     pub kept: bool,
     /// Why the prompts were kept or drawn again, for the build log.
@@ -171,6 +176,7 @@ fn generate(romfs: &Path, out: &Path) -> Result<Written, String> {
         }
         None => {}
     }
+    let textures = textures::build(romfs, out, &dictionary, &kenney)?;
     let size_table = match restbl::size_table(romfs, &dictionary, game_font.len(), wrapped.len())? {
         Some(table) => {
             let path = out.join("rsizetable.zs");
@@ -192,6 +198,7 @@ fn generate(romfs: &Path, out: &Path) -> Result<Written, String> {
         faces: widths.iter().map(|(face, _)| face.clone()).collect(),
         hint: hint.is_some(),
         ring: ring.is_some(),
+        textures,
         kept: false,
         reason: String::new(),
     })

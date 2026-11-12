@@ -40,6 +40,9 @@ pub fn inputs(romfs: &Path, kenney: &Path) -> Result<BTreeMap<String, String>, S
         ("font.rs", include_str!("font.rs")),
         ("layout.rs", include_str!("layout.rs")),
         ("restbl.rs", include_str!("restbl.rs")),
+        ("bntx.rs", include_str!("bntx.rs")),
+        ("raster.rs", include_str!("raster.rs")),
+        ("textures.rs", include_str!("textures.rs")),
         ("zs.rs", include_str!("zs.rs")),
     ];
     parts.insert("source".to_owned(), hash_parts(source.iter().copied()));
@@ -56,6 +59,7 @@ pub fn inputs(romfs: &Path, kenney: &Path) -> Result<BTreeMap<String, String>, S
         ("dictionary", "Pack/ZsDic.pack.zs"),
         ("font", super::FONT),
         ("layout", super::layout::LAYOUTS),
+        ("textures", super::bntx::TEXTURES),
     ] {
         parts.insert(name.to_owned(), hash_file(&romfs.join(relative))?);
     }
@@ -245,6 +249,7 @@ pub fn write(
             "faces": written.faces,
             "hint": written.hint,
             "ring": written.ring,
+            "textures": written.textures,
         },
     });
     fs::write(
@@ -271,6 +276,7 @@ pub fn written(out: &Path) -> Option<super::Written> {
             .collect(),
         hint: written.get("hint")?.as_bool()?,
         ring: written.get("ring")?.as_bool()?,
+        textures: written.get("textures")?.as_u64()? as usize,
         kept: true,
         reason: String::new(),
     })
@@ -322,6 +328,7 @@ mod tests {
             faces: vec!["switch".to_owned()],
             hint: true,
             ring: true,
+            textures: 0,
             kept: false,
             reason: "a table changed".to_owned(),
         }
