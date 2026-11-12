@@ -4180,6 +4180,7 @@ void present_image(VkImage src, uint32_t sw, uint32_t sh, const int crop[4], VkI
         present_defer_into->done = f.done;
         present_defer_into->swapchain = dev.swapchain;
         present_defer_into->reflex_frame = reflex_present_frame;   // (NVIDIA Reflex: the frame it shows, at its present)
+        present_defer_into->antilag_frame = antilag_present_frame;   // (AMD Anti-Lag 2: the same)
         present_defer_into->swapchain_generation = dev.swapchain_generation;
         return;
     }
@@ -4195,8 +4196,11 @@ bool present_commit(const PendingPresent& p) {
     if (p.swapchain != dev.swapchain || p.swapchain_generation != dev.swapchain_generation) return false;   // (made again since the copy)
     const uint64_t was = reflex_present_frame;
     reflex_present_frame = p.reflex_frame;   // (NVIDIA Reflex: the frame this present shows, as at its copy)
+    const uint64_t was_antilag = antilag_present_frame;
+    antilag_present_frame = p.antilag_frame;   // (AMD Anti-Lag 2: the same)
     const bool shown = present_out(p.index, qk);
     reflex_present_frame = was;
+    antilag_present_frame = was_antilag;
     return shown;
 }
 

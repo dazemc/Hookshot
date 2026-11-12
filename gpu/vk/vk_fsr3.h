@@ -23,9 +23,10 @@ struct Texture;
 
 namespace fsr3 {
 
-/// One evaluation's inputs, in the SDK's meanings: the colour at the render size, the depth reversed, the motion toward the
-/// frame before in render pixels without the jitter, and the jitter in render pixels (input texel k is sampled at
-/// k + 0.5 - jitter)
+/// One evaluation's inputs, in the SDK's meanings: the colour at the render size (linear light when the game presents its
+/// native HDR and the chain's FSR 3.1 engine takes HDR colour: the vendored passes are compiled for it), the depth
+/// reversed, the motion toward the frame before in render pixels without the jitter, and the jitter in render pixels
+/// (input texel k is sampled at k + 0.5 - jitter)
 struct Inputs {
     VkImageView color = VK_NULL_HANDLE;
     VkImageView depth = VK_NULL_HANDLE;

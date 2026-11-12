@@ -354,11 +354,11 @@ bool make_pipelines() {
     const VkDescriptorType prep_types[5] = {S, S, I, I, I}, out_types[2] = {S, I};
     if (!s.prep && !make_pipeline(DLSS_PREP_COMP_SPV, sizeof DLSS_PREP_COMP_SPV, prep_types, 5, 84, s.prep_set, s.prep_layout, s.prep))
         return false;
-    // (the HDR ones, for an engine that takes HDR colour. dlss_prep.comp squares the square-root encoded scene into linear
-    // light (kSquare, its constant 1), what an HDR feature and its auto exposure are made for, and its ceiling (kColorMax,
-    // constant 0) is 16384 in place of 1: the game's native HDR keeps its highlights, and a stray value stays well inside the
-    // colour image's RGBA16F. dlss_out.comp then writes the engine's linear picture as it is (kSquare, its constant 0, off):
-    // the same output as the LDR pair's)
+    // (the HDR ones, for an engine that takes HDR colour: NVIDIA DLSS and AMD FSR 4, and FSR 3.1 on the chain. dlss_prep.comp
+    // squares the square-root encoded scene into linear light (kSquare, its constant 1), what an HDR feature and its auto
+    // exposure are made for, and its ceiling (kColorMax, constant 0) is 16384 in place of 1: the game's native HDR keeps its
+    // highlights, and a stray value stays well inside the colour image's RGBA16F. dlss_out.comp then writes the engine's
+    // linear picture as it is (kSquare, its constant 0, off): the same output as the LDR pair's)
     struct PrepSpec { float color_max; VkBool32 square; };
     static const PrepSpec prep_hdr_data{16384.0f, VK_TRUE};
     static const VkSpecializationMapEntry prep_hdr_entries[2] = {{0, 0, sizeof(float)}, {1, sizeof(float), sizeof(VkBool32)}};

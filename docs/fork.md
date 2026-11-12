@@ -213,9 +213,17 @@ commits, not upstream ancestors. Ported recently:
   alone; Link and the other characters keep their outlines while they move. The chain reverses depth for FSR's
   passes (`TemporalFrame::depth_reversed`, with DLSS-G's `depthInverted` following it), FSR's depth constants come
   from the unjittered projection, a failed evaluation retries next frame instead of turning the engine off, and the
-  reactive mask is shared with DLSS. `RX_VK_FSR3_CHAIN=0` keeps the old own-inputs path for comparisons. A
-  game-free Rust source check (`builder/rust/tests/fsr3_chain.rs`) covers the wiring; `tests/temporal_jitter_test.cpp`
+  reactive mask is shared with DLSS. `RX_VK_FSR3_CHAIN=0` keeps the old own-inputs path for comparisons. With the
+  game's native HDR, FSR 3.1 on the chain takes linear light like DLSS and FSR 4 (its vendored passes are compiled
+  with AMD's HDR colour option), and `RX_VK_FSR3_HDR=0` keeps the LDR pair for comparisons; a colour-space change
+  starts a new history. Game-free Rust checks (`builder/rust/tests/fsr3_chain.rs`, `fsr3_hdr.rs`) cover the wiring
+  and compile the actual HDR switch, the bones reader and the engine fallback; `tests/temporal_jitter_test.cpp`
   covers FSR 3.1's jitter slot and `RX_VK_FSR_JITTER=0`.
+- **AMD Anti-Lag 2 with frame generation (upstream `e2057b2b`)**: Anti-Lag 2 no longer turns itself off when frame
+  generation shows the frames. Each set keeps the game frame it was made at; only that frame gives the present stage,
+  a made frame gives none, and the deferred-present path restores the id as Reflex's does. The frame-generation
+  multiplier race and DLSS's refused-feature retry are covered by the 5 DLSS/V-Sync fixes above;
+  `builder/rust/tests/framegen_fixes.rs` pins both that wiring and this.
 - **Adjustable field of view #2357**: Gameplay's **Field of view** row scales camera zero's vertical angle from 50% to
   150% before projection and culling, saving `field_of_view`; 100% is the game's own view, and cutscenes, other views
   and scripted events keep their angles. The Python patch's site check is a Rust after-site with all three original
@@ -283,11 +291,10 @@ commits, not upstream ancestors. Ported recently:
 - Earlier: teleport minimap repair, save-folder links, FPS sound/solver/water/time-of-day, AMD/Intel shader fixes,
   terrain/writeback/heap fixes, NUP/Python builder fixes.
 
-Remaining large areas are FSR 3.1's HDR colour (it still takes the chain's LDR pair; upstream lists that as a
-follow-up), Native HDR's upscalers (DLSS/FSR/TAAU still take only the B10G11R11 scene, so PsychoV35 runs the game's
-own upscale), hand-made prompt-image overrides (`nx2/prompt_faces/<face>/`), 10-bit/4:4:4 AV1 conversion (OoT's movies
-are 8-bit 4:2:0), aspect-ratio and translated-menu features, hardware-specific Vulkan fixes, Flutter equivalents of
-the Tk/WPF UI commits, docs and game-derived pipeline assets.
+Remaining large areas are Native HDR's upscalers (DLSS/FSR/TAAU still take only the B10G11R11 scene, so PsychoV35
+runs the game's own upscale), hand-made prompt-image overrides (`nx2/prompt_faces/<face>/`), 10-bit/4:4:4 AV1
+conversion (OoT's movies are 8-bit 4:2:0), aspect-ratio and translated-menu features, hardware-specific Vulkan fixes,
+Flutter equivalents of the Tk/WPF UI commits, docs and game-derived pipeline assets.
 Do not port game-derived pipeline lists or generated game data.
 
 ## CI and release

@@ -41,6 +41,7 @@
 
 namespace mkwvk {
 VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeline* out);   // (vk_draw.cpp: through the pipeline cache kept across runs)
+extern std::atomic<bool> present_native_pq;   // (vk_replay.cpp do_present: the game presents its own HDR10 picture, Native)
 }
 
 namespace mkwvk::fsr3 {
@@ -799,10 +800,21 @@ struct ChainState {
     std::chrono::steady_clock::time_point last{};
     uint64_t drawn = 0;
     bool told = false;
+    bool hdr = false;        // (the colour space the chain's last evaluation used: a change starts a new history)
+    bool told_hdr = false;
 };
 ChainState& chain_state() {
     static ChainState& c = *new ChainState;   // (never destroyed: as the chain's own state)
     return c;
+}
+/// (hookshot) FSR 3.1 on the chain takes the game's native HDR colour as linear light, as DLSS and FSR 4 do: the chain's
+/// HDR prep squares the square-root encoded scene and does not clamp it, and its HDR output pass writes FSR's linear picture
+/// as it is. The vendored passes are compiled with FFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT=1 (scripts/fsr3_shaders.py), so
+/// their accumulation tonemaps for the history as AMD's HDR path does. RX_VK_FSR3_HDR=0: the LDR pair and the colour
+/// clamped at the paper white with Native HDR too, for comparisons, as before.
+bool chain_hdr() {
+    static const bool allowed = env_switch("RX_VK_FSR3_HDR") != 0;
+    return allowed && present_native_pq.load(std::memory_order_relaxed);
 }
 bool chain_start() { return fsr3::supported(); }
 int chain_prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, bool, uint32_t* in_w, uint32_t* in_h,
@@ -836,7 +848,15 @@ bool chain_evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
                            ? (float)std::min(250.0, std::chrono::duration<double, std::milli>(now - c.last).count())
                            : 16.667f;
     c.last = now;
-    ai.reset = f.reset;
+    // (the colour space the chain prepared this frame: a history from the other one is not this frame's, so a change
+    // starts a new one. The first evaluation says which one it is)
+    const bool hdr = chain_hdr();
+    const bool hdr_changed = c.told_hdr && c.hdr != hdr;
+    if (!c.told_hdr || hdr_changed)
+        logf("vk: fsr3 on the chain: %s colour, %s%s", hdr ? "HDR" : "LDR", hdr ? "linear" : "square-root encoded",
+             hdr_changed ? " (the game's native HDR turned on or off: a new history)" : "");
+    c.hdr = hdr, c.told_hdr = true;
+    ai.reset = f.reset || hdr_changed;
     // (what the scene's transparent draws changed, when RX_VK_REACTIVE asks for it and there were any: vk_reactive.h. The
     // same mask DLSS gets on this chain, as large as the chain's inputs; without one FSR's default reactivity, as before)
     if (reactive::Mask m; reactive::mask(cmd, f.render_w, f.render_h, f.color.width, f.color.height, f.color.view, m))
@@ -864,7 +884,7 @@ uint64_t chain_memory() { return fsr3::memory(); }   // (its internal images, fo
 // tries again. Named, so a field added to TemporalEngine cannot shift these into another)
 const TemporalEngine kChainEngine{.name = "AMD FSR 3.1", .short_name = "FSR 3.1", .start = chain_start,
                                   .prepare = chain_prepare, .evaluate = chain_evaluate, .release = chain_release,
-                                  .memory = chain_memory, .fsr_depth = true, .retry = true};
+                                  .memory = chain_memory, .hdr = chain_hdr, .fsr_depth = true, .retry = true};
 } // namespace
 
 const TemporalEngine* fsr3_engine() { return &kChainEngine; }
