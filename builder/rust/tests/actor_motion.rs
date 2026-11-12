@@ -76,6 +76,12 @@ fn glslang() -> Option<String> {
     None
 }
 
+/// The glslang version a --vn header names on its first line (`// 1116.6.0`), or None.
+fn generator(text: &str) -> Option<&str> {
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("// "))
+}
+
 /// The SPIR-V words of a glslang --vn header or of a binary header's text.
 fn words(text: &str) -> Vec<String> {
     let bytes = text.as_bytes();
@@ -308,6 +314,16 @@ fn the_actor_vertex_spirv_header_is_made_from_its_shader() {
     assert!(build.success(), "{glslang} failed on dlss_actor.vert");
     let made = fs::read_to_string(&out).expect("glslang's header");
     let checked = read("gpu/vk/shaders/dlss_actor_vert_spv.h");
+    if generator(&made) != generator(&checked) {
+        eprintln!(
+            "skipping the SPIR-V comparison: this glslang is {}, the checked-in header {} (another glslang may emit \
+             equivalent but different SPIR-V)",
+            generator(&made).unwrap_or("unknown"),
+            generator(&checked).unwrap_or("unknown")
+        );
+        let _ = fs::remove_dir_all(dir);
+        return;
+    }
     assert_eq!(
         words(&made),
         words(&checked),
