@@ -66,6 +66,10 @@ Vulkan, SPIR-V and VMA headers; a source build needs nothing extra.
 3. Pick the language and the options you want (DLSS, FSR, shader preparation).
 4. Press **Build**, then **Play**.
 
+On Linux desktops that start Hookshot Builder as a systemd service, **Play** moves the game to a scope of its own and
+waits for that hand-off before the window closes. If the hand-off fails it starts the game directly once; the fallback
+still follows the desktop's service lifetime.
+
 The first build is the long one. After it, Play starts the existing game folder immediately, and a game update only
 rebuilds what changed.
 

@@ -197,12 +197,16 @@ class LauncherBloc extends Bloc<LauncherEvent, LauncherState> {
     if (s is! LauncherReady) return;
     final gv = upd.gameVersion(s.folder);
     final target = upd.updateTarget(e.latest, s.toolsTag);
+    final gameIsNewer = gv.version != null && target != null && upd.olderVersion(target, gv.version);
     final versions = [...e.versions];
     if (target != null && !versions.contains(target)) versions.insert(0, target);
     if (gv.version != null && !versions.contains(gv.version)) versions.add(gv.version!);
     if (s.pinnedTag != null && !versions.contains(s.pinnedTag)) versions.add(s.pinnedTag!);
-    final selected =
-        s.selectedVersion ?? s.pinnedTag ?? target ?? gv.version ?? (versions.isEmpty ? null : versions.first);
+    final selected = s.selectedVersion ??
+        s.pinnedTag ??
+        (gameIsNewer ? gv.version : target) ??
+        gv.version ??
+        (versions.isEmpty ? null : versions.first);
     emit(_ready(
       folder: s.folder,
       game: gv.version,
@@ -329,6 +333,7 @@ class LauncherBloc extends Bloc<LauncherEvent, LauncherState> {
   }) {
     final selected = selectedVersion;
     final current = game;
+    final target = upd.updateTarget(latest, toolsTag);
     final showUpdate = selected != null && current != null && selected != current && kept;
     final String status;
     if (selected == null) {
@@ -341,6 +346,8 @@ class LauncherBloc extends Bloc<LauncherEvent, LauncherState> {
       status = '$current is installed and pinned; automatic update prompts are off.';
     } else if (current == null && kept) {
       status = 'This folder was built from source; ready to play.';
+    } else if (current != null && target != null && upd.olderVersion(target, current)) {
+      status = 'Your game is $current, newer than this builder\'s update target $target. Play keeps this version.';
     } else if (current != null && latest == null) {
       status = 'Up to date with this builder (GitHub did not answer)';
     } else if (current != null) {

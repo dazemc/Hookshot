@@ -165,6 +165,12 @@ class UpdateBloc extends Bloc<UpdateEvent, UpdateState> {
     final target = e.tag ?? upd.updateTarget(e.latest, e.toolsTag, switchTrack: e.switching);
     final fetched = e.fetched || (e.folder.isNotEmpty && e.toolsTag.isNotEmpty && target == e.toolsTag);
     try {
+      // (the handoff carries a downloaded release: these tools must already be
+      // the target, or the rebuild would use the older ones it started from)
+      if (fetched && target != null && e.toolsTag != target) {
+        throw StateError(
+            'This Builder is ${e.toolsTag.isEmpty ? 'unversioned' : e.toolsTag}, not the requested $target. Start that version\'s Builder to update.');
+      }
       if (!fetched) {
         final root = _runningRoot != null ? _runningRoot!() : upd.runningRoot();
         if (root == null) {
@@ -174,11 +180,13 @@ class UpdateBloc extends Bloc<UpdateEvent, UpdateState> {
         final named = (target != null && (e.switching || upd.trackOf(target) != 'release')) ? target : null;
         Future<List<int>> get(String url) => _fetcher(url, stop: _stop);
         final manifest = await inst.startupManifest(root, get, tag: named, stop: _stop);
+        // (GitHub's API and its download list can disagree right after a
+        // release: never rebuild with another version than the one asked for)
+        if (target != null && manifest.tag != target) {
+          throw StateError(
+              'GitHub offered ${manifest.tag}, not $target: its download links can lag right after a release. Try Update again in a few minutes.');
+        }
         if (manifest.tag != upd.toolsTag(root)) {
-          if (e.tag != null && manifest.tag != e.tag) {
-            throw StateError(
-                'GitHub offered ${manifest.tag}, not ${e.tag}: its download links can lag right after a release. Try Update again in a few minutes.');
-          }
           final source = inst.readManifest(root);
           final apprun = await inst.install(manifest, root, source,
               get: get, note: (m) => add(_UpdateNote(m)), stop: _stop, rootOverride: _installRoot);

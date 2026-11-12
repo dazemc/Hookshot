@@ -181,11 +181,27 @@ String? updateTarget(String? latest, String? tools, {bool switchTrack = false}) 
   return _compareReleaseKey(out, have) > 0 ? latest : tools;
 }
 
+/// A known older release target. Arbitrary hashes and differing nightlies
+/// cannot establish commit ancestry, so only versions with release keys count.
+bool olderVersion(String? target, String? have) {
+  final old = releaseKey(have);
+  final next = releaseKey(target);
+  if (old == null || next == null) return false;
+  return _compareReleaseKey(next, old) < 0;
+}
+
 /// What the builder's button does. Port of choose_mode().
 String chooseMode(String? game, String? tools, String? latest, bool sourcePicked, bool kept,
     {bool switchTrack = false}) {
   final target = updateTarget(latest, tools, switchTrack: switchTrack);
-  if (kept && game != null && target != null && game != target && !sourcePicked) return 'update-game';
+  if (kept &&
+      game != null &&
+      target != null &&
+      game != target &&
+      !sourcePicked &&
+      (switchTrack || !olderVersion(target, game))) {
+    return 'update-game';
+  }
   if (game != null && !sourcePicked) return 'up-to-date';
   // (a source checkout names no version: no update offered, as in the Tk builder —
   // begin_update could not install into it anyway)
