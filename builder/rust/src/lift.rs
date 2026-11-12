@@ -62,6 +62,7 @@ pub struct Lifter<'a, C: Code> {
     pub plt: BTreeMap<u64, (u64, u64)>,
     pub last_table_debug: Option<String>,
     pub names: BTreeMap<u64, String>,
+    pub hooks: BTreeMap<u64, String>,
     pub stats: BTreeMap<&'static str, usize>,
 }
 
@@ -81,6 +82,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             plt: BTreeMap::new(),
             last_table_debug: None,
             names: BTreeMap::new(),
+            hooks: BTreeMap::new(),
             stats: BTreeMap::new(),
         }
     }
@@ -89,6 +91,9 @@ impl<'a, C: Code> Lifter<'a, C> {
         let mut entries: Vec<u64> = self.entries.iter().copied().collect();
         entries.sort_unstable();
         for entry in entries {
+            if self.hooks.contains_key(&entry) {
+                continue;
+            }
             let (body, labels) = self.walk(entry);
             if !body.is_empty() {
                 self.funcs.insert(entry, body);
@@ -1189,10 +1194,20 @@ pub fn write_json(
     out: &str,
     limit: usize,
     chunk_bytes: usize,
+    standalone: bool,
 ) -> Result<serde_json::Value, String> {
-    let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
+    let path = std::path::Path::new(exefs);
+    let hle = if standalone {
+        crate::standalone::hle_symbols(exefs)?
+    } else {
+        Vec::new()
+    };
+    let image = crate::image::Image::build(path, 0, false, &hle, &[])?;
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
-    lift.eh_starts = image.eh_starts().to_vec();
+    lift.hooks = image.hooks.clone();
+    lift.entries.extend(lift.hooks.keys().copied());
+    lift.eh_starts = lift.entries.iter().copied().collect();
+    lift.eh_starts.sort_unstable();
     lift.names = image.names().clone();
     lift.discover();
     let out = std::path::Path::new(out);
@@ -1277,7 +1292,10 @@ pub fn write_json(
     std::fs::write(out.join("a64_fpx.h"), crate::text::fpx_header(&used))
         .map_err(|e| e.to_string())?;
     let written = entries.len();
-    let written_entries = entries.clone();
+    let mut written_entries = entries.clone();
+    written_entries.extend(lift.hooks.keys().copied());
+    written_entries.sort_unstable();
+    written_entries.dedup();
     let mut chunk = format!("#include \"a64.h\"\n{declarations}");
     let mut size = 0usize;
     let mut file = 0usize;
@@ -1316,12 +1334,22 @@ pub fn write_json(
     }
     table.push_str("};\n");
     std::fs::write(out.join("a64_table.c"), table).map_err(|e| e.to_string())?;
-    std::fs::write(
-        out.join("a64_hooks.c"),
-        "/* Hooked guest addresses. */\n#include \"a64.h\"\n",
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({"files": files, "functions": written}))
+    let mut hooks_c = String::from(
+        "/* Hooked guest addresses: f_<address> is the host function (an HLE or a generated stub). */\n#include \"a64.h\"\n",
+    );
+    let mut names: Vec<&String> = lift.hooks.values().collect();
+    names.sort();
+    names.dedup();
+    for name in &names {
+        hooks_c.push_str(&format!("void {name}(Ctx *A64_NOESC);\n"));
+    }
+    for (address, name) in &lift.hooks {
+        hooks_c.push_str(&format!(
+            "void f_{address:08x}(Ctx *A64_NOESC c) {{ TAILCALL({name}); }}\n"
+        ));
+    }
+    std::fs::write(out.join("a64_hooks.c"), hooks_c).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"files": files, "functions": written, "hooks": lift.hooks.len()}))
 }
 pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
@@ -1501,6 +1529,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hooked_entries_are_aliases_not_lifted() {
+        let mock = Mock(vec![0xD65F_03C0, 0xD65F_03C0]);
+        let mut lift = Lifter::new(&mock, [0, 4]);
+        lift.hooks.insert(0, "imp_hooked".to_owned());
+        lift.entries.insert(0);
+        lift.discover();
+        assert!(!lift.funcs.contains_key(&0));
+        assert!(lift.funcs.contains_key(&4));
+    }
     #[test]
     fn dead_flags_after_a_return_are_dropped() {
         let mock = Mock(vec![0x9100_0000, 0xD65F_03C0]);

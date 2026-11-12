@@ -378,6 +378,20 @@ fn write_image_c(
     Ok(hooks)
 }
 
+/// The HLE and OS-stub symbols a standalone lift replaces at the nn:: boundary.
+pub fn hle_symbols(exefs: &str) -> Result<Vec<String>, String> {
+    let host = crate::kit::root().join("host");
+    let implemented = implemented(&host)?;
+    let modules = crate::nso_image::load_exefs(Path::new(exefs))?;
+    let nvn = nvn_exports(&modules, &implemented);
+    let (mut hle, stubbed) = hle_set(&modules, &implemented);
+    hle.extend(nvn.iter().cloned());
+    let mut all: Vec<String> = hle.into_iter().collect();
+    all.extend(stubbed);
+    all.sort();
+    Ok(all)
+}
+
 /// Write the standalone relocated image (`image.bin` and `image.json`) with
 /// the HLE and stub hooks the host build expects.
 pub fn image_json(exefs: &str, out: &str, host: &str) -> Result<Value, String> {

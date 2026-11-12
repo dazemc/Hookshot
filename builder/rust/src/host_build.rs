@@ -127,6 +127,7 @@ pub fn link_json(exefs: &str, work: &str, out: &str) -> Result<Value, String> {
             format!("-I{}", rt64.display()),
             format!("-I{}", game_gen.display()),
             format!("-I{}", gen_dir.display()),
+            format!("-I{}", zstd.display()),
             "-Wno-everything".into(),
             "-O2".into(),
             "-g0".into(),

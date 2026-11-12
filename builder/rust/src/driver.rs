@@ -90,6 +90,7 @@ pub fn plan_json(
             game_gen.to_str().unwrap_or_default(),
             limit,
             24 << 20,
+            standalone,
         )?;
     }
     let mut standalone_info = Value::Null;

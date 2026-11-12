@@ -191,6 +191,10 @@ pub fn dispatch(text: &str) -> String {
                 .get("chunk_bytes")
                 .and_then(Value::as_u64)
                 .unwrap_or(24 << 20) as usize,
+            request
+                .get("standalone")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         ),
         "lift.emit" => lift::emit_json(
             &string(&request, "exefs").unwrap_or_default(),
