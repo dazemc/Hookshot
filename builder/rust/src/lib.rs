@@ -38,6 +38,7 @@ mod platform;
 mod poll;
 mod prepare;
 mod profiles;
+mod prompts;
 mod rtgen;
 mod saves;
 mod shader;

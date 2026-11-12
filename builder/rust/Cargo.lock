@@ -234,6 +234,7 @@ name = "hookshot_engine"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "crc32fast",
  "curl",
  "libloading",
  "png",

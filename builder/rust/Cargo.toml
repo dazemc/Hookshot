@@ -25,6 +25,7 @@ libloading = "0.8"
 png = "0.17"
 regex = "1"
 curl = "0.4"
+crc32fast = "1.5"
 
 [profile.release]
 lto = "thin"
