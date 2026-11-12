@@ -32,6 +32,10 @@ enum { HOS_OPT_VOLUME = 27, HOS_OPT_MUTE_BACKGROUND };
    the game is told its display is HDR10 (the swapchain is one), and the peak and paper white it is told, in nits */
 /* (HOS_OPT_DISCORD, 43: the Insert menu's Discord status row, host/discord_rpc.c: 1 on) */
 enum { HOS_OPT_HDR_NATIVE = 40, HOS_OPT_HDR_PEAK, HOS_OPT_HDR_WHITE, HOS_OPT_DISCORD };
+/* (HOS_OPT_HDR_TONEMAP, 47: HDR set to Native with its Tone mapper row on PsychoV35, vk_menu.cpp scene_tonemap_on; host/nn_vi.c
+   makes the scene buffer RGBA16F only then, so Native HDR with the row on Vanilla keeps the game's R11G11B10F and the
+   temporal upscalers, which take only that scene) */
+enum { HOS_OPT_HDR_TONEMAP = 47 };
 /* (HOS_OPT_DISABLE_CAMERA_CENTERING, 45: Controls' movement-follow yaw, host/mouse_native.c: 0 stock, 1 disabled;
    44 is reserved for HOS_OPT_SKIP_TITLE) */
 enum { HOS_OPT_DISABLE_CAMERA_CENTERING = 45 };
@@ -231,6 +235,7 @@ typedef struct MkwVkRenderer {
                                 18 to 23: the Motion page (HOS_OPT_GYRO*: motion controls from a pad's gyroscope, host/pad_sdl.c;
                                 the horizontal and vertical sensitivity in percent, each turned around, the deadzone),
                                 27: the volume in percent, 28: no sound while another window has the focus (host/nn_audio.c),
+                                47: the scene tone mapper is PsychoV35 (host/nn_vi.c, vk_menu.cpp scene_tonemap_on),
                                 48: the camera's turn speed in percent of the game's (host/nn_vi.c) */
     /* a submit with its queue */
     void (*nvn_submit_q)(const uint64_t *handles, int n, uint64_t queue);

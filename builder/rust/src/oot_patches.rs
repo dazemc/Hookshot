@@ -93,6 +93,19 @@ const CAMERA_SPEED_HEADS: [&str; 4] = [
 const CAMERA_SPEED_DECL: &str = "extern volatile float hos_camera_scale;\n";
 const CAMERA_SPEED_RETURN: &str = "{ if (hos_camera_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_camera_scale; memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); } return; }   /* (nx2/oot_patches.py: camera speed) */";
 
+// --- scene format ----------------------------------------------------------
+
+// (host/nn_vi.c hos_scene_rgba16f: the Insert menu's HDR set to Native with the PsychoV35 tone mapper). f_80672260 picks the
+// format of the scene buffer the game tone maps into (main+0x652340: RGBA16F, 44, under two of its flags, else R11G11B10F,
+// 26) and makes the buffer again when the one it has differs (+440). R11G11B10F has no sign and 6 bits of mantissa, so the
+// native HDR banded; with the switch on both choices are RGBA16F (RenoDX's zelda-oot-oz patch of main+0x65234C,
+// github.com/clshortfuse/renodx, MIT).
+const SCENE_FORMAT_HEAD: &str = "void f_80672260(Ctx *__restrict A64_NOESC c) {\n";
+const SCENE_FORMAT_OLD: &str = "    c->x[10] = 0x2cULL;\n    c->x[10] &= 0xFFFFFFFFULL;\n";
+const SCENE_FORMAT_PICK: &str = "    c->x[9] = 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];";
+const SCENE_FORMAT_NEW: &str = "    c->x[9] = hos_scene_rgba16f ? 0x2cULL : 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];";
+const SCENE_FORMAT_DECL: &str = "extern volatile int hos_scene_rgba16f;\n";
+
 // --- menus / prompts --------------------------------------------------------
 
 const MENU_FOCUS_HEAD: &str = "void f_802ed660(Ctx *__restrict A64_NOESC c) {\n";
@@ -545,6 +558,31 @@ fn patch_heap_retry(s: &str) -> (String, [u32; 2]) {
     (out, found)
 }
 
+/// The scene buffer's format by hos_scene_rgba16f in f_80672260; None when the file has no such function, s unchanged when
+/// the function is there but its code differs (another game version). The bool says the function's code is the patched one
+/// (made now, or by an earlier run over this file).
+fn patch_scene_format(s: &str) -> Option<(String, bool)> {
+    let (head, end) = function(s, SCENE_FORMAT_HEAD)?;
+    let body = &s[head..end];
+    if body.contains(SCENE_FORMAT_NEW) {
+        // (applied already: a second run)
+        return Some((s.to_owned(), true));
+    }
+    if body.matches(SCENE_FORMAT_OLD).count() != 1 || body.matches(SCENE_FORMAT_PICK).count() != 1 {
+        return Some((s.to_owned(), false));
+    }
+    let (Some(old_at), Some(pick_at)) = (body.find(SCENE_FORMAT_OLD), body.find(SCENE_FORMAT_PICK))
+    else {
+        return Some((s.to_owned(), false));
+    };
+    if old_at > pick_at {
+        return Some((s.to_owned(), false));
+    }
+    let replaced = body.replacen(SCENE_FORMAT_PICK, SCENE_FORMAT_NEW, 1);
+    let out = format!("{}{}{}", &s[..head], replaced, &s[end..]);
+    Some((add_decl(&out, SCENE_FORMAT_DECL), true))
+}
+
 fn patch_camera_speed(s: &str) -> (String, u32) {
     let mut out = s.to_owned();
     let mut found = 0u32;
@@ -832,6 +870,7 @@ fn fresh_done(protect_hearts: bool) -> BTreeMap<&'static str, u32> {
             "free camera",
             "mouse camera",
             "disable camera centering",
+            "scene format",
         ] {
             done.insert(what, 0);
         }
@@ -975,6 +1014,17 @@ fn patch_one(path: &Path, protect_hearts: bool) -> Result<FilePatch, String> {
             out = t;
             *done.get_mut("free camera").unwrap() += 1;
             log.push(format!("oot_patches: free camera in {base}"));
+        }
+        if let Some((t, has_new)) = patch_scene_format(&out) {
+            if has_new {
+                *done.get_mut("scene format").unwrap() += 1;
+            }
+            if t != out {
+                log.push(format!(
+                    "oot_patches: the scene buffer's format for native HDR in {base}"
+                ));
+                out = t;
+            }
         }
         let (t, n) = patch_camera_speed(&out);
         if t != out {
@@ -1368,6 +1418,60 @@ mod tests {
         }
         apply_output_size(&dir, true, &mut Vec::new()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scene_format_patches_once_and_is_idempotent() {
+        let lifted = format!(
+            "#include \"a64.h\"\n{SCENE_FORMAT_HEAD}    {SCENE_FORMAT_OLD}    {SCENE_FORMAT_PICK}\n    c->x[10] &= 0xFFFFFFFFULL;\n}}\nvoid f_80672261(Ctx *__restrict A64_NOESC c) {{\n    return;\n}}\n"
+        );
+        let (out, has_new) = patch_scene_format(&lifted).expect("f_80672260");
+        assert!(has_new);
+        assert!(
+            out.contains(SCENE_FORMAT_NEW),
+            "the format pick is not patched"
+        );
+        assert!(
+            !out.contains(SCENE_FORMAT_PICK),
+            "the game's format pick is still there"
+        );
+        assert_eq!(
+            out.matches(SCENE_FORMAT_DECL).count(),
+            1,
+            "hos_scene_rgba16f is not declared once"
+        );
+        assert!(
+            out.find(SCENE_FORMAT_DECL).unwrap() < out.find(SCENE_FORMAT_HEAD).unwrap(),
+            "the host's word is not declared at the chunk's head"
+        );
+        let (again, has_new) = patch_scene_format(&out).expect("f_80672260");
+        assert!(has_new);
+        assert_eq!(again, out, "a second run changed the file");
+
+        let drift = lifted.replace("0x1aULL", "0x1bULL");
+        let (same, has_new) = patch_scene_format(&drift).expect("f_80672260");
+        assert!(!has_new, "a drifted pick counted as patched");
+        assert_eq!(same, drift, "a drifted pick changed the file");
+        assert!(
+            !same.contains(SCENE_FORMAT_DECL),
+            "a drifted file was half-patched"
+        );
+
+        let swapped = format!(
+            "#include \"a64.h\"\n{SCENE_FORMAT_HEAD}    {SCENE_FORMAT_PICK}\n    {SCENE_FORMAT_OLD}}}\n"
+        );
+        let (same, has_new) = patch_scene_format(&swapped).expect("f_80672260");
+        assert!(!has_new, "the pick before the format's first store counted");
+        assert_eq!(
+            same, swapped,
+            "the pick before the format's first store changed"
+        );
+
+        let gone = lifted.replace("f_80672260", "f_80672262");
+        assert!(
+            patch_scene_format(&gone).is_none(),
+            "a file without f_80672260 changed"
+        );
     }
 
     #[test]

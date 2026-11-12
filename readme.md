@@ -107,7 +107,9 @@ debug teleport are there. The Graphics tab groups its rows under section titles:
 generation and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The
 Controls page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`,
 unset by default: until you bind one, the game's own button plays it, and a bound note answers only its own key or
-gamepad input while the game waits for a note. The in-game controls and the full option list are in the
+gamepad input while the game waits for a note. With HDR set to Native, the HDR section's tone mapper row chooses the
+game's vanilla tone mapping or PsychoV35. The in-game controls and the full option list are in the
+[technical reference](docs/fork.md) and in the builder's own help.
 [technical reference](docs/fork.md) and in the builder's own help.
 
 **Gameplay → System → Bug report** saves what an issue needs into `bug-reports/<date>_<time>` in the game folder in one press:

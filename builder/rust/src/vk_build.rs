@@ -1959,6 +1959,7 @@ mod tests {
                     "HDR paper white",
                     "HDR peak brightness",
                     "HDR contrast",
+                    "HDR tone mapper",
                 ][..],
             ),
             ("Detail", &["Anisotropic filtering"][..]),

@@ -599,6 +599,35 @@ def patch_camera_speed(s):
     return s, found
 
 
+# Scene format (host/nn_vi.c hos_scene_rgba16f: the Insert menu's HDR set to Native with the PsychoV35 tone mapper). f_80672260 picks the format of the scene
+# buffer the game tone maps into (main+0x652340: RGBA16F, 44, under two of its flags, else R11G11B10F, 26) and makes the buffer
+# again when the one it has differs (+440). R11G11B10F has no sign and 6 bits of mantissa, so the native HDR banded; with the
+# switch on both choices are RGBA16F (RenoDX's zelda-oot-oz patch of main+0x65234C, github.com/clshortfuse/renodx, MIT).
+SCENE_FORMAT_HEAD = "void f_80672260(Ctx *__restrict A64_NOESC c) {\n"
+SCENE_FORMAT_OLD = "    c->x[10] = 0x2cULL;\n    c->x[10] &= 0xFFFFFFFFULL;\n"
+SCENE_FORMAT_PICK = "    c->x[9] = 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];"
+SCENE_FORMAT_NEW = ("    c->x[9] = hos_scene_rgba16f ? 0x2cULL : 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n"
+                    "    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];")
+SCENE_FORMAT_DECL = "extern volatile int hos_scene_rgba16f;\n"
+
+
+def patch_scene_format(s):
+    """The scene buffer's format by hos_scene_rgba16f in f_80672260; None when the file has no such function, s unchanged when the
+    function is there but its code differs (another game version)."""
+    at = _function(s, SCENE_FORMAT_HEAD)
+    if at is None:
+        return None
+    head, end = at
+    body = s[head:end]
+    if SCENE_FORMAT_NEW in body:   # (applied already: a second run)
+        return s
+    if body.count(SCENE_FORMAT_OLD) != 1 or body.count(SCENE_FORMAT_PICK) != 1 or \
+            body.index(SCENE_FORMAT_OLD) > body.index(SCENE_FORMAT_PICK):
+        return s
+    s = s[:head] + body.replace(SCENE_FORMAT_PICK, SCENE_FORMAT_NEW, 1) + s[end:]
+    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SCENE_FORMAT_DECL, 1)
+
+
 # (from TomShafford/Hookshot 55d68e8cd6 and 65c1998222) f_804566e0's two calls of f_80522050, the GPU memory a model's material
 # block is made with, made through host/oot_heap_retry.c hos_oot_gpu_alloc, which calls the game's own and tries a full heap's
 # failure again in the heap's parents. f_80522050's other callers stay as they are.
@@ -734,6 +763,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["mouse camera"] = 0
         done["disable camera centering"] = 0
         done["ocarina note wait"] = 0
+        done["scene format"] = 0
     speed_hooks = 0   # (SPEED_PLACES', in one file or several)
     camera_speed = 0   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
@@ -834,6 +864,13 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = view
             done["free camera"] += 1
             print("oot_patches: free camera in", os.path.basename(path))
+        scene = patch_scene_format(out) if protect_hearts else None
+        if scene is not None:
+            if SCENE_FORMAT_NEW in scene:   # (made now, or by an earlier run over this file)
+                done["scene format"] += 1
+            if scene != out:
+                print("oot_patches: the scene buffer's format for native HDR in", os.path.basename(path))
+            out = scene
         if protect_hearts:   # (found by name alone: in another build these addresses are other functions)
             made, n = patch_camera_speed(out)
             camera_speed += n

@@ -26,6 +26,8 @@ on:
       - 'tests/native_suatom/**'
       - 'tests/native_suatom.cpp'
       - 'tests/f2i_immediate/**'
+      - 'tests/scene_tonemap_ir.cpp'
+      - 'tests/scene_tonemap_ir/**'
       - 'tests/sirit_null_id_test.cpp'
       - 'gpu/vk/fallback_size_policy.h'
       - 'tests/fallback_size_policy_test.cpp'
@@ -61,6 +63,8 @@ on:
       - 'tests/native_suatom/**'
       - 'tests/native_suatom.cpp'
       - 'tests/f2i_immediate/**'
+      - 'tests/scene_tonemap_ir.cpp'
+      - 'tests/scene_tonemap_ir/**'
       - 'tests/sirit_null_id_test.cpp'
       - 'gpu/vk/fallback_size_policy.h'
       - 'tests/fallback_size_policy_test.cpp'
@@ -243,6 +247,24 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ${{ steps.ccache.outputs.key }}
+
+  scene-tonemap:
+    name: PsychoV35 scene tone map (game-free IR)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure the IR fixture
+        run: >-
+          CC=clang CXX=clang++ cmake -S tests/scene_tonemap_ir -B "${{ runner.temp }}/scene-tonemap"
+          -DREPO_ROOT="${{ github.workspace }}"
+      - name: Build the IR fixture
+        run: cmake --build "${{ runner.temp }}/scene-tonemap" --parallel "$(nproc)"
+      - name: Run the pass on synthetic scene programs
+        run: '"${{ runner.temp }}/scene-tonemap/scene_tonemap_ir"'
 
   retired-give-back:
     name: Retired import rules
