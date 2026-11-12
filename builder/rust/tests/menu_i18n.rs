@@ -208,11 +208,13 @@ struct Lang {
 
 fn catalog() -> (BTreeMap<String, Table>, Vec<Lang>) {
     let src = source("gpu/vk/menu_i18n.h");
-    let table_re = regex::Regex::new(r"(?s)inline constexpr Entry (k\w+)\[\] = \{\n(.*?)\n\};").unwrap();
+    let table_re =
+        regex::Regex::new(r"(?s)inline constexpr Entry (k\w+)\[\] = \{\n(.*?)\n\};").unwrap();
     let entry_re =
         regex::Regex::new(r#"(?m)^    \{"((?:[^"\\]|\\.)*)", "((?:[^"\\]|\\.)*)"\},$"#).unwrap();
-    let lang_re = regex::Regex::new(r#"(?m)^    \{"([\w-]+)", "((?:[^"\\]|\\.)*)", (\w+), (\d+)\},$"#)
-        .unwrap();
+    let lang_re =
+        regex::Regex::new(r#"(?m)^    \{"([\w-]+)", "((?:[^"\\]|\\.)*)", (\w+), (\d+)\},$"#)
+            .unwrap();
     let mut tables = BTreeMap::new();
     for cap in table_re.captures_iter(&src) {
         let name = cap[1].to_string();
@@ -269,10 +271,14 @@ fn the_languages_are_listed_with_their_tables() {
     assert_eq!(langs[0].table, "nullptr");
     assert_eq!(langs[0].count, 0);
     let expected = [
-        "pt-BR", "es-419", "es", "fr", "de", "it", "nl", "pl", "ru", "ja", "ko", "zh-Hans", "zh-Hant",
+        "pt-BR", "es-419", "es", "fr", "de", "it", "nl", "pl", "ru", "ja", "ko", "zh-Hans",
+        "zh-Hant",
     ];
     assert_eq!(
-        langs[1..].iter().map(|l| l.code.as_str()).collect::<Vec<_>>(),
+        langs[1..]
+            .iter()
+            .map(|l| l.code.as_str())
+            .collect::<Vec<_>>(),
         expected,
         "the menu's languages"
     );
@@ -280,7 +286,12 @@ fn the_languages_are_listed_with_their_tables() {
     assert_eq!(codes.len(), langs.len(), "a language listed twice");
     for lang in &langs[1..] {
         let table = table_of(&tables, lang);
-        assert_eq!(table.entries.len(), lang.count, "{}: its count is not its table's", lang.code);
+        assert_eq!(
+            table.entries.len(),
+            lang.count,
+            "{}: its count is not its table's",
+            lang.code
+        );
         assert!(!table.entries.is_empty(), "{}: an empty table", lang.code);
     }
 }
@@ -291,14 +302,28 @@ fn every_table_is_sorted_and_well_formed() {
     for lang in &langs[1..] {
         let table = table_of(&tables, lang);
         let keys: Vec<_> = table.entries.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, {
-            let mut sorted = keys.clone();
-            sorted.sort_unstable();
-            sorted
-        }, "{}: not sorted (menu_i18n.h is written sorted)", lang.code);
-        assert_eq!(keys.iter().collect::<BTreeSet<_>>().len(), keys.len(), "{}: a text twice", lang.code);
+        assert_eq!(
+            keys,
+            {
+                let mut sorted = keys.clone();
+                sorted.sort_unstable();
+                sorted
+            },
+            "{}: not sorted (menu_i18n.h is written sorted)",
+            lang.code
+        );
+        assert_eq!(
+            keys.iter().collect::<BTreeSet<_>>().len(),
+            keys.len(),
+            "{}: a text twice",
+            lang.code
+        );
         for (en, text) in &table.entries {
-            assert!(!text.is_empty(), "{}: {en:?} has an empty translation", lang.code);
+            assert!(
+                !text.is_empty(),
+                "{}: {en:?} has an empty translation",
+                lang.code
+            );
             assert_eq!(
                 conversions(en),
                 conversions(text),
@@ -307,8 +332,18 @@ fn every_table_is_sorted_and_well_formed() {
             );
             let lead = |s: &str| s.len() - s.trim_start_matches(' ').len();
             let trail = |s: &str| s.len() - s.trim_end_matches(' ').len();
-            assert_eq!(lead(en), lead(text), "{}: the space before {en:?}", lang.code);
-            assert_eq!(trail(en), trail(text), "{}: the space after {en:?}", lang.code);
+            assert_eq!(
+                lead(en),
+                lead(text),
+                "{}: the space before {en:?}",
+                lang.code
+            );
+            assert_eq!(
+                trail(en),
+                trail(text),
+                "{}: the space after {en:?}",
+                lang.code
+            );
         }
     }
 }
@@ -338,7 +373,10 @@ fn the_current_controls_and_hints_are_translated_everywhere() {
         "Those of the first controller, from its name (SDL's). With none, the keyboard's (the Switch's with XInput alone).",
     ];
     for hint in hints {
-        assert!(menu.iter().any(|t| t == hint), "the menu no longer has {hint:?}");
+        assert!(
+            menu.iter().any(|t| t == hint),
+            "the menu no longer has {hint:?}"
+        );
         for lang in &langs[1..] {
             let table = table_of(&tables, lang);
             assert!(
@@ -367,7 +405,10 @@ fn the_startup_screen_and_the_fps_counter_are_translated_everywhere() {
         ("Reading the pipeline notes", &startup),
         ("Loading the shader cache", &startup),
         ("Keeping what is prepared for the next start", &startup),
-        ("This happens once after an update. Closing the window keeps what is done.", &startup),
+        (
+            "This happens once after an update. Closing the window keeps what is done.",
+            &startup,
+        ),
         ("Step 1 of 2", &menu),
         ("Step 2 of 2", &menu),
         ("a few seconds left", &startup),
@@ -388,7 +429,9 @@ fn the_startup_screen_and_the_fps_counter_are_translated_everywhere() {
     ];
     for (key, source_texts) in keys {
         assert!(
-            source_texts.iter().any(|t| t == key || t.replace("%%", "%") == key),
+            source_texts
+                .iter()
+                .any(|t| t == key || t.replace("%%", "%") == key),
             "{key:?} is no longer drawn where it was"
         );
         for lang in &langs[1..] {
@@ -412,50 +455,117 @@ fn the_menu_rows_and_the_language_file_are_wired() {
     let font = source("gpu/vk/vk_game_font.h");
     let progress = source("gpu/vk/vk_progress.h");
 
-    assert!(options.contains("int game_lang = 0;"), "the game's language is not kept apart");
-    assert!(options.contains("int menu_lang = 0;"), "the menu's language is not kept apart");
+    assert!(
+        options.contains("int game_lang = 0;"),
+        "the game's language is not kept apart"
+    );
+    assert!(
+        options.contains("int menu_lang = 0;"),
+        "the menu's language is not kept apart"
+    );
     assert!(menu.contains("\"Game language\", &opts.game_lang, 0, i18n::game_lang_count() - 1"));
     assert!(menu.contains("\"Menu language\", &opts.menu_lang, 0, i18n::lang_count()"));
     assert!(menu.contains("const char* tx_game_lang(int v)"));
     assert!(menu.contains("const char* tx_menu_lang(int v)"));
     assert!(menu.contains("const char* hn_menu_lang(int v, int variant)"));
-    assert!(menu.contains("opts.game_lang = i18n::game_lang_index();"), "the row does not start at language.txt's");
-    assert!(menu.contains("r.value == &opts.game_lang"), "the options file takes the game's language");
-    assert!(menu.contains("void game_lang_tick()"), "the game's language is not written when the row is left");
-    assert!(menu.contains("game_lang_tick();"), "menu_tick does not write the game's language");
-    assert!(menu.contains("i18n::tr(restart_names[i])"), "the restart line is not translated");
+    assert!(
+        menu.contains("opts.game_lang = i18n::game_lang_index();"),
+        "the row does not start at language.txt's"
+    );
+    assert!(
+        menu.contains("r.value == &opts.game_lang"),
+        "the options file takes the game's language"
+    );
+    assert!(
+        menu.contains("void game_lang_tick()"),
+        "the game's language is not written when the row is left"
+    );
+    assert!(
+        menu.contains("game_lang_tick();"),
+        "menu_tick does not write the game's language"
+    );
+    assert!(
+        menu.contains("i18n::tr(restart_names[i])"),
+        "the restart line is not translated"
+    );
     assert!(menu.contains("i18n::tr(\"Restart needed: \")"));
     assert!(menu.contains("i18n::tr(\"Restart to apply \")"));
 
-    assert!(i18n.contains("language.txt"), "the game's language is not read from language.txt");
-    assert!(i18n.contains("HOS_LANGUAGE"), "the game's own switch is not followed");
-    assert!(i18n.contains("set_game_language"), "the game's language cannot be saved");
-    assert!(i18n.contains("const std::string& game_language()"), "the menu's Auto has no game language");
-    assert!(i18n.contains("int lang_now()"), "the menu's language is not looked up");
-    assert!(i18n.contains("chosen_lang()"), "the chosen language is not kept apart from the drawn one");
-    assert!(i18n.contains("no_font"), "a script without a font does not fall back");
-    assert!(i18n.contains("return s;"), "a missing text does not fall back to English");
+    assert!(
+        i18n.contains("language.txt"),
+        "the game's language is not read from language.txt"
+    );
+    assert!(
+        i18n.contains("HOS_LANGUAGE"),
+        "the game's own switch is not followed"
+    );
+    assert!(
+        i18n.contains("set_game_language"),
+        "the game's language cannot be saved"
+    );
+    assert!(
+        i18n.contains("const std::string& game_language()"),
+        "the menu's Auto has no game language"
+    );
+    assert!(
+        i18n.contains("int lang_now()"),
+        "the menu's language is not looked up"
+    );
+    assert!(
+        i18n.contains("chosen_lang()"),
+        "the chosen language is not kept apart from the drawn one"
+    );
+    assert!(
+        i18n.contains("no_font"),
+        "a script without a font does not fall back"
+    );
+    assert!(
+        i18n.contains("return s;"),
+        "a missing text does not fall back to English"
+    );
 
     assert!(ui.contains("i18n::tr(t)"), "ui::text does not translate");
     assert!(ui.contains("inline ImVec2 size_of") && ui.contains("i18n::tr(t)"));
     assert!(ui.contains("inline float para") && ui.contains("i18n::tr(t)"));
     assert!(ui.contains("inline void spaced") && ui.contains("i18n::tr(t)"));
-    assert!(imgui.contains("script_fonts(i18n::lang_code())"), "the menu's script is not merged in");
-    assert!(imgui.contains("i18n::font_missing(lang)"), "a missing font is not reported");
-    assert!(font.contains("read_script"), "the game's fonts for other scripts cannot be read");
+    assert!(
+        imgui.contains("script_fonts(i18n::lang_code())"),
+        "the menu's script is not merged in"
+    );
+    assert!(
+        imgui.contains("i18n::font_missing(lang)"),
+        "a missing font is not reported"
+    );
+    assert!(
+        font.contains("read_script"),
+        "the game's fonts for other scripts cannot be read"
+    );
     assert!(progress.contains("\"%s / %s shaders\""));
     assert!(progress.contains("\"%s / %s pipelines\""));
-    assert!(menu.contains("i18n::tr(fps_sub)"), "the frame generation line is not translated");
-    assert!(menu.contains("i18n::tr(fps_low_text)"), "the 1% low is not translated");
-    assert!(menu.contains("i18n::tr(name)"), "the Breakdown's names are not translated");
-    assert!(menu.contains("\"Step 1 of 2\"") && menu.contains("\"Step 2 of 2\""), "the start-up step is not translated");
+    assert!(
+        menu.contains("i18n::tr(fps_sub)"),
+        "the frame generation line is not translated"
+    );
+    assert!(
+        menu.contains("i18n::tr(fps_low_text)"),
+        "the 1% low is not translated"
+    );
+    assert!(
+        menu.contains("i18n::tr(name)"),
+        "the Breakdown's names are not translated"
+    );
+    assert!(
+        menu.contains("\"Step 1 of 2\"") && menu.contains("\"Step 2 of 2\""),
+        "the start-up step is not translated"
+    );
 }
 
 fn compiler() -> Option<String> {
-    let candidates = std::env::var("CXX")
-        .ok()
-        .into_iter()
-        .chain(["c++".into(), "g++".into(), "clang++".into()]);
+    let candidates =
+        std::env::var("CXX")
+            .ok()
+            .into_iter()
+            .chain(["c++".into(), "g++".into(), "clang++".into()]);
     for candidate in candidates {
         if Command::new(&candidate)
             .arg("--version")
@@ -589,7 +699,11 @@ fn build_fixture() -> (PathBuf, PathBuf) {
     fs::write(stub.join("vk_menu.h"), STUB_MENU).unwrap();
     fs::write(stub.join("vk_paths.h"), STUB_PATHS).unwrap();
     // (the real lookup, copied so its quote includes find the stubs before gpu/vk's own vk_menu.h)
-    fs::copy(root().join("gpu/vk/vk_menu_i18n.cpp"), dir.join("vk_menu_i18n.cpp")).unwrap();
+    fs::copy(
+        root().join("gpu/vk/vk_menu_i18n.cpp"),
+        dir.join("vk_menu_i18n.cpp"),
+    )
+    .unwrap();
     let exe = dir.join("i18n-test");
     let status = Command::new(&compiler)
         .args(["-std=c++20", "-O0", "-I"])
@@ -635,7 +749,10 @@ fn the_lookup_translates_formats_and_falls_back_to_english() {
     assert_eq!(lines[2], "jogo 60", "a printf format is translated");
     assert_eq!(lines[3], "2 de 5", "a format with two numbers");
     assert_eq!(lines[4], "Requer reinício: ", "the restart line's piece");
-    assert_eq!(lines[5], "12,345 / 38,809 shaders", "the start-up screen's count line");
+    assert_eq!(
+        lines[5], "12,345 / 38,809 shaders",
+        "the start-up screen's count line"
+    );
     assert_eq!(lines[6], "", "an empty text");
 
     let (tables, langs) = catalog();
@@ -646,7 +763,11 @@ fn the_lookup_translates_formats_and_falls_back_to_english() {
         "Spanish (Latin America) now has Audio: pick another missing key"
     );
     let out = run(&exe, &dir, &["lookup-lang", "3", "Audio"]);
-    assert_eq!(out.trim_end(), "Audio", "a missing key falls back to English");
+    assert_eq!(
+        out.trim_end(),
+        "Audio",
+        "a missing key falls back to English"
+    );
     let out = run(&exe, &dir, &["lookup-lang", "2", "Off"]);
     assert_eq!(out.trim_end(), "Desligado", "a key the table has");
     fs::remove_dir_all(dir).ok();
@@ -671,10 +792,18 @@ fn auto_follows_the_game_language_and_the_plural_forms() {
 
     // (the restart line's plural forms: ru 1/2-4/5+, pl 1/2-4/5+; menu_lang 10 is ru, 9 is pl)
     for (n, want) in [("1", "0"), ("2", "1"), ("5", "2"), ("11", "2"), ("21", "0")] {
-        assert_eq!(run(&exe, &dir, &["plural", "10", n]).trim_end(), want, "ru plural {n}");
+        assert_eq!(
+            run(&exe, &dir, &["plural", "10", n]).trim_end(),
+            want,
+            "ru plural {n}"
+        );
     }
     for (n, want) in [("1", "0"), ("2", "1"), ("5", "2"), ("12", "2"), ("22", "1")] {
-        assert_eq!(run(&exe, &dir, &["plural", "9", n]).trim_end(), want, "pl plural {n}");
+        assert_eq!(
+            run(&exe, &dir, &["plural", "9", n]).trim_end(),
+            want,
+            "pl plural {n}"
+        );
     }
     fs::remove_dir_all(dir).ok();
 }
