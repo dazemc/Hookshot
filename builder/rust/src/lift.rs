@@ -664,7 +664,9 @@ impl<'a, C: Code> Lifter<'a, C> {
                     .reaching(br_pc, Loc::Reg(reg), 50000, 0)
                     .into_iter()
                     .collect();
-                tables.extend(self.function_constants(br_pc, reg));
+                if tables.is_empty() {
+                    tables.extend(self.function_constants(br_pc, reg));
+                }
                 if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
                     tables.push(hoisted);
                 }
@@ -678,7 +680,9 @@ impl<'a, C: Code> Lifter<'a, C> {
                         .reaching(br_pc, Loc::Reg(reg), 50000, 0)
                         .into_iter()
                         .collect();
-                    tables.extend(self.function_constants(br_pc, reg));
+                    if tables.is_empty() {
+                        tables.extend(self.function_constants(br_pc, reg));
+                    }
                     if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
                         tables.push(hoisted);
                     }
@@ -795,6 +799,15 @@ impl<'a, C: Code> Lifter<'a, C> {
             "void f_{entry:08x}(Ctx *__restrict A64_NOESC c) {{"
         )];
         let pcs: Vec<u64> = body.keys().copied().collect();
+        let mut frame = true;
+        for (index, pc) in pcs.iter().copied().enumerate() {
+            if matches!(body[&pc], Kind::Op) {
+                let text = texts.get(index).map(String::as_str).unwrap_or("");
+                if frame && !crate::text::fp_is_frame(text) {
+                    frame = false;
+                }
+            }
+        }
         let dead = self.dead_flags(entry, body, &pcs, texts);
         let dirty = self.dirty_regs(entry, body, &pcs, texts);
         for (index, pc) in pcs.iter().copied().enumerate() {
