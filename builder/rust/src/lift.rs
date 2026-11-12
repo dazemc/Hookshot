@@ -53,6 +53,7 @@ pub struct Lifter<'a, C: Code> {
     pub labels: BTreeMap<u64, HashSet<u64>>,
     pub jt: BTreeMap<u64, Vec<u64>>,
     pub jt_missing: BTreeMap<u64, u8>,
+    pub plt: BTreeMap<u64, (u64, u64)>,
     pub stats: BTreeMap<&'static str, usize>,
 }
 
@@ -69,6 +70,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             labels: BTreeMap::new(),
             jt: BTreeMap::new(),
             jt_missing: BTreeMap::new(),
+            plt: BTreeMap::new(),
             stats: BTreeMap::new(),
         }
     }
@@ -110,8 +112,15 @@ impl<'a, C: Code> Lifter<'a, C> {
                 self.labels.insert(entry, labels);
             }
         }
+        let entries: Vec<u64> = self.funcs.keys().copied().collect();
+        for entry in entries {
+            if let Some(target) = self.plt_target(entry) {
+                self.plt.insert(entry, target);
+            }
+        }
         self.stats.insert("jump_tables", self.jt.len());
         self.stats.insert("jt_missing", self.jt_missing.len());
+        self.stats.insert("plt_stubs", self.plt.len());
     }
 
     fn function_extent(&self, pc: u64) -> (u64, u64) {
@@ -172,10 +181,31 @@ impl<'a, C: Code> Lifter<'a, C> {
         }
     }
 
-    fn function_constant(&self, br_pc: u64, reg: u8) -> Option<u64> {
+    fn plt_target(&self, entry: u64) -> Option<(u64, u64)> {
+        let mut words = [0u32; 4];
+        for (i, word) in words.iter_mut().enumerate() {
+            *word = self.code.word(entry + 4 * i as u64)?;
+        }
+        if words[0] & 0x9F00001F != 0x90000010
+            || words[1] & 0xFFC003FF != 0xF9400211
+            || words[2] & 0xFFC003FF != 0x91000210
+            || words[3] != 0xD61F0220
+        {
+            return None;
+        }
+        let imm = ((words[0] >> 3) & 0x1FFFFC) | ((words[0] >> 29) & 3);
+        let slot = (entry & !0xFFF)
+            .wrapping_add((a64::sx(imm, 21) << 12) as u64)
+            .wrapping_add(((words[1] >> 10) & 0xFFF) as u64 * 8);
+        let bytes = self.code.read(slot, 8)?;
+        let target = u64::from_le_bytes(bytes.try_into().ok()?);
+        self.entries.contains(&target).then_some((target, slot))
+    }
+
+    fn function_constants(&self, br_pc: u64, reg: u8) -> Vec<u64> {
         let (lo, hi) = self.function_extent(br_pc);
         if hi.saturating_sub(lo) > 0x40000 {
-            return None;
+            return Vec::new();
         }
         let mut pages = std::collections::HashMap::new();
         let mut found = std::collections::HashSet::new();
@@ -192,7 +222,7 @@ impl<'a, C: Code> Lifter<'a, C> {
                     (pc & !0xFFF).wrapping_add((a64::sx(imm, 21) << 12) as u64),
                 );
             } else if word & 0xFF800000 == 0x91000000 {
-                if let Some(base) = pages.get(&((word >> 5) & 31)).copied() {
+                if let Some(base) = pages.get(&(((word >> 5) & 31) as u8)).copied() {
                     let value = base.wrapping_add(
                         (((word >> 10) & 0xFFF) << if word & (1 << 22) != 0 { 12 } else { 0 })
                             as u64,
@@ -204,7 +234,9 @@ impl<'a, C: Code> Lifter<'a, C> {
             }
             pc += 4;
         }
-        (found.len() == 1).then(|| *found.iter().next().unwrap())
+        let mut found: Vec<u64> = found.into_iter().collect();
+        found.sort_unstable();
+        found
     }
 
     fn hoisted_constant(&self, before: u64, reg: u8, scan: usize) -> Option<u64> {
@@ -363,19 +395,36 @@ impl<'a, C: Code> Lifter<'a, C> {
         else {
             return self.adr_targets(br_pc, reg);
         };
-        let table = match *table {
-            V::Const(table) => table,
-            V::Reg(reg) => self
-                .hoisted_constant(br_pc, reg, 1024)
-                .or_else(|| self.function_constant(br_pc, reg))?,
+        let tables: Vec<u64> = match *table {
+            V::Const(table) => vec![table],
+            V::Reg(reg) => {
+                let mut tables = self.function_constants(br_pc, reg);
+                if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
+                    tables.push(hoisted);
+                }
+                tables.sort_unstable();
+                tables.dedup();
+                tables
+            }
             V::Add { left, right, .. } => match (*left, *right) {
-                (V::Reg(reg), V::Const(offset)) => self
-                    .hoisted_constant(br_pc, reg, 1024)?
-                    .wrapping_add(offset),
+                (V::Reg(reg), V::Const(offset)) => {
+                    let mut tables = self.function_constants(br_pc, reg);
+                    if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
+                        tables.push(hoisted);
+                    }
+                    tables
+                        .iter()
+                        .map(|table| table.wrapping_add(offset))
+                        .collect()
+                }
                 _ => return self.adr_targets(br_pc, reg),
             },
             _ => return self.adr_targets(br_pc, reg),
         };
+        if tables.is_empty() {
+            self.jt_missing.insert(br_pc, reg);
+            return None;
+        }
         let Some(count) = bounds
             .get(&index)
             .copied()
@@ -390,28 +439,32 @@ impl<'a, C: Code> Lifter<'a, C> {
         };
         let (lo, hi) = self.function_extent(br_pc);
         let mut targets = Vec::new();
-        for i in 0..count {
-            let at = table + i as u64 * size as u64;
-            let Some(bytes) = self.code.read(at, size as usize) else {
-                break;
-            };
-            let entry = match (size, signed) {
-                (1, true) => bytes[0] as i8 as i64,
-                (1, false) => bytes[0] as i64,
-                (2, true) => i16::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                (2, false) => u16::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                (4, true) => i32::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                (4, false) => u32::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                (8, true) => i64::from_le_bytes(bytes.try_into().unwrap()),
-                (8, false) => u64::from_le_bytes(bytes.try_into().unwrap()) as i64,
-                _ => break,
-            };
-            let target = base.wrapping_add(entry as u64);
-            if !(lo <= target && target < hi && self.code.in_code(target)) {
-                break;
+        for table in tables {
+            for i in 0..count {
+                let at = table + i as u64 * size as u64;
+                let Some(bytes) = self.code.read(at, size as usize) else {
+                    break;
+                };
+                let entry = match (size, signed) {
+                    (1, true) => bytes[0] as i8 as i64,
+                    (1, false) => bytes[0] as i64,
+                    (2, true) => i16::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (2, false) => u16::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (4, true) => i32::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (4, false) => u32::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    (8, true) => i64::from_le_bytes(bytes.try_into().unwrap()),
+                    (8, false) => u64::from_le_bytes(bytes.try_into().unwrap()) as i64,
+                    _ => break,
+                };
+                let target = base.wrapping_add(entry as u64);
+                if !(lo <= target && target < hi && self.code.in_code(target)) {
+                    break;
+                }
+                targets.push(target);
             }
-            targets.push(target);
         }
+        targets.sort_unstable();
+        targets.dedup();
         if targets.is_empty() {
             self.jt_missing.insert(br_pc, reg);
             return None;
@@ -597,6 +650,7 @@ pub fn tables_json(exefs: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "functions": lift.funcs.len(),
         "jump_tables": lift.jt.len(),
+        "plt_stubs": lift.plt.len(),
         "jt_missing": lift.jt_missing.len(),
         "targets": lift.jt.values().map(Vec::len).sum::<usize>(),
         "stats": lift.stats,
