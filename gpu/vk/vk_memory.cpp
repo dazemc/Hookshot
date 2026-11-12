@@ -1031,13 +1031,19 @@ void shadow_drop_range(uint64_t lo, uint64_t hi) {   // (shadow_mu held)
 /// (the spans unused for 1800 presents dropped with their shadow pages; the rest published for the capture)
 void publish_tex_spans(uint64_t frame) {
     std::lock_guard lk(shadow_mu);
-    for (auto it = tex_spans.begin(); it != tex_spans.end();) {
-        if (frame > it->second.second + 1800) {
-            shadow_drop_range(it->first, it->second.first);
-            it = tex_spans.erase(it);
-            tex_spans_changed = true;
-        } else {
-            ++it;
+    // (a span ages by the present: looked over once a present, not at each of its ~20 submissions, which walked
+    // the ~300 spans every time, 1 ms a frame on a Steam Deck)
+    static uint64_t swept = ~0ull;
+    if (frame != swept) {
+        swept = frame;
+        for (auto it = tex_spans.begin(); it != tex_spans.end();) {
+            if (frame > it->second.second + 1800) {
+                shadow_drop_range(it->first, it->second.first);
+                it = tex_spans.erase(it);
+                tex_spans_changed = true;
+            } else {
+                ++it;
+            }
         }
     }
     if (!tex_spans_changed) return;
@@ -2138,6 +2144,7 @@ bool import_in_background(uint64_t guest, uint64_t size) {
     return true;
 }
 } // namespace
+bool pools_mirrored() { return mirror_on(); }
 uint64_t device_vram_bytes() {
     uint64_t vram = 0;
     for (uint32_t h = 0; h < dev.memory.memoryHeapCount; h++)
@@ -2313,9 +2320,10 @@ void mirror_sync(Pool& p) {
     std::vector<VkBufferCopy> runs;   // (from guest memory)
     std::map<VkBuffer, std::vector<VkBufferCopy>> cap_runs;   // (from the captures' copies)
     uint64_t run_lo = 0, run_hi = 0;
-    for (uint64_t page = p.lo >> kPageShift; page < (p.hi + 4095) >> kPageShift;) {
-        if (page % kRegionPages == 0 && region_gen[page / kRegionPages] <= p.synced_gen) {
-            page += kRegionPages;   // (a clean 2 MB region)
+    const uint64_t end_page = (p.hi + 4095) >> kPageShift;
+    for (uint64_t page = p.lo >> kPageShift; page < end_page;) {
+        if (region_gen[page / kRegionPages] <= p.synced_gen) {   // (a clean 2 MB region, or its rest when the pool starts in it)
+            page = std::min(end_page, (page / kRegionPages + 1) * kRegionPages);
             continue;
         }
         const uint32_t pg = page_gen(page);

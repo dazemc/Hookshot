@@ -50,6 +50,8 @@
 #include "vk_texture.h"
 #include "movie_upscale_policy.h"
 #include "skip_code.h"
+#include "fallback_depth_hold.h"   // (a mesh fallback's depth-only draws held while its colour draw builds)
+#include "pcache_read.h"          // (a pipeline cache's header checked before the rest of the file is read)
 #include "driver_faults.h"
 
 #include "shaders/clear_f_frag_spv.h"
@@ -721,30 +723,11 @@ std::atomic<int64_t> pcache_built_since_save{0};
 std::atomic<size_t> pcache_saved_size{0};
 /// A pipeline cache file's data, or nothing when it cannot be read or was made by another device or driver
 std::vector<uint8_t> pcache_file_read(const std::string& path) {
-    std::vector<uint8_t> data;
-    if (FILE* f = fopen(path.c_str(), "rb")) {
-        _fseeki64(f, 0, SEEK_END);
-        const int64_t sz = _ftelli64(f);
-        _fseeki64(f, 0, SEEK_SET);
-        if (sz > 32) {
-            data.resize((size_t)sz);
-            if (fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
-        }
-        fclose(f);
-    }
-    // (data of another device or driver is dropped before Vulkan sees it)
-    if (data.size() >= 32) {
-        uint32_t head_size, version, vendor, device;
-        std::memcpy(&head_size, data.data(), 4);
-        std::memcpy(&version, data.data() + 4, 4);
-        std::memcpy(&vendor, data.data() + 8, 4);
-        std::memcpy(&device, data.data() + 12, 4);
-        if (head_size < 32 || head_size > data.size() || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
-            vendor != dev.props.vendorID || device != dev.props.deviceID ||
-            std::memcmp(data.data() + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE))
-            data.clear();
-    }
-    return data;
+    pcache_read::Device at{dev.props.vendorID, dev.props.deviceID};
+    std::memcpy(at.uuid, dev.props.pipelineCacheUUID, VK_UUID_SIZE);
+    // (data of another device or driver is dropped before Vulkan sees it: by its 32-byte header, before the rest, hundreds of MB,
+    // is read. After a driver update every start would otherwise read the whole file only to drop it: pcache_read.h)
+    return pcache_read::read(path, at);
 }
 std::string pcache_dir;
 
@@ -2771,7 +2754,17 @@ VkDescriptorBufferInfo uniform_range(const NvnState& s, const Stage& st, uint32_
                 return {cur->stream, at, n};
             }
         // (RX_VK_UB_SNAPSHOT=1: the contents as they are now, in the stream, not the pool the GPU reads later)
-        static const bool snapshot = env_on("RX_VK_UB_SNAPSHOT");
+        // (on by default on Intel when the pools have no VRAM mirror (vk_memory.cpp mirror_on() off): the GPU then reads the
+        // game's memory itself when it runs the frame, and by then the game has written the next frame's uniforms over the ones
+        // submitted (the per-object matrices are in memory it reuses frame after frame). The depth prepass drew the Kokiri ground
+        // with other objects' matrices, out of sight: the depth there stayed far, and the fog pass painted sky over the ground
+        // (the white forest on Intel Core Ultra iGPUs, still there after the split-submission fence fix #2419). A mirror is made
+        // at the submission and does not see the rewrite. Other GPUs with no mirror (AMD APUs, GCN since #2343, RX_VK_MIRROR=0)
+        // keep the default off until it is measured there. RX_VK_UB_SNAPSHOT=0: off)
+        static const bool snapshot = [] {
+            const char *e = getenv("RX_VK_UB_SNAPSHOT");
+            return e ? env_on("RX_VK_UB_SNAPSHOT") : dev.props.vendorID == 0x8086 && !pools_mirrored();
+        }();
         BufferRef b = snapshot ? BufferRef{} : gpu_buffer_bind(u.addr, n, false);
         if (b && b.offset % align == 0) return {b.buffer, b.offset, n};
         const uint64_t at = stream_alloc(n, align);   // (unaligned or outside the pools: copied into the stream)
@@ -6292,6 +6285,43 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     if (told++ == 0) logf("vk: tree-shadow mask blend on #%u %ux%u, weight %.2f", tex->id, w, h, weight);
 }
 
+static bool writes_memory(const Program& p) {
+    for (const Stage& st : p.stages) {
+        const auto& info = st.info;
+        const auto written = [](const auto& ds) {
+            return std::any_of(ds.begin(), ds.end(), [](const auto& d) { return d.is_written; });
+        };
+        if (info.stores_global_memory || written(info.storage_buffers_descriptors) ||
+            written(info.image_buffer_descriptors) || written(info.image_descriptors))
+            return true;
+    }
+    return false;
+}
+
+// A mesh fallback's colour draws are left out until their pipelines build (minutes each on an Iris Xe), while the smaller
+// depth-only draws of the same culled list (same indirect arguments) are already built. Depth with no colour lets the sky show
+// through the grass, so a depth-only draw is held while its list's colour draw is (fallback_depth_hold.h).
+static fallback_hold::Role fallback_role_of(const Program& p, const NvnState& s, const Targets& at, const DrawArgs& d) {
+    static const bool on = !getenv("RX_VK_FALLBACK_DEPTH_HOLD") || atoi(getenv("RX_VK_FALLBACK_DEPTH_HOLD")) != 0;
+    if (!on) return fallback_hold::Role::None;
+    uint32_t wm = 0;
+    for (int i = 0; i < at.n; i++)
+        if (at.color[i]) wm |= target_write_mask(p, s, i);
+    return fallback_hold::role_of(d.indirect != 0, writes_memory(p), wm, at.depth != nullptr, s.ds.dw != 0);
+}
+static std::mutex fallback_held_mu;
+static fallback_hold::Held fallback_held;
+/// Marks the list's colour draw as left out (held) or recorded (!held) this frame.
+static void fallback_list_hold(uint64_t list, bool held) {
+    std::lock_guard lk(fallback_held_mu);
+    fallback_held.mark(list, texture_frame_no(), held);
+}
+/// True while the list's colour draw was left out in the last 120 frames (so a list no colour draw uses any more is released).
+static bool fallback_list_held(uint64_t list) {
+    std::lock_guard lk(fallback_held_mu);
+    return fallback_held.held(list, texture_frame_no());
+}
+
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     PROF_HOT(PROF_DRAW);
     FINE_N(FC_DRAWS, 1);
@@ -6449,19 +6479,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         pe = graphics_pipeline(p, s, at, topo, types);
     }
     if (!pe->ready.load(std::memory_order_acquire)) {
-        bool may_skip = !always_wait && targets_persistent(at);
-        if (may_skip)
-            for (const Stage& st : p.stages) {
-                const auto& info = st.info;
-                const auto written = [](const auto& ds) {
-                    return std::any_of(ds.begin(), ds.end(), [](const auto& d) { return d.is_written; });
-                };
-                if (info.stores_global_memory || written(info.storage_buffers_descriptors) ||
-                    written(info.image_buffer_descriptors) || written(info.image_descriptors)) {
-                    may_skip = false;
-                    break;
-                }
-            }
+        const bool may_skip = !always_wait && targets_persistent(at) && !writes_memory(p);
         if (may_skip) return void(st_pending_skips++);
         wait_for(pe->ready);
     }
@@ -6637,7 +6655,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             mesh_args = {mesh_args_buffer, (VkDeviceSize)mesh_args_at * 16, (VkDeviceSize)n * 16, 0};
         }
     }
-    if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();
+    const fallback_hold::Role fallback_role = p.fallback && d.mesh ? fallback_role_of(p, s, at, d) : fallback_hold::Role::None;
+    if (fallback_role == fallback_hold::Role::DepthOnly && fallback_list_held(d.indirect)) SKIP_HERE();
+    if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) {
+        if (fallback_role == fallback_hold::Role::Colour && p.compute_state.load(std::memory_order_acquire) == 1)
+            fallback_list_hold(d.indirect, true);
+        SKIP_HERE();
+    }
+    if (fallback_role == fallback_hold::Role::Colour) fallback_list_hold(d.indirect, false);
     {
         FINE_SCOPE(FT_HAZARD);
         begin_pass(cmd, at);

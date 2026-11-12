@@ -725,12 +725,17 @@ uint32_t descriptor_handle(const NvnState& s, const Stage& st, const Shader::Ima
 uint8_t texture_answer(uint32_t handle) {
     if (!handle) return 0xFF;
     // (by the texture slot, until a slot is registered anew: variant checks ask on every draw)
-    static thread_local std::unordered_map<uint32_t, std::pair<uint32_t, uint8_t>> known;   // slot -> (version, answer)
+    // (hookshot, fps: a flat table by slot, not a hash map: every draw's variant check asks this for each texture it samples,
+    // and the map's lookups were ~16% of the back end's time on the replay thread. Slots are the texture pool's indices, ~33k in OoT)
+    struct Known { uint32_t version; uint8_t answer, set; };
+    static thread_local std::vector<Known> known;
     const uint32_t id = handle & 0xFFFFF;
     const uint32_t version = texture_slot_version((int)id);
-    if (auto it = known.find(id); it != known.end() && it->second.first == version) return it->second.second;
+    if (id >= known.size()) known.resize(std::min<size_t>(std::max<size_t>(id + 1, known.size() * 2), 1u << 20));
+    Known& k = known[id];
+    if (k.set && k.version == version) return k.answer;
     const uint8_t a = (uint8_t)((uint8_t)handle_texture_type(handle) | (handle_is_integer(handle) ? 0x80 : 0));
-    known[id] = {version, a};
+    k = {version, a, 1};
     return a;
 }
 /// What the bound textures answer now, for a program whose translation asked about them
@@ -1144,6 +1149,7 @@ uint64_t translator_stamp() {
         using namespace Shader::Backend::SPIRV;
         // (and the vendor fixes of the translation, vk_vendor.h: out-of-bounds fetches, NaN tests, the gather offset)
         const uint32_t flags = (position_invariant ? 1u : 0u) | (frag_nan_guard ? 2u : 0u) | (mma_software ? 4u : 0u) |
+                               (global_table_loop ? 8u : 0u) |
                                (fetch_bounds ? 16u : 0u) | (nan_bits ? 32u : 0u) |
                                (profile().need_gather_subpixel_offset ? 64u : 0u) | (fetch_bounds_buffers ? 128u : 0u);
         add(&flags, sizeof flags);
