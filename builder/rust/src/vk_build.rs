@@ -1833,6 +1833,17 @@ mod tests {
     }
 
     #[test]
+    fn reflex_tags_each_submit_with_its_game_frame() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let reflex = fs::read_to_string(root.join("gpu/vk/vk_reflex.cpp")).unwrap();
+        let replay = fs::read_to_string(root.join("gpu/vk/vk_replay.cpp")).unwrap();
+        assert!(reflex.contains("const void* reflex_submit_id(const void* next, uint64_t frame)"));
+        assert!(reflex.contains("RX_VK_REFLEX_SUBMIT_IDS"));
+        assert_eq!(replay.matches("si.pNext = reflex_submit_id(").count(), 4);
+        assert!(replay.contains("pend.reflex = reflex_frame()"));
+    }
+
+    #[test]
     fn the_win32_audio_ring_drops_the_oldest_buffer() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let posix = fs::read_to_string(root.join("host/posix/win32_posix.c")).unwrap();

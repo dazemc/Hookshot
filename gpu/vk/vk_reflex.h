@@ -47,5 +47,10 @@ extern thread_local uint64_t reflex_present_frame;
 uint64_t reflex_frame();
 /// Frame generation: the game frame's rendering submitted (do_present, the set queued): its submission's end
 void reflex_game_submitted();
+/// A queue submit's VkLatencySubmissionPresentIdNV, chained in front of `next` for VkSubmitInfo2's pNext: the game frame its
+/// GPU work belongs to, so the driver times that frame's rendering from it. frame: kReflexThisFrame the frame being made; a
+/// frame reflex_frame gave (a batch, frame generation's set); 0 none. `next` itself when Reflex is off, the frame is not
+/// marked or was presented already, or RX_VK_REFLEX_SUBMIT_IDS=0 (or false, off, no)
+const void* reflex_submit_id(const void* next, uint64_t frame = kReflexThisFrame);
 
 } // namespace mkwvk

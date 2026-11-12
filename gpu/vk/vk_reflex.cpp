@@ -228,6 +228,24 @@ uint64_t reflex_frame() {
     return on() && r.frame_marked ? r.id : 0;
 }
 
+const void* reflex_submit_id(const void* next, uint64_t frame) {
+    static const char* const e = getenv("RX_VK_REFLEX_SUBMIT_IDS");
+    static const bool off = e && env_value_off(e);   // (=0, false, off or no)
+    if (off) return next;
+    Reflex& r = rx();
+    std::lock_guard lk(r.mu);
+    if (!on()) return next;
+    uint64_t id = frame;
+    if (id == kReflexThisFrame) {
+        if (!r.frame_marked) return next;
+        id = r.id;
+    }
+    if (!id || id <= r.last_present_id) return next;
+    thread_local VkLatencySubmissionPresentIdNV s{VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV};
+    s.pNext = next, s.presentID = id;
+    return &s;
+}
+
 void reflex_game_submitted() {
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
