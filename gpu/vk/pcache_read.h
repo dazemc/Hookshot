@@ -11,7 +11,18 @@
 #include <string>
 #include <vector>
 
-#include <vulkan/vulkan.h>
+// (the fixture in tests/ compiles this without the Vulkan SDK: only the cache header's constants are needed here)
+#if defined(__has_include)
+#  if __has_include(<vulkan/vulkan.h>)
+#    include <vulkan/vulkan.h>
+#  endif
+#endif
+#ifndef VK_UUID_SIZE
+#define VK_UUID_SIZE 16
+#endif
+#ifndef VK_PIPELINE_CACHE_HEADER_VERSION_ONE
+#define VK_PIPELINE_CACHE_HEADER_VERSION_ONE 1
+#endif
 
 namespace pcache_read {
 
