@@ -26,7 +26,9 @@ program, the console's system software is reimplemented, and the graphics are re
 **on your PC, from your own copy of the game**.
 
 This is **Hookshot-rs**, the build-system fork of [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot). It keeps
-the game and renderer and replaces the builder with one Flutter desktop app and one Rust engine.
+the game and renderer and replaces the builder with one Flutter desktop app and one Rust engine. Every build stage the
+app runs is Rust and the app never invokes Python; the measured build times are in
+[docs/build-performance-report.md](docs/build-performance-report.md).
 
 > [!IMPORTANT]
 > This repository **does not contain the game, keys or an executable**, and it does not explain how to get them. You
@@ -39,7 +41,7 @@ the game and renderer and replaces the builder with one Flutter desktop app and 
 
 ## Download and play
 
-The pre-release `v2.2.0-rs.9` is built entirely by the Flutter + Rust pipeline: the Windows setup and the Linux
+The pre-release `v2.2.0-rs.10` is built entirely by the Flutter + Rust pipeline: the Windows setup and the Linux
 AppImage below. The AppImage is a development image, so building a game from it needs your distribution's clang and
 Vulkan, SPIR-V and VMA headers; a source build needs nothing extra.
 
@@ -156,7 +158,10 @@ cd builder/rust && cargo test --workspace
 cd builder/flutter && flutter test && flutter analyze
 ```
 
-Never commit game files, keys or generated game data. [CONTRIBUTING.md](CONTRIBUTING.md) has the full rules, and
+Never commit game files, keys or generated game data. New here? Start with
+[docs/good-first-issues.md](docs/good-first-issues.md) and the open `good first issue` labels; the
+[contributor discussion](https://github.com/dazemc/Hookshot-rs/discussions/8) has the build-time numbers and the
+upstream reference PR. [CONTRIBUTING.md](CONTRIBUTING.md) has the full rules, and
 [docs/fork.md](docs/fork.md) has the architecture and porting status.
 
 ## Credits
