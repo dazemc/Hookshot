@@ -28,7 +28,12 @@ LONG64 InterlockedCompareExchange64(volatile LONG64 *p, LONG64 value, LONG64 exp
     return old;
 }
 static int64_t now_ns = 10000000000LL, sampling;
+typedef long LONG;   /* (the note layer's words: production gets it from windows.h) */
 static int key_bind[HOS_KEY_N][2], pad_raw_now;   /* (the keys-only controls after the Switch's buttons) */
+static int pad_after_menu;
+static LONG oc_consumed_keys[256];
+static uint64_t oc_consumed_pads;
+volatile uint64_t hos_oc_note_bits; volatile int hos_oc_wait; volatile int hos_oc_last_kind; volatile unsigned hos_oc_beat;
 static unsigned char *memory;
 static char last_log[256];
 static int origin_logs, script_logs;
@@ -48,6 +53,7 @@ int64_t hos_now_ns(void) { return now_ns; }
 void hos_prompts_live(void) {}   /* (host/prompts.c: the button prompts follow the controls) */
 volatile int hos_prompts_row = -1;   /* (host/prompts.c: "!prompts" in the live input) */
 void hos_bind(int set, int button, int slot, int code) { (void)set, (void)button, (void)slot, (void)code; }   /* ("!bind") */
+int hos_binding(int set, int button, int slot) { (void)set, (void)button, (void)slot; return -1; }   /* (the note rows unset) */
 void hos_log(const char *format, ...) {
     va_list args; va_start(args, format); vsnprintf(last_log, sizeof last_log, format, args); va_end(args);
     if (!strncmp(last_log, "hid: input script of ", 21)) {
@@ -232,6 +238,7 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(name, "script-background")) CHECK(strstr(last_log, "game window not in front"));
     if (front) CHECK(pad_merges > 0 && key_queries > 0 && mouse_queries > 0);
+    CHECK(oc_consumed_pads == 0);   /* hos_oc_wait stays 0: the ocarina note layer took no pad button */
     CHECK(focus_queries > 0);
     printf("PASS: actual scripted parse/merge/Npad route %s\n", name);
     free(memory);

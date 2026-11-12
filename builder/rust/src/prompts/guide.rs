@@ -1611,4 +1611,38 @@ mod tests {
         let wanted: Vec<u8> = levels.iter().copied().cycle().take(16).collect();
         assert_eq!(mask.data, wanted);
     }
+
+    #[test]
+    fn every_faces_leader_lines_end_on_their_parts_edge() {
+        // (as the game's own lines do: 2 pixels into a control's part; the shoulders' point has no size, so its centre)
+        let stays = Mask::new(1600, 1000);
+        let mut ends = 0;
+        let faces_with_guides = std::iter::once("switch").chain(faces::FACES.iter().map(|face| face.name));
+        for face in faces_with_guides {
+            let where_ = faces::parts(face).unwrap_or_else(|| panic!("{face}"));
+            for (bar, row, pads) in [
+                (0, 333, ["ltrigger", "lshoulder", "back"]),
+                (1, 558, ["rtrigger", "rshoulder", "start"]),
+            ] {
+                for pad in pads {
+                    let way = route((1600, 1000), bar, row, &where_, pad, &stays, None)
+                        .unwrap_or_else(|| panic!("{face}: no line from bar {bar} to {pad}"));
+                    let part = *where_.get(pad).unwrap();
+                    let (x, y, r) = match part {
+                        Part::Circle { x, y, r } => at(x, y, r),
+                        Part::Box { .. } => panic!("{face}: {pad} is not a control"),
+                    };
+                    let (ex, ey) = *way.last().unwrap();
+                    let off = ((ex - x).powi(2) + (ey - y).powi(2)).sqrt();
+                    let wanted = (r - 2.0).max(0.0);
+                    assert!(
+                        (off - wanted).abs() < 1.0,
+                        "{face}: the line to {pad} ends {off:.1} pixels from its centre, its edge is {r:.1} (want {wanted:.1})"
+                    );
+                    ends += 1;
+                }
+            }
+        }
+        assert_eq!(ends, (1 + faces::FACES.len()) * 6);
+    }
 }

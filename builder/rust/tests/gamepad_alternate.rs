@@ -241,6 +241,16 @@ int main(int argc, char **argv) {
     CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_A, 2) == -1);   /* (no third slot) */
     CHECK(hos_binding(HOS_BIND_PAD, HOS_KEY_MOVE_UP, 0) == -1);
 
+    /* (the keys-only controls are bindings too: the file's, then the defaults; the mouse's buttons as before) */
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_UP, 0) == 'Z');
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_KEY_MOVE_LEFT, 0) == 'A');
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_Y, 0) == VK_LBUTTON && hos_binding(HOS_BIND_KEY, HOS_SW_ZL, 1) == VK_RBUTTON);
+    /* a key taken for a keys-only control leaves the button that had it; no gamepad input is taken for it */
+    hos_bind(HOS_BIND_KEY, HOS_KEY_CAM_UP, 0, 'E');
+    CHECK(hos_binding(HOS_BIND_KEY, HOS_SW_A, 0) == 0 && hos_binding(HOS_BIND_KEY, HOS_KEY_CAM_UP, 0) == 'E');
+    hos_bind(HOS_BIND_PAD, HOS_KEY_CAM_UP, 0, HOS_PAD_SOUTH);
+    CHECK(hos_binding(HOS_BIND_PAD, HOS_SW_B, 0) == HOS_PAD_SOUTH);
+
     const uint64_t face = 1ULL << HOS_PAD_EAST, paddle = 1ULL << HOS_PAD_RPADDLE1, a = 1ULL << HOS_SW_A;
     CHECK(bound_pad_buttons(face) == a && bound_pad_buttons(paddle) == a && bound_pad_buttons(face | paddle) == a);
     CHECK(bound_pad_buttons(1ULL << HOS_PAD_RTRIGGER) == 1ULL << HOS_SW_ZR);

@@ -120,6 +120,142 @@ fn the_shader_pass_is_wired_to_translation_and_the_program_key() {
     assert!(provenance.contains("main+0x65234C"));
 }
 
+type M3 = [[f64; 3]; 3];
+
+fn mul(m: M3, v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+fn matmul(a: M3, b: M3) -> M3 {
+    let mut out = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            out[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    out
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    (0..3).map(|i| a[i] * b[i]).sum()
+}
+
+/// The floats of a `inline constexpr float name[..] = { ... };` in psychov35.h.
+fn header_floats(header: &str, name: &str) -> Vec<f64> {
+    let start = header
+        .find(name)
+        .unwrap_or_else(|| panic!("missing {name}"));
+    let value = start + header[start..].find('=').expect("value") + 1;
+    let end = value + header[value..].find(';').expect("array end");
+    let body = &header[value..end];
+    let mut out = Vec::new();
+    let mut at = 0;
+    while let Some(open) = body[at..].find(|c: char| c.is_ascii_digit() || c == '-') {
+        let from = at + open;
+        let token: String = body[from..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E'))
+            .collect();
+        if let Ok(value) = token.trim_end_matches('f').parse::<f64>() {
+            out.push(value);
+        }
+        at = from + token.len().max(1);
+    }
+    out
+}
+
+#[test]
+fn the_tone_mappers_matrices_are_bt709s_own() {
+    // (upstream's test_psychov35.py header checks: the reduced form's matrices are the BT.709, BT.2020 and cone
+    // definitions, not tuned constants; a wrong matrix would still pass the pass-versus-header fixture)
+    let header = source("gpu/vk/eden/shader_recompiler/ir_opt/psychov35.h");
+    let bt709_to_xyz: M3 = [
+        [0.4123907993, 0.3575843394, 0.1804807884],
+        [0.2126390059, 0.7151686788, 0.0721923154],
+        [0.0193308187, 0.1191947798, 0.9505321522],
+    ];
+    let xyz_to_bt709: M3 = [
+        [3.2409699419, -1.5373831776, -0.4986107603],
+        [-0.9692436363, 1.8759675015, 0.0415550574],
+        [0.0556300797, -0.2039769589, 1.0569715142],
+    ];
+    let xyz_to_bt2020: M3 = [
+        [1.7166511880, -0.3556707838, -0.2533662814],
+        [-0.6666843518, 1.6164812366, 0.0157685458],
+        [0.0176398574, -0.0427706133, 0.9421031212],
+    ];
+    let xyz_to_lms: M3 = [
+        [0.2670502842655792, 0.8471990148492798, -0.03470416612462053],
+        [-0.38706882411220156, 1.165429935890458, 0.10302286696614202],
+        [0.026727793989083093, -0.02729131667566509, 0.5333267257603284],
+    ];
+    let det = dot(xyz_to_lms[0], cross(xyz_to_lms[1], xyz_to_lms[2]));
+    let cols = [
+        cross(xyz_to_lms[1], xyz_to_lms[2]),
+        cross(xyz_to_lms[2], xyz_to_lms[0]),
+        cross(xyz_to_lms[0], xyz_to_lms[1]),
+    ];
+    let mut lms_to_xyz = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            lms_to_xyz[i][j] = cols[j][i] / det;
+        }
+    }
+    let bt709_to_lms = matmul(xyz_to_lms, bt709_to_xyz);
+    let lms_to_bt709 = matmul(xyz_to_bt709, lms_to_xyz);
+    let lms_to_bt2020 = matmul(xyz_to_bt2020, lms_to_xyz);
+    let white = mul(bt709_to_lms, [1.0, 1.0, 1.0]);
+    let mut ratio = [[0.0; 3]; 3];
+    let mut to_2020 = [[0.0; 3]; 3];
+    let mut to_709 = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            ratio[i][j] = bt709_to_lms[i][j] / (0.18 * white[i]);
+            to_2020[i][j] = lms_to_bt2020[i][j] * white[j];
+            to_709[i][j] = lms_to_bt709[i][j] * white[j];
+        }
+    }
+    for (name, wanted) in [
+        ("kToRatio[3][3]", ratio),
+        ("kToBt2020[3][3]", to_2020),
+        ("kToBt709[3][3]", to_709),
+    ] {
+        let got = header_floats(&header, name);
+        let flat: Vec<f64> = wanted.iter().flatten().copied().collect();
+        assert_eq!(got.len(), 9, "{name} is not a 3x3 matrix");
+        for (got, want) in got.iter().zip(&flat) {
+            assert!(
+                (got - want).abs() <= 1e-7 * want.abs().max(1.0),
+                "{name}: {got}, not {want}"
+            );
+        }
+    }
+    let luminance = header_floats(&header, "kLuminance[3]");
+    assert_eq!(luminance, bt709_to_xyz[1], "kLuminance is not BT.709's Y row");
+
+    // (the midgray's exposure is ACES(0.18) / 0.18, the game's own fit)
+    let aces = |m: f64| (m * (2.51 * m + 0.03) / (m * (2.43 * m + 0.59) + 0.14)).clamp(0.0, 1.0);
+    let exposure = header_floats(&header, "kReferenceExposure");
+    assert!(
+        (exposure[0] - aces(0.18) / 0.18).abs() < 1e-6,
+        "kReferenceExposure is not ACES(0.18) / 0.18"
+    );
+    let hue = header_floats(&header, "kHueClip");
+    assert_eq!(hue, [0.5]);
+}
+
 #[test]
 fn the_tone_mapper_checks_need_no_game_data() {
     // (every file this feature adds or changes is text; none is a dump, a key, or made from one)
