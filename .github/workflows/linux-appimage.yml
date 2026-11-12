@@ -65,24 +65,35 @@ jobs:
             done
           }
           base_packages() {
+            # (no software-properties-common: its dbus dependency's postinst hung for minutes in this container,
+            # and toolchain_packages adds the PPA without add-apt-repository's Launchpad REST calls)
             apt-get update &&
-              apt-get install -y --no-install-recommends software-properties-common gpg-agent
+              apt-get install -y --no-install-recommends ca-certificates curl gpg
           }
           toolchain_packages() {
-            # Enrollment can leave a source without its key after a network failure. Repair it before refreshing
-            # indexes that depend on that key; retrying the base refresh first would stop at NO_PUBKEY (#2266).
-            # --no-update only separates enrollment from the explicit, signed index refresh immediately afterward.
             # (libstdc++ 13, from the toolchain PPA: C++20 <format>; linked in statically)
-            # Launchpad metadata connections can hang past the entire job's hour. Give each retry a real chance;
-            # terminate enrollment after three minutes, then kill it if termination itself stalls.
-            timeout --kill-after=5s 180s add-apt-repository -y --no-update ppa:ubuntu-toolchain-r/test &&
-              apt-get update &&
-              apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev &&
-              apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
-              build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \
-              libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxinerama-dev \
-              libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
-              libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev
+            # add-apt-repository asks Launchpad's REST API for the signing key. That API returned 500 and hung
+            # (GPGKeyTemporarilyNotFoundError) until the three-minute timeout, three times in a row, on 2026-11-12.
+            # Add the signed source and its pinned key directly instead; apt still verifies every package.
+            key=C8EC952E2A0E1FBDC5090F6A2C277A0A352154E5
+            keyfile=/etc/apt/trusted.gpg.d/ubuntu-toolchain-r-test.gpg
+            keytmp=$(mktemp)
+            curl -fsSL --proto '=https' --tlsv1.2 --retry 5 --retry-delay 5 --connect-timeout 15 --max-time 120 \
+              "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$key" -o "$keytmp" &&
+              gpg --show-keys --with-colons "$keytmp" 2>/dev/null | grep -qx "fpr:::::::::$key:" &&
+              gpg --dearmor <"$keytmp" >"$keyfile" &&
+              rm -f "$keytmp" &&
+              printf '%s\n' 'deb https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu/ jammy main' \
+                >/etc/apt/sources.list.d/ubuntu-toolchain-r-test.list &&
+              apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update &&
+              apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
+                install -y --no-install-recommends g++-13 libstdc++-13-dev &&
+              apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 \
+                install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
+                build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \
+                libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxinerama-dev \
+                libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
+                libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev
           }
           retry_packages base_packages
           retry_packages toolchain_packages
