@@ -91,13 +91,17 @@ fn a_lost_device_reports_the_fault_without_nvidias_checkpoints() {
     // Intel. Where they can, the report stays behind RX_VK_FAULT_INFO (the NVIDIA hang).
     let checkpoints = block(&draw, "void checkpoints_report() {");
     assert!(
-        checkpoints.contains(
-            "struct FaultLast { ~FaultLast() { if ((!dev.checkpoints && !marker_words) || env_on(\"RX_VK_FAULT_INFO\")) device_fault_report(); } } fault_last;"
-        ),
+        checkpoints.contains("const bool fault_auto = device_fault_query::automatic("),
+        "the fault report no longer decides whether it is automatic"
+    );
+    assert!(
+        checkpoints.contains("struct FaultLast {")
+            && checkpoints.contains("~FaultLast() { if (wanted) device_fault_report(); }")
+            && checkpoints.contains("} fault_last{fault_forced || fault_auto};"),
         "the fault report is not automatic where there is nothing else to read, or lost its RX_VK_FAULT_INFO guard"
     );
     assert!(
-        checkpoints.contains("if (env_on(\"RX_VK_FAULT_INFO\")) device_fault_report();"),
+        checkpoints.contains("if (fault_forced) device_fault_report();"),
         "the opt-in early fault read is gone"
     );
     assert!(
