@@ -1,0 +1,42 @@
+# The documentation checks that need no game, GPU or Python: every relative Markdown link resolves, and the
+# contributor docs keep the app on the Rust/Flutter path. Runs only when a Markdown file or this workflow changes, so a
+# docs-only pull request does not start the shader fixtures. The same tests run in the Rust job of
+# source-regressions.yml when the engine changes.
+name: Docs checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Markdown links and contributor path
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: builder/rust
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Docs checks
+        run: cargo test --test docs
