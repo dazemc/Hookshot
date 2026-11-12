@@ -65,10 +65,7 @@ fn file_stat(path: &Path) -> Option<FileStat> {
         meta.ino()
     };
     #[cfg(windows)]
-    let id = {
-        use std::os::windows::fs::MetadataExt;
-        meta.file_index().unwrap_or(0)
-    };
+    let id = 0; // (file_index is unstable on Windows; size + mtime + the racy window are the guard)
     #[cfg(not(any(unix, windows)))]
     let id = 0;
     Some(FileStat {

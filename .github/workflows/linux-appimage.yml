@@ -134,6 +134,7 @@ jobs:
       # repository does not carry them, the newest published release's app part is read with curl and unzip: a fork with
       # no release takes upstream's. Optional either way; no Python.
       - name: Play profile
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

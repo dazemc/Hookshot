@@ -81,14 +81,22 @@ fetch() { # url dest
 }
 
 fetch_verified() { # url sha size dest
-    local url=$1 sha=$2 size=$3 dest=$4
+    local url=$1 sha=$2 size=$3 dest=$4 try
     if check_file "$dest" "$sha" "$size"; then
         return 0
     fi
     mkdir -p "$(dirname "$dest")"
-    say "downloading $(basename "$url") ($((size >> 20)) MB)"
-    fetch "$url" "$dest"
-    check_file "$dest" "$sha" "$size" || die "$url: not the size and SHA-256 the list gives"
+    for try in 1 2 3; do
+        # (a proxy or a truncated response can leave a short file; retry clean)
+        rm -f "$dest" "$dest.part"
+        say "downloading $(basename "$url") ($((size >> 20)) MB, try $try)"
+        if fetch "$url" "$dest" && check_file "$dest" "$sha" "$size"; then
+            return 0
+        fi
+        say "retrying $(basename "$url"): the download did not match"
+        sleep 2
+    done
+    die "$url: not the size and SHA-256 the list gives"
 }
 
 windows_tar() {
