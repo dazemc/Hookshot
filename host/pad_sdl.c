@@ -32,7 +32,8 @@ void hos_host_thread_register_self(const char *name);   /* hos_prof.c */
 
 /* (BTN_A ... BTN_RIGHT are HOS_PAD_SOUTH ... HOS_PAD_RIGHT) */
 enum { BTN_A, BTN_B, BTN_X, BTN_Y, BTN_BACK, BTN_GUIDE, BTN_START, BTN_LSTICK, BTN_RSTICK, BTN_LSHOULDER, BTN_RSHOULDER,
-       BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_MISC1, BTN_TOUCHPAD = 20, BTN_N = 21 };
+       BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_MISC1, BTN_RPADDLE1, BTN_LPADDLE1, BTN_RPADDLE2, BTN_LPADDLE2,
+       BTN_TOUCHPAD = 20, BTN_N = 21 };
 enum { AX_LX, AX_LY, AX_RX, AX_RY, AX_LT, AX_RT };
 
 #define MAX_PADS 8
@@ -424,8 +425,13 @@ static void pads_poll(void) {
                 continue;
             }
             count++;
+            uint64_t sig = 0;
             for (int k = BTN_A; k <= BTN_RIGHT; k++)   /* (SDL3's gamepad buttons are in SDL2's order) */
-                if (hos_sdl_pad_button(gc, k)) b |= 1ULL << k;
+                if (hos_sdl_pad_button(gc, k)) sig |= 1ULL << k;
+            /* The paddle buttons follow MISC1 in SDL, and the triggers in HOS_PAD_*. */
+            for (int k = BTN_RPADDLE1; k <= BTN_LPADDLE2; k++)
+                if (hos_sdl_pad_button(gc, k)) sig |= 1ULL << (HOS_PAD_RPADDLE1 + k - BTN_RPADDLE1);
+            b |= sig;
             /* (hookshot) a DualShock 4's or DualSense's touchpad click: it opens the Insert menu as F1 does (vk_menu.cpp).
                SDL numbers it 20, past the buttons above; an SDL without it answers 0 */
             if (hos_sdl_pad_button(gc, BTN_TOUCHPAD)) b |= 1ULL << HOS_PAD_TOUCHPAD;
@@ -456,9 +462,6 @@ static void pads_poll(void) {
             for (int k = 0; k < 4; k++)
                 if ((v[k] < 0 ? -v[k] : v[k]) > (s[k] < 0 ? -s[k] : s[k])) s[k] = v[k];
             {   /* (motion: the pad last used; a stick counts by which way it is pushed, not by how far) */
-                uint64_t sig = 0;
-                for (int k = BTN_A; k <= BTN_RIGHT; k++)
-                    if (hos_sdl_pad_button(gc, k)) sig |= 1ULL << k;
                 for (int k = 0; k < 4; k++) sig |= (uint64_t)(v[k] > 0 ? 1 : v[k] < 0 ? 2 : 0) << (32 + 2 * k);
                 if (sig != pads[i].input_sig) pads[i].input_sig = sig, pads[i].used_ns = now;
             }
