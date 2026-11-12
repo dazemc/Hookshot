@@ -294,6 +294,8 @@ range is clamped when it is read. Where the number is not the obvious one:
 | `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
 | `mouse_camera` | 0 As the stick, 1 Native |
 | `layout_preset` | 0 Nintendo, 1 Xbox / PC, 2 Swap Face, 3 Custom |
+| `menu_language` | 0 Auto (the game's language), 1 English, 2 Português (Brasil), 3 Español (Latinoamérica), 4 Español (España), 5 Français, 6 Deutsch, 7 Italiano, 8 Nederlands, 9 Polski, 10 Русский, 11 日本語, 12 한국어, 13 简体中文, 14 繁體中文 |
+| `game_language` | Not saved: the Game language row writes `language.txt`, which the game reads at its next start |
 
 The other rows are 0 Off and 1 On. Some are read at the start, before the menu exists, by the code that needs them:
 `handheld_profile` and `output_res` (`host/nn_applet.c`), `ultrawide` (`host/hos_main.c`), `robust_buffers`

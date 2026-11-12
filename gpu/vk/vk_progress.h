@@ -203,7 +203,11 @@ inline StartupView startup_view(const StartupState& s) {
     }
     v.fraction = s.whole >= 0 ? s.whole : (double)std::min(s.done, s.total) / (double)s.total;
     v.pct = s.whole >= 0 ? percent_of(s.whole) : percent_text(s.done, s.total);
-    v.left = with_commas(s.done) + " / " + with_commas(s.total) + (pipelines ? " pipelines" : " shaders");
+    {   // (a format of its own, so the menu's language can put it in its order)
+        char b[96];
+        snprintf(b, sizeof b, pipelines ? "%s / %s pipelines" : "%s / %s shaders", with_commas(s.done).c_str(), with_commas(s.total).c_str());
+        v.left = b;
+    }
     v.right = left_text(s.left);
     return v;
 }

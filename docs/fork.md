@@ -127,6 +127,15 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **Menu languages (upstream #1864, #2654, #2679)**: Gameplay's **Menu language** row picks English, Português (Brasil),
+  Español (Latinoamérica and España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文
+  or 繁體中文, or Auto (the game's own language); it is saved as `menu_language`. The separate **Game language** row
+  writes `language.txt` and applies after a restart, so the game's text and the menu's can differ. `gpu/vk/menu_i18n.h`
+  holds a table a language, `gpu/vk/vk_menu_i18n.cpp` looks a text up whole or through its printf format, and
+  `ui::text`/`para`/`size_of`/`spaced` (and the start-up screen and FPS counter) draw it translated. English is the
+  fallback for a missing text and for a script no font on the PC draws. The translations are upstream's machine-made
+  catalogs, to be checked by speakers; place and item names stay English. `builder/rust/tests/menu_i18n.rs` reads every
+  table and compiles the real lookup with stubs for the menu's options and `language.txt`.
 - **Keyboard button prompts (#2435)**: a sixth prompt face draws the keys and mouse buttons the Controls page binds,
   with the key glyphs, stick icons and live binding changes, and Auto picks it when no gamepad is present. The Kenney
   Input Prompts keyboard/mouse font is vendored under `third_party/kenney_input_keyboard` (CC0, provenance
