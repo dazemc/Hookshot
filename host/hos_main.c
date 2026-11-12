@@ -935,6 +935,24 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         release_link(c);
     }
     *c = saved;
+    /* (issues 2217, 2588) A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
+       Only clear it once the event manager takes the request; the destination may hide its own minimap.
+       Use the game's Bool setter (mgr, value, hash): it queues the change for the live value AND the save's copy.
+       Writing only the live byte restores the HUD until the next load, but saves keep the old hidden value. */
+    int hidden = 0;
+    if (ok && result && oot_gamedata_bool(c, 0x9a4dd779u, &hidden) && hidden) {
+        A64Fn set_bool = a64_lookup(0x806a2b20ULL);
+        const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
+        if (set_bool && mgr) {
+            c->x[0] = mgr, c->x[1] = 0, c->x[2] = 0x9a4dd779u;   /* MapIconDeactivateByAreaActor */
+            set_bool(c);
+            *c = saved;
+            hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): restore queued");
+        } else {   /* (another game build: say so, a report's log then shows why the minimap stayed away) */
+            hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): %s not found, left hidden",
+                    set_bool ? "the game data manager" : "the game's Bool setter");
+        }
+    }
     teleport.requested_at = now;
     teleport.check_at = now + 1500000000LL;
     teleport.destination = index;
