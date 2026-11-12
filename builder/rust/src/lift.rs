@@ -93,51 +93,59 @@ impl<'a, C: Code> Lifter<'a, C> {
                 self.labels.insert(entry, labels);
             }
         }
-        // Resolve the direct jump tables the bodies ended at, then walk the
-        // functions their targets made reachable.
-        let mut branches = Vec::new();
-        for body in self.funcs.values() {
-            for (pc, kind) in body {
-                if let Kind::Br(reg) = kind {
-                    branches.push((*pc, *reg));
-                }
-            }
-        }
-        let mut added = Vec::new();
-        for (pc, reg) in branches {
-            if let Some(targets) = self.jump_table(pc, reg) {
-                self.jt.insert(pc, targets.clone());
-                for target in targets {
-                    if !self.funcs.contains_key(&target) && self.code.in_code(target) {
-                        added.push(target);
+        // Resolve tables, then re-walk the functions that contain them so
+        // their targets become labels in the same body (not new entries).
+        for _ in 0..16 {
+            let mut branches = Vec::new();
+            for (entry, body) in &self.funcs {
+                for (pc, kind) in body {
+                    if let Kind::Br(reg) = kind {
+                        if !self.jt.contains_key(pc) && !self.jt_missing.contains_key(pc) {
+                            branches.push((*entry, *pc, *reg));
+                        }
                     }
                 }
             }
-        }
-        added.sort_unstable();
-        added.dedup();
-        for entry in added {
-            let (body, labels) = self.walk(entry);
-            if !body.is_empty() {
-                self.funcs.insert(entry, body);
-                self.labels.insert(entry, labels);
+            let mut redo = Vec::new();
+            for (entry, pc, reg) in branches {
+                if let Some(targets) = self.jump_table(pc, reg) {
+                    self.jt.insert(pc, targets);
+                    redo.push(entry);
+                }
+            }
+            if !redo.is_empty() {
+                redo.sort_unstable();
+                redo.dedup();
+                for entry in redo {
+                    let (body, labels) = self.walk(entry);
+                    if !body.is_empty() {
+                        self.funcs.insert(entry, body);
+                        self.labels.insert(entry, labels);
+                    }
+                }
+                continue;
+            }
+            let missing: Vec<(u64, u8)> = self
+                .jt_missing
+                .iter()
+                .map(|(pc, reg)| (*pc, *reg))
+                .collect();
+            let mut resolved = false;
+            for (pc, reg) in missing {
+                if let Some(targets) = self.jump_table(pc, reg) {
+                    self.jt.insert(pc, targets);
+                    self.jt_missing.remove(&pc);
+                    resolved = true;
+                }
+            }
+            if !resolved {
+                break;
             }
         }
         let entries: Vec<u64> = self.funcs.keys().copied().collect();
         for entry in entries {
             if let Some(target) = self.plt_target(entry) {
                 self.plt.insert(entry, target);
-            }
-        }
-        let missing: Vec<(u64, u8)> = self
-            .jt_missing
-            .iter()
-            .map(|(pc, reg)| (*pc, *reg))
-            .collect();
-        for (pc, reg) in missing {
-            if let Some(targets) = self.jump_table(pc, reg) {
-                self.jt.insert(pc, targets);
-                self.jt_missing.remove(&pc);
             }
         }
         self.stats.insert("jump_tables", self.jt.len());
@@ -720,7 +728,14 @@ impl<'a, C: Code> Lifter<'a, C> {
                         visit(target);
                         pc = pc.wrapping_add(4);
                     }
-                    Kind::Br(_) => break,
+                    Kind::Br(_) => {
+                        if let Some(targets) = self.jt.get(&pc) {
+                            for target in targets.iter().copied() {
+                                visit(target);
+                            }
+                        }
+                        break;
+                    }
                     Kind::Ret(_) | Kind::Trap => break,
                     _ => pc = pc.wrapping_add(4),
                 }
@@ -852,6 +867,31 @@ impl<'a, C: Code> Lifter<'a, C> {
             "entries": self.entries.len(),
         })
     }
+}
+
+pub fn coverage_json(exefs: &str, pcs: &[u64]) -> Result<serde_json::Value, String> {
+    let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
+    let mut lift = Lifter::new(&image, image.entries.iter().copied());
+    lift.eh_starts = image.eh_starts().to_vec();
+    lift.discover();
+    let rows: Vec<serde_json::Value> = pcs
+        .iter()
+        .map(|pc| {
+            let entry = lift
+                .funcs
+                .iter()
+                .find(|(_, body)| body.contains_key(pc))
+                .map(|(entry, _)| *entry);
+            serde_json::json!({
+                "pc": format!("{pc:x}"),
+                "entry": entry.map(|e| format!("{e:x}")),
+                "in_entries": image.entries.contains(pc),
+                "in_code": image.in_code(*pc),
+                "in_body": entry.is_some(),
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({"rows": rows}))
 }
 
 pub fn debug_json(exefs: &str, br: u64, reg: u8, table: u64) -> Result<serde_json::Value, String> {

@@ -163,6 +163,20 @@ pub fn dispatch(text: &str) -> String {
         "build.plan" => compile::plan_json(&request, &kit::root()),
         "lift.translate" => emitter::translate_json(&request),
         "lift.tables" => lift::tables_json(&string(&request, "exefs").unwrap_or_default()),
+        "lift.coverage" => {
+            let pcs: Vec<u64> = request
+                .get("pcs")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter_map(|pc| u64::from_str_radix(pc, 16).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            lift::coverage_json(&string(&request, "exefs").unwrap_or_default(), &pcs)
+        }
         "lift.debug" => lift::debug_json(
             &string(&request, "exefs").unwrap_or_default(),
             u64::from_str_radix(&string(&request, "br").unwrap_or_default(), 16).unwrap_or(0),
