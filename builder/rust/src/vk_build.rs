@@ -2301,4 +2301,75 @@ mod tests {
         );
         let _ = fs::remove_dir_all(base);
     }
+
+    fn function<'a>(source: &'a str, head: &str) -> &'a str {
+        let start = source
+            .find(head)
+            .unwrap_or_else(|| panic!("{head} is gone from the source"));
+        let body = &source[start..];
+        &body[..body.find("\n}\n").unwrap_or(body.len())]
+    }
+
+    #[test]
+    fn mesh_fallback_pipelines_need_no_dynamic_vertex_stride() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
+        // (the rule: ordinary vertex input asks for the dynamic stride, the fallback and native mesh do not)
+        assert!(draw.contains("fallback_pipeline_state::dynamic_input_assembly(p.mesh)"));
+        assert!(draw.contains("fallback_pipeline_state::dynamic_vertex_stride(p.mesh, p.fallback)"));
+        // (a fallback bind invalidates the dynamic strides: both skip caches are dropped, and the next ordinary draw rebinds)
+        assert!(draw.contains(
+            "fallback_pipeline_state::after_graphics_bind(p.fallback, last_vb_valid, vertex_set.on);"
+        ));
+        let policy = fs::read_to_string(root.join("gpu/vk/fallback_pipeline_state.h")).unwrap();
+        let bind = function(&policy, "inline void after_graphics_bind(");
+        assert!(bind.contains("last_vb_valid = false;"));
+        assert!(bind.contains("vertex_set_on = false;"));
+    }
+
+    #[test]
+    fn mesh_fallback_programs_in_memory_get_their_compute_pipelines_before_the_title() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let cache = fs::read_to_string(root.join("gpu/vk/vk_progcache.cpp")).unwrap();
+        let load = function(&cache, "size_t program_cache_load_some(");
+        // (after the programs read in now were given, under the lock on the programs: a key read in now is given once)
+        let lock = load.find("std::lock_guard lk(shader_mu);").unwrap();
+        let now = load.find("fn(*p);").unwrap();
+        let earlier = load.find("fallback_loaded::each(programs, given, fn)").unwrap();
+        assert!(lock < now && now < earlier, "the fallback rule moved before the programs read in now");
+        assert!(load.contains("fallback_loaded::on(getenv(\"RX_VK_FALLBACK_LOADED\"))"));
+        assert!(load.contains("if (fallbacks && loaded_too) {"));
+        assert!(load.contains("for (const auto& w : work) given.insert(w.first);"));
+        // (the precompile asks for every fallback program and makes its compute pipelines before play)
+        let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
+        let precompile = function(&draw, "void precompile_run(void (*progress)(size_t done, size_t total)) {");
+        assert!(precompile.contains("else if (p.fallback) fallbacks.push_back(&p);"));
+        assert!(precompile.contains("fallback_compute_pipelines(p);"));
+        assert!(precompile.contains("}, all_computes, true);"));
+    }
+
+    #[test]
+    fn the_load_default_safety_net_counts_only_cache_misses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let rule = fs::read_to_string(root.join("gpu/vk/load_default.h")).unwrap();
+        assert!(rule.contains("constexpr long long kNotInCacheMost = 500;"));
+        let rule = function(&rule, "inline bool caches_lacked(");
+        assert!(rule.contains("long long listed_not_in_a_cache"));
+        // (draws left out and pipeline waits are not this mode's alone: a state no list names is left out in start mode too)
+        for other in ["left_out", "pipeline_wait", "pskip", "pwait"] {
+            assert!(!rule.contains(other), "the safety net counts {other} again");
+        }
+    }
+
+    #[test]
+    fn a_lost_device_asks_for_the_fault_info_without_a_switch_off_nvidia() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
+        assert!(draw.contains("device_fault_query::forced(getenv(\"RX_VK_FAULT_INFO\"))"));
+        assert!(draw.contains("device_fault_query::automatic(dev.props.vendorID == 0x10DE, dev.checkpoints,"));
+        assert!(draw.contains("getenv(\"RX_VK_FAULT_AUTO\")"));
+        assert!(draw.contains("fault_last{fault_forced || fault_auto}"));
+        let report = function(&draw, "void checkpoints_report() {");
+        assert!(report.contains("if (wanted) device_fault_report();"));
+    }
 }
