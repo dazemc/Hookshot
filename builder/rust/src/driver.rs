@@ -405,6 +405,9 @@ pub fn plan_json_with(
         let compile_stage = crate::timing::Stage::new("driver.compile");
         say_stage("compile", "Compiling")?;
         let cc = crate::toolchain::find("clang", false);
+        // (the planning is the sources read and hashed for their object keys,
+        // before the compilers start: where a cold build's first seconds go)
+        let planning = crate::timing::Stage::new("compile.planning");
         // (diagnostic: reuse the old empty-deps keys while validating a
         // hand-made cache; normal builds always hash the generated headers)
         let game_deps = if std::env::var("HOOKSHOT_NO_GAME_DEPS").ok().as_deref() == Some("1") {
@@ -534,7 +537,22 @@ pub fn plan_json_with(
         } else {
             json!({"jobs": jobs, "cache": cache, "parallel": parallel})
         };
+        planning.done();
+        let compiling = crate::timing::Stage::new("compile.compiling");
         compiled = crate::compile::many_json(&request, &root)?;
+        compiling.done();
+        crate::timing::count("chunks", chunks as u64);
+        crate::timing::count("units", unit_count as u64);
+        crate::timing::count("parallel", parallel as u64);
+        crate::timing::count("game_compiled", compiled["compiled"].as_u64().unwrap_or(0));
+        crate::timing::count("game_cached", compiled["cached"].as_u64().unwrap_or(0));
+        crate::timing::count(
+            "game_failed",
+            compiled["failed"]
+                .as_array()
+                .map_or(0, |failed| failed.len() as u64),
+        );
+        crate::timing::set_compile_seconds(compiled["seconds"].as_f64().unwrap_or(0.0));
         let failed = compiled["failed"].as_array().cloned().unwrap_or_default();
         if failed.is_empty() {
             let objects: Vec<String> = fs::read_dir(work.join("obj"))

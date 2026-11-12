@@ -152,6 +152,20 @@ fn run_build(request: &Value, out: &mut dyn Write) -> i32 {
                     let _ = protocol.say(&text);
                 }
             }
+            // (where the time went, as build_times.json has it; then the
+            // Flutter builder's existing @@times line)
+            if let Some(summary) = value["times"]["summary"].as_array() {
+                for line in summary.iter().filter_map(Value::as_str) {
+                    let _ = protocol.say(line);
+                }
+            }
+            if let (Some(total), Some(compiled)) = (
+                value["times"]["total_seconds"].as_f64(),
+                value["times"]["compile_seconds"].as_f64(),
+            ) {
+                let previous = value["times"]["previous_seconds"].as_f64().unwrap_or(-1.0);
+                let _ = protocol.say(&format!("@@times {total:.0} {compiled:.0} {previous:.0}"));
+            }
             let _ = protocol.done(&folder);
             0
         }

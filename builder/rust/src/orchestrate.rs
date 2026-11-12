@@ -3,6 +3,8 @@
 
 use serde_json::{Value, json};
 
+use crate::timing::{self, Stage};
+
 #[allow(clippy::too_many_arguments)]
 pub fn all_json(
     exefs: &str,
@@ -65,6 +67,8 @@ pub fn all_json_with(
     } else {
         None
     };
+    // (the build's clock, for build_times.json and the lines it ends with)
+    timing::begin("build");
     say_stage("read", "Reading your game files")?;
     let driver =
         crate::driver::plan_json_with(exefs, romfs, out, work, 0, true, true, true, say_stage)?;
@@ -80,7 +84,10 @@ pub fn all_json_with(
         return Ok(json!({"stage": "compile", "driver": driver}));
     }
     say_stage("compile", "Compiling the host")?;
+    let host_stage = Stage::new("host.build");
     let host = crate::host_build::link_json(exefs, work, out)?;
+    host_stage.done();
+    record_compile_counts("host", &host["compiled"]);
     // (the driver's work folder: the one it used, which is kit's when none was given)
     let work_folder = std::path::Path::new(driver["work"].as_str().unwrap_or(work));
     if let Some(failed) = host["compiled"]["failed"]
@@ -124,6 +131,7 @@ pub fn all_json_with(
         say_stage("dlss", "Getting NVIDIA's DLSS SDK")?;
         sdk_fetch = crate::ngx_sdk::fetch(sdk, crate::ngx_sdk::Platform::current(), true)?;
     }
+    let vk_stage = Stage::new("vk.build");
     let vk_build = if let Some(prebuilt) = &prebuilt {
         let message = if std::path::Path::new(prebuilt).is_file() {
             format!("the Vulkan back end: {prebuilt}, as built")
@@ -144,6 +152,10 @@ pub fn all_json_with(
         };
         crate::vk_build::build_at_with_options(&crate::kit::root(), work_folder, &options)?
     };
+    vk_stage.done();
+    if vk_build["compiled"].is_object() {
+        record_compile_counts("vk", &vk_build["compiled"]);
+    }
     if !vk_build["built"].as_bool().unwrap_or(false)
         && matches!(
             vk_build["stage"].as_str(),
@@ -165,6 +177,7 @@ pub fn all_json_with(
         .unwrap_or_default();
     // (with no language asked for, a launcher's first build takes the system's: make_game's rule)
     let language = crate::package::build_language(std::path::Path::new(out), language, prepare);
+    let package_stage = Stage::new("package");
     let package = crate::package::package_json(
         work_text,
         out,
@@ -174,6 +187,7 @@ pub fn all_json_with(
         &language,
         &ngx_text,
     )?;
+    package_stage.done();
     // (a DLSS build whose runtime did not land in <out>/ngx is not a DLSS build)
     if dlss_sdk.is_some() && package["ngx"]["placed"].as_bool() != Some(true) {
         return Ok(json!({
@@ -195,6 +209,7 @@ pub fn all_json_with(
         let mut linked = 0;
         crate::package::link_tree(source, &kept, &mut linked)?;
     }
+    let shader_stage = Stage::new("shaders");
     let shaders = match crate::shader::census(
         std::path::Path::new(romfs),
         Some(&std::path::Path::new(out).join("hookshot_shaders.bin")),
@@ -202,17 +217,39 @@ pub fn all_json_with(
         Ok(value) => value,
         Err(error) => json!({"error": error}),
     };
+    shader_stage.done();
     let finish = if prepare {
         say_stage("prepare", "Preparing the game's shaders")?;
+        let prepare_stage = Stage::new("prepare");
         let exe = package["exe"].as_str().unwrap_or_default();
-        Some(crate::prepare::finish(
+        let finish = Some(crate::prepare::finish(
             &crate::kit::root(),
             std::path::Path::new(romfs),
             std::path::Path::new(out),
             std::path::Path::new(exe),
-        ))
+        ));
+        prepare_stage.done();
+        finish
     } else {
         None
+    };
+    let times = match timing::finish() {
+        Some(mut times) => {
+            // (a diagnostic file never stops a build: a read-only work folder
+            // or a full disk leaves the build's own result alone)
+            let (previous, error) = match timing::write(work_folder, &mut times) {
+                Ok(previous) => (previous, Value::Null),
+                Err(error) => (None, json!(error)),
+            };
+            json!({
+                "total_seconds": times.total_seconds,
+                "compile_seconds": times.compile_seconds,
+                "previous_seconds": previous,
+                "summary": times.summary_lines(),
+                "error": error,
+            })
+        }
+        None => Value::Null,
     };
     Ok(json!({
         "stage": "packaged",
@@ -226,5 +263,24 @@ pub fn all_json_with(
         "package": package,
         "shaders": shaders,
         "prepare": finish,
+        "times": times,
     }))
+}
+
+/// The compile result's counts, under a stage prefix (`host_compiled`, ...).
+fn record_compile_counts(prefix: &str, compiled: &Value) {
+    timing::count(
+        &format!("{prefix}_compiled"),
+        compiled["compiled"].as_u64().unwrap_or(0),
+    );
+    timing::count(
+        &format!("{prefix}_cached"),
+        compiled["cached"].as_u64().unwrap_or(0),
+    );
+    timing::count(
+        &format!("{prefix}_failed"),
+        compiled["failed"]
+            .as_array()
+            .map_or(0, |failed| failed.len() as u64),
+    );
 }

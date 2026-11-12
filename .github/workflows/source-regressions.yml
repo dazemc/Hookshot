@@ -34,6 +34,12 @@ on:
       - 'host/nn_video.c'
       - 'host/video_uv.h'
       - 'tests/video_uv_interleave_test.c'
+      - 'host/hos_main.c'
+      - 'scripts/release_files.sh'
+      - 'scripts/release_promote.sh'
+      - 'scripts/release_rc.sh'
+      - 'scripts/release_upload.sh'
+      - 'scripts/linux/appimage.sh'
       - '.github/workflows/**'
   pull_request:
     branches: [main]
@@ -63,6 +69,12 @@ on:
       - 'host/nn_video.c'
       - 'host/video_uv.h'
       - 'tests/video_uv_interleave_test.c'
+      - 'host/hos_main.c'
+      - 'scripts/release_files.sh'
+      - 'scripts/release_promote.sh'
+      - 'scripts/release_rc.sh'
+      - 'scripts/release_upload.sh'
+      - 'scripts/linux/appimage.sh'
       - '.github/workflows/**'
   workflow_dispatch:
 

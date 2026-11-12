@@ -62,6 +62,12 @@ $("$files" table nightly)"
     else
         gh release create nightly --verify-tag --prerelease --latest=false --title "$title" --notes "$notes" ||
             gh release edit nightly --prerelease --latest=false --title "$title" --notes "$notes" >/dev/null
+        # (a release just made is not in the list of releases at once: a repository's first nightly was made here and
+        # "had no release" a moment later. Looked for a few times before its files go to it)
+        for _ in 1 2 3 4 5 6; do
+            [[ -z $("$files" find nightly) ]] || break
+            sleep 3
+        done
     fi
     "$files" upload nightly "$@"
     new=()
@@ -93,11 +99,11 @@ if [[ -z $info ]]; then
     fi
     # (the other workflow can make it between the find and the create: its release is then the one used)
     gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${kind[@]}" >/dev/null || true
-    # (GitHub's release listing can lag the create by a moment)
-    for try in 1 2 3 4 5; do
+    # (a release just made is not in the list of releases at once: scripts/release_rc.sh. Looked for a few times)
+    for _ in 1 2 3 4 5 6; do
         info=$("$files" find "$tag")
-        [[ -n $info ]] && break
-        sleep 2
+        [[ -z $info ]] || break
+        sleep 3
     done
     [[ -n $info ]] || { echo "::error::$tag: its release could not be made" >&2; exit 1; }
 fi
