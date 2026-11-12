@@ -132,6 +132,11 @@ pub fn vectorize_fcmp(text: &str) -> String {
         .into_owned()
 }
 
+/// The full op-text pipeline used before emission and liveness.
+pub fn op_text(text: &str) -> String {
+    stack_stores(&widen_vstores(&vectorize_fcmp(&outline_fpx(text))))
+}
+
 /// Replace an inline FPX guard by one helper call when the fast and exact
 /// argument lists agree and both write the same variable.
 pub fn outline_fpx(text: &str) -> String {

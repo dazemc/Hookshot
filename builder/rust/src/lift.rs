@@ -810,17 +810,21 @@ impl<'a, C: Code> Lifter<'a, C> {
             "void f_{entry:08x}(Ctx *__restrict A64_NOESC c) {{"
         )];
         let pcs: Vec<u64> = body.keys().copied().collect();
+        let processed: Vec<String> = texts
+            .iter()
+            .map(|text| crate::text::op_text(text))
+            .collect();
         let mut frame = true;
         for (index, pc) in pcs.iter().copied().enumerate() {
             if matches!(body[&pc], Kind::Op) {
-                let text = texts.get(index).map(String::as_str).unwrap_or("");
+                let text = processed.get(index).map(String::as_str).unwrap_or("");
                 if frame && !crate::text::fp_is_frame(text) {
                     frame = false;
                 }
             }
         }
-        let dead = self.dead_flags(entry, body, &pcs, texts);
-        let dirty = self.dirty_regs(entry, body, &pcs, texts);
+        let dead = self.dead_flags(entry, body, &pcs, &processed);
+        let dirty = self.dirty_regs(entry, body, &pcs, &processed);
         for (index, pc) in pcs.iter().copied().enumerate() {
             let kind = body[&pc];
             let word = self.code.word(pc).unwrap_or(0);
@@ -830,21 +834,17 @@ impl<'a, C: Code> Lifter<'a, C> {
             let mut falls = true;
             match kind {
                 Kind::Op => {
-                    let text = texts.get(index).map(String::as_str).unwrap_or("");
+                    let text = processed.get(index).map(String::as_str).unwrap_or("");
                     if text.is_empty() || text.contains("recomp_unhandled") {
                         out.push(format!(
                             "\x01A{index}\x01a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"
                         ));
                         falls = false;
                     } else {
-                        let text = crate::text::outline_fpx(text);
-                        let text = crate::text::vectorize_fcmp(&text);
-                        let text = crate::text::widen_vstores(&text);
                         let text = dead
                             .get(&pc)
-                            .map(|mask| crate::text::drop_flag_stores(&text, *mask))
-                            .unwrap_or(text);
-                        let text = crate::text::stack_stores(&text);
+                            .map(|mask| crate::text::drop_flag_stores(text, *mask))
+                            .unwrap_or_else(|| text.to_owned());
                         out.push(text.trim_end_matches('\n').to_owned());
                     }
                 }
@@ -1168,6 +1168,14 @@ pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
         .filter(|(pc, text)| matches!(body[*pc], Kind::Op) && !crate::text::fp_is_frame(text))
         .map(|(pc, _)| format!("{pc:x}"))
         .collect();
+    let pcs: Vec<u64> = body.keys().copied().collect();
+    let dead = lift.dead_flags(entry, body, &pcs, &texts);
+    let v_ops: Vec<(String, u8)> = pcs
+        .iter()
+        .zip(texts.iter())
+        .filter(|(_, text)| text.contains("c->v="))
+        .map(|(pc, _)| (format!("{pc:x}"), dead.get(pc).copied().unwrap_or(0)))
+        .collect();
     let branches: Vec<(String, Vec<String>)> = body
         .iter()
         .filter_map(|(pc, kind)| match kind {
@@ -1182,7 +1190,7 @@ pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
         })
         .collect();
     Ok(
-        serde_json::json!({"entry": format!("{entry:x}"), "frame_false": frame_false, "branches": branches, "c": lift.emit_function(entry, &texts)}),
+        serde_json::json!({"entry": format!("{entry:x}"), "frame_false": frame_false, "v_ops": v_ops, "branches": branches, "c": lift.emit_function(entry, &texts)}),
     )
 }
 
