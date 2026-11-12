@@ -45,6 +45,12 @@ impl Code for Image {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Loc {
+    Reg(u8),
+    Slot(usize),
+}
+
 pub struct Lifter<'a, C: Code> {
     code: &'a C,
     pub entries: HashSet<u64>,
@@ -200,6 +206,140 @@ impl<'a, C: Code> Lifter<'a, C> {
         let bytes = self.code.read(slot, 8)?;
         let target = u64::from_le_bytes(bytes.try_into().ok()?);
         self.entries.contains(&target).then_some((target, slot))
+    }
+
+    fn predecessors(&self, lo: u64, hi: u64) -> std::collections::HashMap<u64, Vec<u64>> {
+        let mut map: std::collections::HashMap<u64, Vec<u64>> = std::collections::HashMap::new();
+        let mut pc = lo;
+        while pc < hi {
+            let Some(word) = self.code.word(pc) else {
+                break;
+            };
+            let kind = a64::classify(word, pc);
+            let mut successors = Vec::new();
+            match kind {
+                Kind::B(target) => successors.push(target),
+                Kind::BCond(target, _)
+                | Kind::Cbz(target, _, _, _)
+                | Kind::Tbz(target, _, _, _) => {
+                    successors.push(target);
+                    successors.push(pc + 4);
+                }
+                Kind::Br(_) => successors.extend(self.jt.get(&pc).into_iter().flatten().copied()),
+                Kind::Ret(_) | Kind::Trap => {}
+                _ => successors.push(pc + 4),
+            }
+            for successor in successors {
+                map.entry(successor).or_default().push(pc);
+            }
+            pc += 4;
+        }
+        map
+    }
+
+    fn reaching(&self, at: u64, location: Loc, limit: usize, depth: u8) -> HashSet<u64> {
+        let (lo, hi) = self.function_extent(at);
+        if hi.saturating_sub(lo) > 0x40000 || depth > 4 {
+            return HashSet::new();
+        }
+        let preds = self.predecessors(lo, hi);
+        let mut found = HashSet::new();
+        let mut seen = HashSet::new();
+        let mut todo = vec![at];
+        while let Some(pc_at) = todo.pop() {
+            if seen.len() >= limit {
+                break;
+            }
+            for p in preds.get(&pc_at).into_iter().flatten().copied() {
+                if !seen.insert(p) {
+                    continue;
+                }
+                let Some(word) = self.code.word(p) else {
+                    continue;
+                };
+                match location {
+                    Loc::Reg(reg) => {
+                        if matches!(a64::classify(word, p), Kind::Bl(_) | Kind::Blr(_))
+                            && (reg <= 18 || reg == 30)
+                        {
+                            continue;
+                        }
+                        if !Self::writes(word, reg) {
+                            todo.push(p);
+                            continue;
+                        }
+                        if word & 0x9F000000 == 0x90000000 {
+                            let imm = ((word >> 3) & 0x1FFFFC) | ((word >> 29) & 3);
+                            found
+                                .insert((p & !0xFFF).wrapping_add((a64::sx(imm, 21) << 12) as u64));
+                        } else if word & 0xFF800000 == 0x91000000 {
+                            if let Some(base) =
+                                self.hoisted_constant(p, ((word >> 5) & 31) as u8, 64)
+                            {
+                                found.insert(base.wrapping_add(
+                                    (((word >> 10) & 0xFFF)
+                                        << if word & (1 << 22) != 0 { 12 } else { 0 })
+                                        as u64,
+                                ));
+                            }
+                        } else if word & 0xFFE0FFE0 == 0xAA0003E0 {
+                            found.extend(self.reaching(
+                                p,
+                                Loc::Reg(((word >> 16) & 31) as u8),
+                                limit,
+                                depth + 1,
+                            ));
+                        } else if word & 0xFFC003E0 == 0xF94003E0 {
+                            found.extend(self.reaching(
+                                p,
+                                Loc::Slot((((word >> 10) & 0xFFF) * 8) as usize),
+                                limit,
+                                depth + 1,
+                            ));
+                        } else if word & 0xFFC003E0 == 0xA94003E0 {
+                            let offset = (a64::sx((word >> 15) & 0x7F, 7) * 8
+                                + if (word & 31) as u8 != reg { 8 } else { 0 })
+                                as usize;
+                            found.extend(self.reaching(p, Loc::Slot(offset), limit, depth + 1));
+                        }
+                    }
+                    Loc::Slot(slot) => {
+                        if word & 0xFFC003E0 == 0xF90003E0
+                            && (((word >> 10) & 0xFFF) * 8) as usize == slot
+                        {
+                            found.extend(self.reaching(
+                                p,
+                                Loc::Reg((word & 31) as u8),
+                                limit,
+                                depth + 1,
+                            ));
+                        } else if word & 0xFFC003E0 == 0xA90003E0 {
+                            let offset = (a64::sx((word >> 15) & 0x7F, 7) * 8) as usize;
+                            if slot == offset || slot == offset + 8 {
+                                let reg = if slot == offset {
+                                    (word & 31) as u8
+                                } else {
+                                    ((word >> 10) & 31) as u8
+                                };
+                                found.extend(self.reaching(p, Loc::Reg(reg), limit, depth + 1));
+                            } else {
+                                todo.push(p);
+                            }
+                        } else if ((word & 31) == 31
+                            && matches!(word & 0x7F800000, 0x51000000 | 0x11000000))
+                            || ((word >> 5) & 31 == 31
+                                && matches!(word & 0x3B200C00, 0x38000C00 | 0x38000400))
+                            || (word & 0x3A800000 == 0x28800000)
+                        {
+                            continue;
+                        } else {
+                            todo.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        found
     }
 
     fn function_constants(&self, br_pc: u64, reg: u8) -> Vec<u64> {
@@ -378,10 +518,10 @@ impl<'a, C: Code> Lifter<'a, C> {
         let Some(value) = values.get(&reg).cloned() else {
             return self.adr_targets(br_pc, reg);
         };
-        let (base, load) = match value {
-            V::Add { left, right, .. } => match (*left, *right) {
-                (V::Const(base), load @ V::Load { .. }) => (base, load),
-                (load @ V::Load { .. }, V::Const(base)) => (base, load),
+        let (base, load, shift) = match value {
+            V::Add { left, right, shift } => match (*left, *right) {
+                (V::Const(base), load @ V::Load { .. }) => (base, load, shift),
+                (load @ V::Load { .. }, V::Const(base)) => (base, load, shift),
                 _ => return self.adr_targets(br_pc, reg),
             },
             _ => return self.adr_targets(br_pc, reg),
@@ -398,7 +538,11 @@ impl<'a, C: Code> Lifter<'a, C> {
         let tables: Vec<u64> = match *table {
             V::Const(table) => vec![table],
             V::Reg(reg) => {
-                let mut tables = self.function_constants(br_pc, reg);
+                let mut tables: Vec<u64> = self
+                    .reaching(br_pc, Loc::Reg(reg), 50000, 0)
+                    .into_iter()
+                    .collect();
+                tables.extend(self.function_constants(br_pc, reg));
                 if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
                     tables.push(hoisted);
                 }
@@ -408,7 +552,11 @@ impl<'a, C: Code> Lifter<'a, C> {
             }
             V::Add { left, right, .. } => match (*left, *right) {
                 (V::Reg(reg), V::Const(offset)) => {
-                    let mut tables = self.function_constants(br_pc, reg);
+                    let mut tables: Vec<u64> = self
+                        .reaching(br_pc, Loc::Reg(reg), 50000, 0)
+                        .into_iter()
+                        .collect();
+                    tables.extend(self.function_constants(br_pc, reg));
                     if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
                         tables.push(hoisted);
                     }
@@ -425,17 +573,13 @@ impl<'a, C: Code> Lifter<'a, C> {
             self.jt_missing.insert(br_pc, reg);
             return None;
         }
-        let Some(count) = bounds
+        let (count, bounded) = match bounds
             .get(&index)
             .copied()
             .filter(|count| *count > 0 && *count <= 4096)
-        else {
-            self.jt_missing.insert(br_pc, reg);
-            self.stats.insert(
-                "jt_missing_no_bound",
-                self.stats.get("jt_missing_no_bound").unwrap_or(&0) + 1,
-            );
-            return None;
+        {
+            Some(count) => (count, true),
+            None => (if size == 1 { 256 } else { 1024 }, false),
         };
         let (lo, hi) = self.function_extent(br_pc);
         let mut targets = Vec::new();
@@ -456,7 +600,7 @@ impl<'a, C: Code> Lifter<'a, C> {
                     (8, false) => u64::from_le_bytes(bytes.try_into().unwrap()) as i64,
                     _ => break,
                 };
-                let target = base.wrapping_add(entry as u64);
+                let target = base.wrapping_add((entry as u64).wrapping_shl(shift as u32));
                 if !(lo <= target && target < hi && self.code.in_code(target)) {
                     break;
                 }
@@ -469,8 +613,13 @@ impl<'a, C: Code> Lifter<'a, C> {
             self.jt_missing.insert(br_pc, reg);
             return None;
         }
+        let key = if bounded {
+            "jt_bounded"
+        } else {
+            "jt_unbounded"
+        };
         self.stats
-            .insert("jt_bounded", self.stats.get("jt_bounded").unwrap_or(&0) + 1);
+            .insert(key, self.stats.get(key).unwrap_or(&0) + 1);
         Some(targets)
     }
 
