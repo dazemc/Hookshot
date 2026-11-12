@@ -1141,6 +1141,49 @@ impl<'a, C: Code> Lifter<'a, C> {
     }
 }
 
+type FpxUse = (String, String, usize, usize);
+
+fn collect_fpx(text: &str, used: &mut std::collections::HashSet<FpxUse>) {
+    let call = regex::Regex::new(r"a64_fpx_([a-z0-9]+)_([a-z0-9]+)\(c,([^)]*?)\)").unwrap();
+    for caps in call.captures_iter(text) {
+        let fast = caps[1].to_owned();
+        let exact = caps[2].to_owned();
+        let args = caps[3]
+            .split(',')
+            .filter(|arg| !arg.trim().is_empty())
+            .count();
+        let nf = if fast.starts_with("fma") {
+            3
+        } else if fast.starts_with("sqrt") {
+            1
+        } else {
+            2
+        };
+        used.insert((fast, exact, nf, args));
+    }
+}
+
+/// Rebuild `a64_fpx.h` from chunks that are already on disk, without
+/// re-emitting them. The full lift predates header generation.
+pub fn fpx_json(dir: &str) -> Result<serde_json::Value, String> {
+    let dir = std::path::Path::new(dir);
+    let mut used = std::collections::HashSet::new();
+    let mut files = 0usize;
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("code_") && name.ends_with(".c") {
+            let text = std::fs::read_to_string(entry.path())
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+            collect_fpx(&text, &mut used);
+            files += 1;
+        }
+    }
+    let path = dir.join("a64_fpx.h");
+    std::fs::write(&path, crate::text::fpx_header(&used)).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"files": files, "helpers": used.len(), "header": path.to_string_lossy()}))
+}
+
 pub fn write_json(
     exefs: &str,
     out: &str,
@@ -1227,22 +1270,9 @@ pub fn write_json(
         })
     };
     emitted.sort_by_key(|(index, _)| *index);
-    let call = regex::Regex::new(r"a64_fpx_([a-z0-9]+)_([a-z0-9]+)\(c,([^)]*?)\)").unwrap();
     let mut used = std::collections::HashSet::new();
     for (_, text) in &emitted {
-        for caps in call.captures_iter(text) {
-            let fast = caps[1].to_owned();
-            let exact = caps[2].to_owned();
-            let args = caps[3].split(',').filter(|a| !a.trim().is_empty()).count();
-            let nf = if fast.starts_with("fma") {
-                3
-            } else if fast.starts_with("sqrt") {
-                1
-            } else {
-                2
-            };
-            used.insert((fast, exact, nf, args));
-        }
+        collect_fpx(text, &mut used);
     }
     std::fs::write(out.join("a64_fpx.h"), crate::text::fpx_header(&used))
         .map_err(|e| e.to_string())?;

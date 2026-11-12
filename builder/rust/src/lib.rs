@@ -166,6 +166,7 @@ pub fn dispatch(text: &str) -> String {
         "build.plan" => compile::plan_json(&request, &kit::root()),
         "lift.translate" => emitter::translate_json(&request),
         "lift.tables" => lift::tables_json(&string(&request, "exefs").unwrap_or_default()),
+        "lift.fpx_header" => lift::fpx_json(&string(&request, "dir").unwrap_or_default()),
         "lift.write" => lift::write_json(
             &string(&request, "exefs").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
