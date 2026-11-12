@@ -123,9 +123,10 @@ commits, not upstream ancestors. Ported recently:
 
 - **2 DLSS/V-Sync fixes**: V-Sync Auto follows the Frame Gen runtime's real frame limit (#2701); a failed DLSS
   feature is retried when a menu setting changes, not for the rest of the run (#2550).
-- **3 Vulkan memory/perf fixes**: GPU-written mirrors are kept instead of remade empty (cyan after a pause or reload,
+- **4 Vulkan memory/perf fixes**: GPU-written mirrors are kept instead of remade empty (cyan after a pause or reload,
   #2154); six background workers on 16-thread machines (#2440); part of the image pool's blocks are made at the start
-  (#2438).
+  (#2438); retired imports on Windows AMD/Intel go back after a grace wait instead of being kept for the session
+  (#1906).
 - **11 Vulkan fixes**: texture table, span aging, split fence wait, recorder packet, Intel storage loop, subgroup
   barrier, mesh grass hold, pipeline-cache header, 250 ms readback, RADV mesh default, Intel uniform snapshot.
 - **7 host fixes**: update downgrade guard, menu option order, Steam gyro, Aux/splitter audio, window title/class,
@@ -143,11 +144,12 @@ Do not port game-derived pipeline lists or generated game data.
 
 `source-regressions.yml` runs Rust tests on Linux and Windows, Flutter tests/analyze, three SPIR-V fixture builds and
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
-All five workflows are green on `f1a47183`. The pre-release `v2.2.0-rs.2` was built from `1c3cfc62` and carries the
-two DLSS/V-Sync fixes and the compile-wave scheduler; the worker, mirror and image-pool changes above came after it.
+All five workflows are green on `74a7fd15`. The pre-release `v2.2.0-rs.3` was built from that commit and carries the
+two DLSS/V-Sync fixes, the compile-wave scheduler, the worker, mirror and image-pool changes, and the retired-import
+wait. `v2.2.0-rs.2` (from `1c3cfc62`) has the first three.
 
 The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
-app and Rust engine without Python; the pre-release (`v2.2.0-rs.2`) is published with the AppImage and the
+app and Rust engine without Python; the pre-release (`v2.2.0-rs.3`) is published with the AppImage and the
 Windows setup. The Linux image is a development image: a game build needs distribution clang and Vulkan/SPIR-V/VMA
 headers (or a source build). The repository never contains game files or generated game data.
 
