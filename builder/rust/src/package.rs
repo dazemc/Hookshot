@@ -25,6 +25,23 @@ const LANGUAGES: [(&str, &str); 16] = [
     ("zh-Hant", "Chinese (Traditional)"),
 ];
 
+fn link_or_copy(src: &Path, dst: &Path) -> Result<u64, String> {
+    if !src.is_file() {
+        return Ok(0);
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    if dst.exists() {
+        return Ok(0);
+    }
+    let size = fs::metadata(src).map(|meta| meta.len()).unwrap_or(0);
+    if fs::hard_link(src, dst).is_err() {
+        fs::copy(src, dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+    }
+    Ok(size)
+}
+
 fn copy(src: &Path, dst: &Path) -> Result<u64, String> {
     if !src.is_file() {
         return Ok(0);
@@ -131,7 +148,7 @@ pub fn package_json(
                 )?;
                 linked += count;
             } else {
-                bytes += copy(&assets.join(name), &out.join(name))?;
+                bytes += link_or_copy(&assets.join(name), &out.join(name))?;
             }
         }
     }
