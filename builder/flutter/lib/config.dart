@@ -36,7 +36,7 @@ NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVI
 
 https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c58e75131689e19aa547db65571/LICENSE.txt
 
-Its files stay on this PC (in the builder's ngx-sdk folder, and libnvidia-ngx-dlss.so in the game folder's ngx folder). Hookshot never includes or shares them: never share a game folder built with them.
+Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll and nvngx_dlssg.dll, or libnvidia-ngx-dlss.so and libnvidia-ngx-dlssg.so on Linux, in the game folder's ngx folder). Hookshot never includes or shares them: never share a game folder built with them.
 
 Do you accept NVIDIA's license?''';
 
