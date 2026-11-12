@@ -289,6 +289,10 @@ pub fn dispatch(text: &str) -> String {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             request
+                .get("standalone")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            request
                 .get("compile")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),

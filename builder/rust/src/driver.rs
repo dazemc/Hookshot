@@ -51,6 +51,7 @@ pub fn plan_json(
     work: &str,
     lift_limit: usize,
     lift_all: bool,
+    standalone: bool,
     compile: bool,
 ) -> Result<Value, String> {
     let exefs = Path::new(exefs);
@@ -89,6 +90,14 @@ pub fn plan_json(
             game_gen.to_str().unwrap_or_default(),
             limit,
             24 << 20,
+        )?;
+    }
+    if standalone {
+        fs::create_dir_all(&game_gen).map_err(|e| format!("{}: {e}", game_gen.display()))?;
+        crate::standalone::write_json(
+            exefs.to_str().unwrap_or_default(),
+            game_gen.to_str().unwrap_or_default(),
+            "",
         )?;
     }
     if game_gen.is_dir() {
@@ -172,7 +181,11 @@ pub fn plan_json(
                     .collect()
             })
             .unwrap_or_default();
-        for name in ["a64_suyu.c", "a64_rt.c", "a64_table.c", "a64_hooks.c"] {
+        let mut runtime_files = vec!["a64_suyu.c", "a64_rt.c", "a64_table.c", "a64_hooks.c"];
+        if standalone {
+            runtime_files.extend(["a64_stubs.c", "hos_image.c", "nvn2_exports.c"]);
+        }
+        for name in runtime_files {
             let src = if name == "a64_rt.c" {
                 rt64.join(name)
             } else {
@@ -247,6 +260,7 @@ pub fn plan_json(
         "work": work.to_string_lossy(),
         "rt64": rt64.to_string_lossy(),
         "chunks": chunks,
+        "standalone": standalone,
         "compiled": compiled,
         "romfs_entries": romfs_files,
         "ready": stage == "compile",
@@ -276,6 +290,7 @@ mod tests {
             base.join("out").to_str().unwrap(),
             base.join("work").to_str().unwrap(),
             0,
+            false,
             false,
             false,
         )
