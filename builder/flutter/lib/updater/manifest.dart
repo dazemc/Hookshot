@@ -12,6 +12,13 @@ String get latestList => 'https://github.com/${cfg.repository()}/releases/latest
 String get latestApi => 'https://api.github.com/repos/${cfg.repository()}/releases/latest';
 String get releasesApi => 'https://api.github.com/repos/${cfg.repository()}/releases?per_page=100';
 const sysrootPart = 'usr/lib/hookshot/sysroot';
+const maxPartSize = 4 << 30;
+
+/// A tag as it may become a folder name and a release URL: letters,
+/// digits and `. _ + -`, no `.`/`..`. The same rule as
+/// builder/setup/setup.c's list_name_ok.
+final _safeTag = RegExp(r'^[A-Za-z0-9._+-]{1,128}$');
+bool isSafeTag(String tag) => _safeTag.hasMatch(tag) && tag != '.' && tag != '..';
 
 class Part {
   final String sha;
@@ -48,7 +55,19 @@ class Manifest {
 }
 
 bool _safeName(String name) {
-  if (name.isEmpty || name.startsWith('/') || name.split('/').contains('..')) {
+  // (a name from a list is written under versions/<tag>: no root, no drive,
+  // no backslash (a separator on Windows), no ":" (a drive or NTFS stream),
+  // no "." or ".." part, and no empty part)
+  if (name.isEmpty || name.length > 4096) {
+    throw FormatException('the zip has a path outside its folder: $name');
+  }
+  if (name.startsWith('/') ||
+      name.contains('\\') ||
+      name.contains(':') ||
+      name.contains('\u0000')) {
+    throw FormatException('the zip has a path outside its folder: $name');
+  }
+  if (name.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
     throw FormatException('the zip has a path outside its folder: $name');
   }
   return true;
@@ -57,6 +76,7 @@ bool _safeName(String name) {
 /// Parse a hookshot-linux.txt list. [local]: file:// links allowed (else https only).
 Manifest parseList(String text, {bool local = true}) {
   var tag = '';
+  var sawTag = false;
   final parts = <Part>[];
   Part? cur;
   List<String>? files;
@@ -64,7 +84,10 @@ Manifest parseList(String text, {bool local = true}) {
     final line = raw.trim();
     if (line.isEmpty || line.startsWith('#')) continue;
     if (line.startsWith('tag ')) {
+      // (one tag: a second one is a concatenated or half-written list)
+      if (sawTag) throw const FormatException('the setup list has more than one tag');
       tag = line.substring(4).trim();
+      sawTag = true;
     } else if (line.startsWith('part ')) {
       final bits = line.split(' ');
       if (bits.length != 5) throw const FormatException('a part line needs sha, size, directory and url');
@@ -74,8 +97,12 @@ Manifest parseList(String text, {bool local = true}) {
       final url = bits[4];
       final ok = local ? (url.startsWith('https://') || url.startsWith('file://')) : url.startsWith('https://');
       if (!ok) throw FormatException('a part line has a bad link: $url');
+      final size = int.tryParse(bits[2]);
+      if (size == null || size < 0 || size > maxPartSize) {
+        throw FormatException('a part line has a bad size: ${bits[2]}');
+      }
       if (bits[3] != '.') _safeName(bits[3]);
-      cur = Part(bits[1], int.parse(bits[2]), bits[3], url, <String>[]);
+      cur = Part(bits[1], size, bits[3], url, <String>[]);
       parts.add(cur);
       files = cur.files as List<String>;
     } else if (line == 'tree') {
@@ -93,7 +120,7 @@ Manifest parseList(String text, {bool local = true}) {
     }
   }
   if (tag.isEmpty || parts.isEmpty) throw const FormatException('the setup list has no release');
-  if (!RegExp(r'^[0-9A-Za-z._+-]{1,128}$').hasMatch(tag) || tag == '.' || tag == '..') {
+  if (!isSafeTag(tag)) {
     throw FormatException('the setup list\'s tag is not a version name: $tag');
   }
   return Manifest(tag, parts);
@@ -156,6 +183,7 @@ String releaseOf(String tag) => trackOf(tag) == 'nightly' ? 'nightly' : tag;
 String listUrl([String? tag, String? repository]) {
   final repo = repository ?? cfg.repository();
   if (tag == null || tag.isEmpty) return 'https://github.com/$repo/releases/latest/download/$listName';
+  if (!isSafeTag(tag)) throw ArgumentError('not a version name: $tag');
   return 'https://github.com/$repo/releases/download/${releaseOf(tag)}/$listName';
 }
 

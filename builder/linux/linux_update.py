@@ -147,6 +147,8 @@ def release_of(tag):
 def list_url(tag=None):
     if not tag:
         return LATEST_LIST
+    if not re.fullmatch(r"[0-9A-Za-z._+-]{1,128}", tag) or tag in (".", ".."):
+        raise ValueError("not a version name: %r" % (tag,))
     return "https://github.com/%s/releases/download/%s/%s" % (REPOSITORY, release_of(tag), LIST_NAME)
 
 
@@ -362,7 +364,7 @@ def latest_tag(get=None, track="release"):
         import json
         body = json.loads(get(LATEST_API).decode("utf-8"))
         tag = body.get("tag_name")
-        if tag:
+        if tag and re.fullmatch(r"[0-9A-Za-z._+-]{1,128}", tag) and tag not in (".", ".."):
             return tag
     except Exception:
         pass
@@ -380,6 +382,8 @@ def _sha256(data):
 def _clone(src, dst, root, rooted_links=None):
     """A copy of src at dst. A hard link when the two are on one disk (the installed copy); a real copy from the
     AppImage's mount, which does not link."""
+    if os.path.lexists(dst):
+        raise ValueError("two update parts write the same file: %s" % dst)
     if os.path.islink(src):
         link_to = os.readlink(src)
         if rooted_links is not None and is_absolute_link(link_to):
@@ -400,25 +404,60 @@ def _clone_tree(src, dst, rebase_sysroot=False, root=None):
     for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
         rel = os.path.relpath(dirpath, src)
         out = dst if rel == os.curdir else os.path.join(dst, rel)
-        os.makedirs(out, exist_ok=True)
+        _make_parents_inside(root, out)
         kept = []
         for name in dirnames:
             link = os.path.join(dirpath, name)
             if os.path.islink(link):
+                _make_parents_inside(root, os.path.dirname(os.path.join(out, name)))
                 _clone(link, os.path.join(out, name), root, rooted_links)
             else:
                 kept.append(name)
         dirnames[:] = kept
         for name in filenames:
+            _make_parents_inside(root, os.path.dirname(os.path.join(out, name)))
             _clone(os.path.join(dirpath, name), os.path.join(out, name), root, rooted_links)
     if rooted_links is not None:
         _finish_sysroot_links(dst, rooted_links)
 
 
-def _safe_name(name):
-    if not name or name.startswith("/") or ".." in name.split("/"):
+def _safe_name(name, allow_trailing_slash=False):
+    # (a zip member or a list name: no root, no drive or NTFS stream colon,
+    # no backslash (a separator on Windows), no "." or ".." part, no empty
+    # part; a directory member may end with one "/")
+    if not name or len(name) > 4096:
+        raise ValueError("the zip has a path outside its folder")
+    check = name[:-1] if allow_trailing_slash and name.endswith("/") else name
+    if (not check or check.startswith("/") or "\\" in check or ":" in check or "\x00" in check
+            or any(part in ("", ".", "..") for part in check.split("/"))):
         raise ValueError("the zip has a path outside its folder")
     return name
+
+
+def _make_parents_inside(root, target):
+    """Create target and its parents under root, refusing any existing link
+    (or non-directory) on the way: a zip entry never makes a folder outside
+    the staging tree, even before a later check notices its link."""
+    root, target = os.path.abspath(root), os.path.abspath(target)
+    if target != root and os.path.commonpath((root, target)) != root:
+        raise ValueError("the update would write outside its staging folder: %s" % target)
+    chain, at = [], target
+    while True:
+        chain.append(at)
+        if at == root:
+            break
+        up = os.path.dirname(at)
+        if up == at:
+            raise ValueError("the update would write outside its staging folder: %s" % target)
+        at = up
+    for part in reversed(chain):
+        if os.path.islink(part):
+            raise ValueError("the update would write through a symbolic link: %s" % part)
+        if os.path.exists(part):
+            if not os.path.isdir(part):
+                raise ValueError("the update has a file where a folder goes: %s" % part)
+        else:
+            os.makedirs(part, exist_ok=True)
 
 
 def _check_part_directory(path):
@@ -454,6 +493,7 @@ def _finish_sysroot_links(dest, rooted_links):
             except FileNotFoundError:
                 pending.append((target, link_to))
                 continue
+            _make_parents_inside(dest, os.path.dirname(target))
             _check_part_directory(os.path.dirname(target))
             os.symlink(relative, target)
         if len(pending) == len(rooted_links):
@@ -468,15 +508,15 @@ def _unpack(data, dest, files, rebase_sysroot=False, root=None):
     rooted_links = []
     with zipfile.ZipFile(__import__("io").BytesIO(data)) as zipped:
         for info in zipped.infolist():
-            name = _safe_name(info.filename)
+            name = _safe_name(info.filename, allow_trailing_slash=True)
             if not name or name.endswith("/"):
                 continue
             if files is not None and name not in files:
                 raise ValueError("the zip has %s, which this part does not list" % name)
             target = os.path.join(dest, name)
             parent = os.path.dirname(target)
+            _make_parents_inside(dest, parent)
             _check_part_directory(parent)
-            os.makedirs(parent, exist_ok=True)
             mode = info.external_attr >> 16
             if stat.S_ISLNK(mode):
                 link_to = zipped.read(info).decode("utf-8")
@@ -501,7 +541,8 @@ def _place(part, source_root, source, dest_root, get, note):
     # Resolve installation parent links without following the staging directory itself.
     parent, staging = os.path.split(os.path.abspath(dest_root))
     staging_root = os.path.join(os.path.realpath(parent), staging)
-    dest = os.path.join(staging_root, _safe_name(part.dest))
+    dest = staging_root if part.dest == "." else os.path.join(staging_root, _safe_name(part.dest))
+    _make_parents_inside(staging_root, dest if part.dest == "." else os.path.dirname(dest))
     _check_part_directory(dest)
     old = source.by_sha(part.sha) if source else None
     src = os.path.join(source_root, part.dest) if old and old.same(part) and source_root else ""
@@ -513,9 +554,10 @@ def _place(part, source_root, source, dest_root, get, note):
         if part.files is None:
             _clone_tree(src, dest, rebase_sysroot, staging_root)
         else:
-            os.makedirs(dest, exist_ok=True)
+            _make_parents_inside(staging_root, dest)
             rooted_links = [] if rebase_sysroot else None
             for name in part.files:
+                _make_parents_inside(staging_root, os.path.dirname(os.path.join(dest, name)))
                 _clone(os.path.join(src, name), os.path.join(dest, name), staging_root, rooted_links)
             if rooted_links is not None:
                 _finish_sysroot_links(dest, rooted_links)
@@ -561,20 +603,33 @@ def install(manifest, source_root, source, note=None, get=None):
     is complete, and the version installed before stays until this one is."""
     note = note or (lambda message: None)
     get = get or fetch_bytes
+    if not re.fullmatch(r"[0-9A-Za-z._+-]{1,128}", manifest.tag) or manifest.tag in (".", ".."):
+        raise ValueError("the update tag is not a version name: %s" % manifest.tag)
+    if not manifest.parts:
+        raise ValueError("the setup list has no parts")
     root = data_root()
     versions = os.path.join(root, "versions")
     dest = os.path.join(versions, manifest.tag)
     partial = dest + ".part"
     if os.path.islink(partial):
         raise ValueError("the update staging folder is a symbolic link: %s" % partial)
+    if os.path.islink(dest):
+        raise ValueError("the installed version folder is a symbolic link: %s" % dest)
     if os.path.isdir(partial):
         shutil.rmtree(partial)
-    os.makedirs(versions, exist_ok=True)
+    _make_parents_inside(root, versions)
     try:
         for part in manifest.parts:
             _place(part, source_root, source, partial, get, note)
-        # The publisher keeps the list outside all hashed parts. Never follow or overwrite a part-supplied leaf.
-        with open(os.path.join(partial, LIST_NAME), "x", encoding="utf-8", newline="\n") as handle:
+        # The publisher keeps the list outside all hashed parts. A tree part
+        # reused from the installed version copied the old list: replace a
+        # plain file, but never write through a link or a folder a part made.
+        list_path = os.path.join(partial, LIST_NAME)
+        if os.path.islink(list_path) or os.path.isdir(list_path):
+            raise ValueError("a part supplied %s as a link or folder" % LIST_NAME)
+        if os.path.exists(list_path):
+            os.remove(list_path)
+        with open(list_path, "x", encoding="utf-8", newline="\n") as handle:
             handle.write("tag %s\n" % manifest.tag)
             for part in manifest.parts:
                 handle.write("part %s %d %s %s\n" % (part.sha, part.size, part.dest, part.url))
@@ -588,6 +643,8 @@ def install(manifest, source_root, source, note=None, get=None):
     os.rename(partial, dest)
     current = os.path.join(root, "current")
     tmp = current + ".new"
+    if os.path.islink(tmp):
+        raise ValueError("the update would write through a symbolic link: %s" % tmp)
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(manifest.tag + "\n")
     os.replace(tmp, current)
@@ -614,7 +671,15 @@ def fetch_manifest(get=None, tag=None):
     if override:
         with open(override, encoding="utf-8") as handle:
             return parse_list(handle.read())
-    return parse_list(get(list_url(tag)).decode("utf-8"), local=False)
+    data = get(list_url(tag))
+    if len(data) > (1 << 20):
+        raise ValueError("the setup list is larger than expected")
+    manifest = parse_list(data.decode("utf-8"), local=False)
+    # (the list comes from <tag>'s release: a stale latest/download answer
+    # must not install another release over the one asked for)
+    if tag and manifest.tag != tag:
+        raise ValueError("GitHub offered %s, not %s: its download links can lag right after a release" % (manifest.tag, tag))
+    return manifest
 
 
 def startup_manifest(root, get=None, tag=None):

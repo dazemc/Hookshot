@@ -135,7 +135,7 @@ Future<List<int>> fetchBytes(String url,
 }
 
 Future<List<int>> _get(HttpClient client, String url, int timeoutSeconds,
-    [StopFlag? stop, bool allowHttp = false]) async {
+    [StopFlag? stop, bool allowHttp = false, String accept = 'application/vnd.github+json']) async {
   var current = url;
   for (var hops = 0; hops < 10; hops++) {
     _stopped(stop);
@@ -145,7 +145,7 @@ Future<List<int>> _get(HttpClient client, String url, int timeoutSeconds,
     try {
       _stopped(stop);
       request.headers.set('User-Agent', 'Hookshot');
-      request.headers.set('Accept', 'application/vnd.github+json');
+      request.headers.set('Accept', accept);
       final response = await request.close().timeout(Duration(seconds: timeoutSeconds));
       if (response.statusCode >= 300 && response.statusCode < 400) {
         final next = response.headers.value('location');
@@ -196,28 +196,12 @@ Future<List<int>?> _apiDownload(HttpClient client, String url, StopFlag? stop) a
     final body = json.decode(utf8.decode(info)) as Map<String, dynamic>;
     for (final asset in (body['assets'] as List)) {
       if (asset['name'] == name) {
-        final request = await client.getUrl(Uri.parse(asset['url'] as String));
-        void abort() => request.abort(const Cancelled());
-        stop?.addListener(abort);
-        try {
-          _stopped(stop);
-          request.headers.set('User-Agent', 'Hookshot');
-          request.headers.set('Accept', 'application/octet-stream');
-          final response = await request.close().timeout(const Duration(seconds: 120));
-          if (response.statusCode != 200) {
-            await response.drain<void>();
-            return null;
-          }
-          final bytes = <int>[];
-          await for (final chunk in response.timeout(const Duration(seconds: 120))) {
-            _stopped(stop);
-            bytes.addAll(chunk);
-            if (bytes.length > (4 << 30)) throw const HttpException('the download is larger than expected');
-          }
-          return bytes;
-        } finally {
-          stop?.removeListener(abort);
-        }
+        // (the API's own asset link, never one from the answer that leaves
+        // api.github.com or drops to http: the checksum pins the bytes, but
+        // the download itself stays on the https API host)
+        final assetUrl = asset['url'];
+        if (assetUrl is! String || !assetUrl.startsWith('https://api.github.com/')) return null;
+        return await _get(client, assetUrl, 120, stop, false, 'application/octet-stream');
       }
     }
   } on Cancelled {
@@ -252,7 +236,7 @@ Future<String?> latestTag(Future<List<int>> Function(String url) get, {String tr
   try {
     final body = json.decode(utf8.decode(await get(latestApi))) as Map<String, dynamic>;
     final tag = body['tag_name'] as String?;
-    if (tag != null && tag.isNotEmpty) return tag;
+    if (tag != null && isSafeTag(tag)) return tag;
   } catch (_) {}
   try {
     final text = utf8.decode(await get(latestList));
@@ -283,8 +267,23 @@ Future<List<String>> releaseTags(Future<List<int>> Function(String url) get) asy
   return tags;
 }
 
+const _maxListBytes = 1 << 20;
+
+Manifest _checkedManifest(String text, {String? tag, bool local = true}) {
+  final manifest = parseList(text, local: local);
+  // (the list comes from <tag>'s release: a stale latest/download answer
+  // must not install another release over the one asked for. The Windows
+  // setup checks the same in builder/setup/setup.c)
+  if (tag != null && tag.isNotEmpty && manifest.tag != tag) {
+    throw StateError('GitHub offered ${manifest.tag}, not $tag: its download links can lag right after a release. '
+        'Try the update again in a few minutes.');
+  }
+  return manifest;
+}
+
 Manifest fetchManifestSync(String Function(String url) readFile, {String? tag}) {
   final override = Platform.environment['HOOKSHOT_LINUX_LIST'];
+  // (a local list is a deliberate override: its tag is not the requested one)
   if (override != null && override.isNotEmpty) return parseList(readFile(override));
   throw StateError('network fetch required');
 }
@@ -295,7 +294,8 @@ Future<Manifest> fetchManifest(Future<List<int>> Function(String url) get, {Stri
     return parseList(await File(override).readAsString());
   }
   final bytes = await get(listUrl(tag));
-  return parseList(utf8.decode(bytes), local: false);
+  if (bytes.length > _maxListBytes) throw const FormatException('the setup list is larger than expected');
+  return _checkedManifest(utf8.decode(bytes), tag: tag, local: false);
 }
 
 Manifest? readManifest(String? root) {
@@ -323,9 +323,54 @@ Future<Manifest> startupManifest(String? root, Future<List<int>> Function(String
 
 // ---- placing parts ----
 
-void _safeName(String name) {
-  if (name.isEmpty || name.startsWith('/') || name.split('/').contains('..')) {
+void _safeName(String name, {bool allowTrailingSlash = false}) {
+  // (a zip member or a part's folder: no root, no drive, no backslash (a
+  // separator on Windows), no ":" (a drive or NTFS stream), no "." or ".."
+  // part, and no empty part)
+  if (name.isEmpty || name.length > 4096) {
     throw ArgumentError('the zip has a path outside its folder: $name');
+  }
+  var check = name;
+  if (allowTrailingSlash && check.endsWith('/')) check = check.substring(0, check.length - 1);
+  if (check.isEmpty ||
+      check.startsWith('/') ||
+      check.contains('\\') ||
+      check.contains(':') ||
+      check.contains('\u0000') ||
+      check.split('/').any((part) => part.isEmpty || part == '.' || part == '..')) {
+    throw ArgumentError('the zip has a path outside its folder: $name');
+  }
+}
+
+/// Create [target] and its parents under [root], refusing any existing
+/// component that is a symbolic link (or not a directory). A zip entry must
+/// never make a folder outside the staging tree, even before a later check
+/// notices its link.
+void _makeParentsInside(String root, String target) {
+  final absRoot = p.normalize(Directory(root).absolute.path);
+  final absTarget = p.normalize(Directory(target).absolute.path);
+  if (absTarget != absRoot && !absTarget.startsWith('$absRoot${p.separator}')) {
+    throw ArgumentError('the update would write outside its staging folder: $target');
+  }
+  final chain = <String>[];
+  var dir = absTarget;
+  while (true) {
+    chain.add(dir);
+    if (dir == absRoot) break;
+    final up = p.dirname(dir);
+    if (up == dir) throw ArgumentError('the update would write outside its staging folder: $target');
+    dir = up;
+  }
+  for (final part in chain.reversed) {
+    final type = FileSystemEntity.typeSync(part, followLinks: false);
+    if (type == FileSystemEntityType.link) {
+      throw ArgumentError('the update would write through a symbolic link: $part');
+    }
+    if (type == FileSystemEntityType.notFound) {
+      Directory(part).createSync(recursive: true);
+    } else if (type != FileSystemEntityType.directory) {
+      throw ArgumentError('the update has a file where a folder goes: $part');
+    }
   }
 }
 
@@ -407,6 +452,9 @@ void _symlinkChecked(String root, String linkTo, String target) {
 }
 
 void _clone(String src, String dst, String root, List<(String, String)>? rootedLinks) {
+  if (FileSystemEntity.typeSync(dst, followLinks: false) != FileSystemEntityType.notFound) {
+    throw ArgumentError('two update parts write the same file: $dst');
+  }
   final type = FileSystemEntity.typeSync(src, followLinks: false);
   if (type == FileSystemEntityType.link) {
     final linkTo = Link(src).targetSync();
@@ -418,10 +466,16 @@ void _clone(String src, String dst, String root, List<(String, String)>? rootedL
     return;
   }
   try {
-    Link(dst).createSync(src);
-    return;
-  } catch (_) {
-    File(src).copySync(dst);
+    // (a hard link where the filesystem has them: the old version is deleted
+    // after this one is complete. Never a symbolic link: that would point out
+    // of the staging tree, which _checkLinksInside refuses, and break when the
+    // old version goes)
+    if (!Platform.isWindows && Process.runSync('ln', [src, dst]).exitCode == 0) return;
+  } catch (_) {}
+  File(src).copySync(dst);
+  if (!Platform.isWindows) {
+    final mode = File(src).statSync().mode & 0x1FF;
+    if (mode != 0) Process.runSync('chmod', [mode.toRadixString(8), dst]);
   }
 }
 
@@ -431,13 +485,9 @@ void _cloneTree(String src, String dst, String root, {bool rebaseSysroot = false
     final rel = _relative(entity.path, src);
     final out = '$dst/$rel';
     if (entity is Directory) {
-      if (FileSystemEntity.isLinkSync(entity.path)) {
-        _clone(entity.path, out, root, rootedLinks);
-      } else {
-        Directory(out).createSync(recursive: true);
-      }
-    } else if (entity is File) {
-      Directory(File(out).parent.path).createSync(recursive: true);
+      _makeParentsInside(root, out);
+    } else if (entity is File || entity is Link) {
+      _makeParentsInside(root, Directory(out).parent.path);
       _clone(entity.path, out, root, rootedLinks);
     }
   }
@@ -451,6 +501,7 @@ void _finishSysrootLinks(String dest, List<(String, String)> rootedLinks) {
     for (final (target, linkTo) in pending) {
       try {
         final relative = relativeSysrootLink(dest, target, linkTo);
+        _makeParentsInside(dest, Directory(target).parent.path);
         _checkPartDirectory(Directory(target).parent.path, dest);
         Link(target).createSync(relative);
       } on StateError {
@@ -471,14 +522,14 @@ void _unpack(List<int> data, String dest, List<String>? files, bool rebaseSysroo
   final archive = ZipDecoder().decodeBytes(data);
   for (final file in archive.files) {
     final name = file.name;
-    _safeName(name);
+    _safeName(name, allowTrailingSlash: true);
     if (name.isEmpty || name.endsWith('/')) continue;
     if (files != null && !files.contains(name)) {
       throw ArgumentError('the zip has ${file.name}, which this part does not list');
     }
     final target = '$dest/$name';
     final parent = Directory(target).parent.path;
-    Directory(parent).createSync(recursive: true);
+    _makeParentsInside(dest, parent);
     _checkPartDirectory(parent, dest);
     // (archive's mode is already the unix mode, not externalAttributes: no shift)
     final mode = file.mode;
@@ -491,7 +542,15 @@ void _unpack(List<int> data, String dest, List<String>? files, bool rebaseSysroo
         _symlinkChecked(root, linkTo, target);
       }
     } else {
-      File(target).writeAsBytesSync(file.content as List<int>, flush: true);
+      // (exclusive: a part may not write through a link an earlier entry made,
+      // nor replace another part's file)
+      final out = File(target)..createSync(exclusive: true);
+      final handle = out.openSync(mode: FileMode.writeOnly);
+      try {
+        handle.writeFromSync(file.content as List<int>);
+      } finally {
+        handle.closeSync();
+      }
       final perms = mode & 0x1FF;
       if (perms != 0) {
         Process.runSync('chmod', [perms.toRadixString(8), target]);
@@ -521,8 +580,8 @@ Future<void> _place(Part part, String? sourceRoot, Manifest? source, String dest
   final parent = Directory(destRoot).parent.path;
   final staging = Directory(destRoot).uri.pathSegments.where((s) => s.isNotEmpty).last;
   final stagingRoot = '${Directory(parent).resolveSymbolicLinksSync()}/$staging';
-  final dest = '$stagingRoot/${_safeName2(part.dest)}';
-  Directory(dest).parent.createSync(recursive: true);
+  final dest = '$stagingRoot/${part.dest == '.' ? '.' : _safeName2(part.dest)}';
+  _makeParentsInside(stagingRoot, Directory(dest).parent.path);
   _checkPartDirectory(Directory(dest).parent.path, destRoot);
   final old = source?.bySha(part.sha);
   final src = (old != null && old.sameAs(part) && sourceRoot != null) ? '$sourceRoot/${part.dest}' : '';
@@ -536,9 +595,10 @@ Future<void> _place(Part part, String? sourceRoot, Manifest? source, String dest
     if (part.files == null) {
       _cloneTree(src, dest, stagingRoot, rebaseSysroot: rebaseSysroot);
     } else {
-      Directory(dest).createSync(recursive: true);
+      _makeParentsInside(stagingRoot, dest);
       final rootedLinks = rebaseSysroot ? <(String, String)>[] : null;
       for (final name in part.files!) {
+        _makeParentsInside(stagingRoot, Directory('$dest/$name').parent.path);
         _clone('$src/$name', '$dest/$name', stagingRoot, rootedLinks);
       }
       if (rootedLinks != null) _finishSysrootLinks(dest, rootedLinks);
@@ -585,6 +645,10 @@ Future<String> install(Manifest manifest, String? sourceRoot, Manifest? source,
     StopFlag? stop}) async {
   final getFn = get ?? ((String url) => fetchBytes(url, stop: stop));
   final noteFn = note ?? (_) {};
+  if (!isSafeTag(manifest.tag)) {
+    throw ArgumentError('the update tag is not a version name: ${manifest.tag}');
+  }
+  if (manifest.parts.isEmpty) throw const FormatException('the setup list has no parts');
   final root = rootOverride ?? dataRoot();
   final versions = '$root/versions';
   final dest = '$versions/${manifest.tag}';
@@ -592,8 +656,11 @@ Future<String> install(Manifest manifest, String? sourceRoot, Manifest? source,
   if (FileSystemEntity.isLinkSync(partial)) {
     throw ArgumentError('the update staging folder is a symbolic link: $partial');
   }
+  if (FileSystemEntity.isLinkSync(dest)) {
+    throw ArgumentError('the installed version folder is a symbolic link: $dest');
+  }
   if (Directory(partial).existsSync()) Directory(partial).deleteSync(recursive: true);
-  Directory(versions).createSync(recursive: true);
+  _makeParentsInside(root, versions);
   try {
     for (final part in manifest.parts) {
       _stopped(stop);
@@ -610,7 +677,17 @@ Future<String> install(Manifest manifest, String? sourceRoot, Manifest? source,
         }
       }
     }
-    File('$partial/$listName').writeAsStringSync(list.toString(), flush: true);
+    // (the publisher keeps the list outside every hashed part. A tree part
+    // reused from the installed version copied the old list: replace a plain
+    // file, but never write through a link or a folder a part made)
+    final listPath = '$partial/$listName';
+    final listType = FileSystemEntity.typeSync(listPath, followLinks: false);
+    if (listType == FileSystemEntityType.link || listType == FileSystemEntityType.directory) {
+      throw ArgumentError('a part supplied $listName as a link or folder');
+    }
+    if (listType == FileSystemEntityType.file) File(listPath).deleteSync();
+    final listFile = File(listPath)..createSync(exclusive: true);
+    listFile.writeAsStringSync(list.toString(), flush: true);
     _finishTree(partial);
     _stopped(stop); // the last moment: from here the new version takes the old one's place
   } catch (_) {
@@ -620,12 +697,24 @@ Future<String> install(Manifest manifest, String? sourceRoot, Manifest? source,
   if (Directory(dest).existsSync()) Directory(dest).deleteSync(recursive: true);
   Directory(partial).renameSync(dest);
   final current = '$root/current';
-  File('$current.new').writeAsStringSync('${manifest.tag}\n', flush: true);
-  File('$current.new').renameSync(current);
+  final next = File('$current.new');
+  if (FileSystemEntity.isLinkSync(next.path)) {
+    throw ArgumentError('the update would write through a symbolic link: ${next.path}');
+  }
+  if (next.existsSync()) next.deleteSync();
+  next.createSync(exclusive: true);
+  next.writeAsStringSync('${manifest.tag}\n', flush: true);
+  next.renameSync(current);
   for (final name in Directory(versions).listSync()) {
     if (name.path != dest) {
       try {
-        Directory(name.path).deleteSync(recursive: true);
+        if (FileSystemEntity.isLinkSync(name.path)) {
+          Link(name.path).deleteSync();
+        } else if (Directory(name.path).existsSync()) {
+          Directory(name.path).deleteSync(recursive: true);
+        } else {
+          File(name.path).deleteSync();
+        }
       } catch (_) {}
     }
   }
@@ -637,8 +726,9 @@ String installedApprun() {
   final root = dataRoot();
   try {
     final tag = File('$root/current').readAsStringSync().trim();
+    if (!isSafeTag(tag)) return '';
     final path = '$root/versions/$tag/AppRun';
-    if (tag.isNotEmpty && File(path).existsSync()) return path;
+    if (File(path).existsSync()) return path;
   } catch (_) {}
   return '';
 }

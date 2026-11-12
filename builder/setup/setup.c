@@ -29,6 +29,7 @@
 #define WM_STATUS (WM_APP + 1)
 #define WM_DONE (WM_APP + 2)
 #define MAX_PARTS 16
+#define MAX_TEXT (4 << 20)   /* (a setup list or a release's JSON: never this big) */
 
 static HWND g_win, g_text, g_bar;
 static wchar_t g_status[512];
@@ -167,6 +168,7 @@ static int http_get(const char *url8, Sink sink, void *user, unsigned long long 
 typedef struct { char *p; size_t n, cap; } Mem;
 static int mem_sink(void *u, const void *d, DWORD n) {
     Mem *m = (Mem *)u;
+    if (m->n + n + 1 > MAX_TEXT) return 0;
     if (m->n + n + 1 > m->cap) {
         m->cap = (m->n + n + 1) * 2;
         m->p = (char *)realloc(m->p, m->cap);
@@ -209,6 +211,131 @@ static int file_sha256(const wchar_t *path, char out[65]) {
     if (ok) hex(d, 32, out);
     return ok;
 }
+
+/* ---- archive members: before Windows' tar.exe sees a part, every central-directory name and mode is checked. A part is a
+   zip of the release's own files, so a name outside the folder, a drive or NTFS stream, a backslash (a separator on
+   Windows), a link or device, or a name that differs between the central directory and its local header is refused.
+   (tar.exe's defaults are safe too; this names what was refused and keeps a second extractor from being the boundary.) ---- */
+/* ZIP-SAFETY-BEGIN */
+typedef long long zip_off;
+#ifdef _WIN32
+#define zip_seek(f, o) _fseeki64((f), (o), SEEK_SET)
+#else
+#define zip_seek(f, o) fseeko((f), (off_t)(o), SEEK_SET)
+#endif
+
+static unsigned zip_u16(const unsigned char *p) {
+    return (unsigned)p[0] | ((unsigned)p[1] << 8);
+}
+static unsigned long zip_u32(const unsigned char *p) {
+    return (unsigned long)p[0] | ((unsigned long)p[1] << 8) | ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+}
+static int zip_read(FILE *f, void *out, size_t n) { return fread(out, 1, n, f) == n; }
+static zip_off zip_size(FILE *f) {
+    if (!f) return -1;
+#ifdef _WIN32
+    if (_fseeki64(f, 0, SEEK_END)) return -1;
+    return _ftelli64(f);
+#else
+    if (fseeko(f, 0, SEEK_END)) return -1;
+    return (zip_off)ftello(f);
+#endif
+}
+
+/* a member name: no root, drive or stream, no backslash, no "." or ".." part, no empty part, no control character, and
+   no part ending in "." or " " (Windows strips those, so ".. " would become "..") */
+static int zip_name_ok(const char *s, size_t n) {
+    if (!n || n > 4096) return 0;
+    if (s[0] == '/' || s[0] == '\\') return 0;
+    if (n >= 2 && s[1] == ':' && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z'))) return 0;
+    for (size_t at = 0; at < n;) {
+        size_t end = at;
+        while (end < n && s[end] != '/') {
+            const unsigned char c = (unsigned char)s[end];
+            if (c == '\\' || c == ':' || c < 0x20) return 0;
+            end++;
+        }
+        const size_t len = end - at;
+        if (!len || (len == 1 && s[at] == '.') || (len == 2 && s[at] == '.' && s[at + 1] == '.') ||
+            s[end - 1] == '.' || s[end - 1] == ' ')
+            return 0;
+        at = end + 1;
+    }
+    return 1;
+}
+
+/* 1 when every central-directory member is a plain file or directory with a name under the extraction folder */
+static int zip_members_safe(FILE *f) {
+    const zip_off size = zip_size(f);
+    if (size < 22) return 0;
+    const size_t tail_len = size < 65557 ? (size_t)size : 65557;
+    unsigned char *tail = (unsigned char *)malloc(tail_len);
+    if (!tail) return 0;
+    if (zip_seek(f, size - (zip_off)tail_len) != 0 || !zip_read(f, tail, tail_len)) {
+        free(tail);
+        return 0;
+    }
+    long long eocd = -1;
+    for (size_t i = tail_len - 21; i-- > 0;) {
+        if (zip_u32(tail + i) == 0x06054b50u && zip_u16(tail + i + 20) == tail_len - i - 22) {
+            eocd = (long long)i;
+            break;
+        }
+    }
+    if (eocd < 0) {
+        free(tail);
+        return 0;
+    }
+    const unsigned long cd_size = zip_u32(tail + eocd + 12);
+    const unsigned long cd_off = zip_u32(tail + eocd + 16);
+    free(tail);
+    /* (ZIP64's 0xFFFFFFFF fields: refuse rather than scan nothing and let tar.exe decide) */
+    if (cd_off == 0xffffffffu || cd_size == 0xffffffffu || (zip_off)cd_off > size ||
+        (zip_off)cd_off + (zip_off)cd_size > size)
+        return 0;
+    const zip_off cd_end = (zip_off)cd_off + (zip_off)cd_size;
+    zip_off at = (zip_off)cd_off;
+    unsigned entries = 0;
+    while (at < cd_end) {
+        unsigned char h[46];
+        if (zip_seek(f, at) != 0 || !zip_read(f, h, sizeof h) || zip_u32(h) != 0x02014b50u) return 0;
+        const unsigned name_len = zip_u16(h + 28), extra_len = zip_u16(h + 30), comment_len = zip_u16(h + 32);
+        const unsigned long attr = zip_u32(h + 38);
+        const unsigned long local = zip_u32(h + 42);
+        if (!name_len || name_len > 4096 || at + 46 + (zip_off)name_len + (zip_off)extra_len + (zip_off)comment_len > cd_end)
+            return 0;
+        char name[4097];
+        if (!zip_read(f, name, name_len)) return 0;
+        name[name_len] = 0;
+        if (!zip_name_ok(name, name_len)) return 0;
+        const unsigned type = (unsigned)((attr >> 16) & 0xF000u);
+        if (type == 0xA000u || (type != 0 && type != 0x8000u && type != 0x4000u)) return 0;   /* (link, device, fifo) */
+        if (local != 0xffffffffu && (zip_off)local + 30 <= size) {
+            unsigned char lh[30];
+            if (zip_seek(f, (zip_off)local) != 0 || !zip_read(f, lh, sizeof lh) || zip_u32(lh) != 0x04034b50u) return 0;
+            const unsigned local_name = zip_u16(lh + 26);
+            char local_buf[4097];
+            if (local_name != name_len || !zip_read(f, local_buf, local_name) || memcmp(local_buf, name, name_len)) return 0;
+        }
+        at += 46 + (zip_off)name_len + (zip_off)extra_len + (zip_off)comment_len;
+        if (++entries > 200000u) return 0;
+    }
+    return at == cd_end;
+}
+/* a 64-hex checksum on a line of parts.txt (exactly, never a substring of another line) */
+static int parts_has(const char *text, const char *sha) {
+    const size_t n = strlen(sha);
+    if (n != 64) return 0;
+    for (const char *line = text; line && *line;) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        if (len && line[len - 1] == '\r') len--;
+        if (len == n && !memcmp(line, sha, n)) return 1;
+        line = end ? end + 1 : NULL;
+    }
+    return 0;
+}
+/* ZIP-SAFETY-END */
 
 typedef struct {
     DWORD code, start_error, status_error, capture_error;
@@ -350,11 +477,22 @@ static void read_small(const wchar_t *path, char *out, int n) {
 }
 
 static void write_small(const wchar_t *path, const char *text) {
-    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    /* (written beside it and moved over: a setup stopped while writing a
+       marker never leaves a half-written one that reads as installed) */
+    wchar_t tmp[MAX_PATH];
+    if (_snwprintf(tmp, MAX_PATH, L"%ls.new", path) < 0) return;
+    DeleteFileW(tmp);   /* (never write through a link a stale .new might be) */
+    HANDLE f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
     if (f == INVALID_HANDLE_VALUE) return;
-    DWORD n;
-    WriteFile(f, text, (DWORD)strlen(text), &n, NULL);
+    DWORD n = 0;
+    const DWORD len = (DWORD)strlen(text);
+    const BOOL wrote = WriteFile(f, text, len, &n, NULL);
     CloseHandle(f);
+    if (!wrote || n != len) {
+        DeleteFileW(tmp);
+        return;
+    }
+    if (!MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING)) DeleteFileW(tmp);
 }
 
 /* A part that unpacks into a folder of its own (the tools the builder ships: Python, emsdk, the CPM packages, third_party,
@@ -427,7 +565,13 @@ static int reuse_part(const wchar_t *versions, const char *tag, const Part *p, c
     if (!part_folder(p, rel, MAX_PATH)) return 0;
     home_path(cur, L"%ls\\current.txt", versions);
     read_small(cur, was, sizeof was);
-    if (!was[0] || !strcmp(was, tag)) return 0;
+    if (!list_name_ok(was, 0) || !strcmp(was, tag)) return 0;
+    /* (a version folder is reused only when its own marker says it finished) */
+    wchar_t marker[MAX_PATH];
+    char installed[128] = "";
+    home_path(marker, L"%ls\\%hs\\installed.txt", versions, was);
+    read_small(marker, installed, sizeof installed);
+    if (strcmp(installed, was)) return 0;
     home_path(list, L"%ls\\%hs\\parts.txt", versions, was);
     HANDLE f = CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (f == INVALID_HANDLE_VALUE) return 0;
@@ -436,10 +580,12 @@ static int reuse_part(const wchar_t *versions, const char *tag, const Part *p, c
     ReadFile(f, buf, sizeof buf - 1, &got, NULL);
     CloseHandle(f);
     buf[got] = 0;
-    if (!strstr(buf, p->sha)) return 0;
+    if (!parts_has(buf, p->sha)) return 0;
     home_path(from, L"%ls\\%hs\\%ls", versions, was, rel);
     home_path(to, L"%ls\\%ls", install, rel);
-    if (GetFileAttributesW(from) == INVALID_FILE_ATTRIBUTES) return 0;
+    const DWORD attrs = GetFileAttributesW(from);
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY) || (attrs & FILE_ATTRIBUTE_REPARSE_POINT))
+        return 0;
     wcscpy(parent, to);
     wchar_t *slash = wcsrchr(parent, L'\\');
     if (slash) *slash = 0, mkdirs(parent);
@@ -452,17 +598,17 @@ static int reuse_part(const wchar_t *versions, const char *tag, const Part *p, c
 /* The checksums of the parts this version holds in folders of their own (reuse_part reads them at the next update) */
 static void write_parts(const wchar_t *install, const Part *parts, int nparts) {
     wchar_t list[MAX_PATH], rel[MAX_PATH];
+    char text[MAX_PARTS * 66 + 1];
+    size_t at = 0;
     home_path(list, L"%ls\\parts.txt", install);
-    HANDLE f = CreateFileW(list, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE) return;
     for (int i = 0; i < nparts; i++) {
         if (!part_folder(&parts[i], rel, MAX_PATH)) continue;
-        char line[128];
-        const int n = snprintf(line, sizeof line, "%s\n", parts[i].sha);
-        DWORD put;
-        WriteFile(f, line, (DWORD)n, &put, NULL);
+        const int n = snprintf(text + at, sizeof text - at, "%s\n", parts[i].sha);
+        if (n < 0 || (size_t)n >= sizeof text - at) return;
+        at += (size_t)n;
     }
-    CloseHandle(f);
+    text[at] = 0;
+    write_small(list, text);
 }
 
 /* (as NX2navi's launcher keeps them: the version just installed and the one before it stay, older versions go, and so do downloads
@@ -743,6 +889,11 @@ static DWORD WINAPI work(LPVOID unused) {
     {
         char want[128];
         wanted_tag(want, sizeof want);
+        /* (a release candidate's or a release's own setup installs that release when started with no --tag; the nightly's
+           list names a git-describe tag, not "nightly", so only the named releases are checked) */
+        if (!want[0] && strcmp(HOOKSHOT_SETUP_RELEASE, "nightly") &&
+            strlen(HOOKSHOT_SETUP_RELEASE) < sizeof want)
+            strcpy(want, HOOKSHOT_SETUP_RELEASE);
         if (want[0] && strcmp(want, tag)) {
             wchar_t ww[128], wt[128];
             MultiByteToWideChar(CP_UTF8, 0, want, -1, ww, 128), MultiByteToWideChar(CP_UTF8, 0, tag, -1, wt, 128);
@@ -760,7 +911,9 @@ static DWORD WINAPI work(LPVOID unused) {
     home_path(exe, L"%ls\\%ls", install, wrun);
     for (wchar_t *q = exe; *q; q++) if (*q == L'/') *q = L'\\';
 
-    if (repair || GetFileAttributesW(marker) == INVALID_FILE_ATTRIBUTES || !builder_ready(exe)) {
+    char installed[128] = "";
+    read_small(marker, installed, sizeof installed);
+    if (repair || !installed[0] || strcmp(installed, tag) || !builder_ready(exe)) {
         /* (unpacked into <tag>.part and renamed once complete: a setup stopped half way never leaves a version that looks installed) */
         home_path(install, L"%ls\\%ls.part", versions, wtag);
         rmtree(install);
@@ -824,6 +977,19 @@ static DWORD WINAPI work(LPVOID unused) {
                 }
             }
             status(L"Unpacking part %d of %d...", i + 1, nparts);
+            {
+                /* (tar.exe's defaults are safe, but a second extractor is not the boundary: refuse a member whose name or
+                   mode could leave the folder, or whose central-directory name is not its local header's) */
+                FILE *zf = _wfopen(zip, L"rb");
+                const int safe = zf && zip_members_safe(zf);
+                if (zf) fclose(zf);
+                if (!safe) {
+                    DeleteFileW(zip);
+                    fail(L"Part %d of %d has an archive member this setup does not accept (a path outside the install, a link, "
+                         L"or a name that differs from its local header). The checked download was removed: run the setup again.",
+                         i + 1, nparts);
+                }
+            }
             wchar_t dest[MAX_PATH], wdest[260], tarcmd[2 * MAX_PATH + 64], sys[MAX_PATH];
             w(p->dest, wdest, 260);
             if (!strcmp(p->dest, ".")) wcscpy(dest, install);
@@ -934,11 +1100,15 @@ static int launch_installed(const wchar_t *args) {
     home_path(cur, L"%ls\\versions\\current.txt", base);
     read_small(cur, tag, sizeof tag);
     if (!tag[0] || tag[0] == '.' || !list_name_ok(tag, 0)) return 0;   /* (a tag that names a folder under versions) */
-    wchar_t wtag[128];
+    wchar_t wtag[128], version[MAX_PATH], marker[MAX_PATH];
     MultiByteToWideChar(CP_UTF8, 0, tag, -1, wtag, 128);
-    home_path(dir, L"%ls\\versions\\%ls\\HookshotBuilder", base, wtag);
+    home_path(version, L"%ls\\versions\\%ls", base, wtag);
+    home_path(dir, L"%ls\\HookshotBuilder", version);
     home_path(exe, L"%ls\\HookshotBuilder.exe", dir);
-    if (!builder_ready(exe)) return 0;
+    home_path(marker, L"%ls\\installed.txt", version);
+    char installed[128] = "";
+    read_small(marker, installed, sizeof installed);
+    if (!installed[0] || strcmp(installed, tag) || !builder_ready(exe)) return 0;
     swprintf(cmd, 4096, L"\"%ls\" %ls", exe, args);
     STARTUPINFOW si = {sizeof si};
     PROCESS_INFORMATION pi;

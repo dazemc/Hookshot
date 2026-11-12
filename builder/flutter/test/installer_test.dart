@@ -25,6 +25,32 @@ List<int> _zip(Map<String, dynamic> entries) {
 
 String _sha(List<int> bytes) => sha256.convert(bytes).toString();
 
+/// The archive package writes `/` for a `\` in a name. A zip made by another
+/// tool keeps it, so put the authored bytes back after encoding.
+List<int> _zipWithRawNames(Map<String, String> entries) {
+  final bytes = _zip(entries);
+  for (final raw in entries.keys) {
+    if (!raw.contains('\\')) continue;
+    final normalized = utf8.encode(raw.replaceAll('\\', '/'));
+    final exact = utf8.encode(raw);
+    for (var i = 0; i + normalized.length <= bytes.length; i++) {
+      var same = true;
+      for (var j = 0; j < normalized.length; j++) {
+        if (bytes[i + j] != normalized[j]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) {
+        for (var j = 0; j < exact.length; j++) {
+          bytes[i + j] = exact[j];
+        }
+      }
+    }
+  }
+  return bytes;
+}
+
 void main() {
   group('install', () {
     test('installs tree and file parts, keeps install atomic', () async {
@@ -101,6 +127,111 @@ void main() {
         await expectLater(
             install(evil, null, null, get: getEvil, rootOverride: '${tmp.path}/builder'), throwsArgumentError);
         expect(Directory('${tmp.path}/builder/versions/v9.9.10').existsSync(), isFalse);
+      } finally {
+        await tmp.delete(recursive: true);
+      }
+    });
+
+    test('a zip member cannot escape through a Windows separator, drive or empty part', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-install-name-');
+      try {
+        for (final name in ['..\\evil.txt', 'C:/evil.txt', 'a//evil.txt', 'a\\evil.txt']) {
+          final zip = _zipWithRawNames({
+            name: 'escaped',
+            'usr/share/hookshot/builder/linux/AppRun': '#!/bin/sh\n',
+          });
+          Future<List<int>> get(String url) async => zip;
+          final manifest =
+              Manifest('v9.9.9', [Part(_sha(zip), zip.length, '.', 'https://example.com/p.zip', null)]);
+          await expectLater(
+              install(manifest, null, null, get: get, rootOverride: '${tmp.path}/builder'), throwsArgumentError);
+        }
+        expect(File('${tmp.path}/evil.txt').existsSync(), isFalse);
+        expect(File('${tmp.path}/builder/evil.txt').existsSync(), isFalse);
+        expect(Directory('${tmp.path}/builder/versions/v9.9.9').existsSync(), isFalse);
+      } finally {
+        await tmp.delete(recursive: true);
+      }
+    });
+
+    test('a zip link parent is refused before it can make a folder', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-install-link-parent-');
+      try {
+        final zip = _zip({
+          'link': ['link', '../outside'],
+          'link/evil.txt': 'escaped',
+          'usr/share/hookshot/builder/linux/AppRun': '#!/bin/sh\n',
+        });
+        Future<List<int>> get(String url) async => zip;
+        final manifest =
+            Manifest('v9.9.9', [Part(_sha(zip), zip.length, '.', 'https://example.com/p.zip', null)]);
+        await expectLater(
+            install(manifest, null, null, get: get, rootOverride: '${tmp.path}/builder'), throwsArgumentError);
+        expect(Directory('${tmp.path}/builder/versions/v9.9.9.part/outside').existsSync(), isFalse);
+        expect(Directory('${tmp.path}/builder/versions/v9.9.9').existsSync(), isFalse);
+      } finally {
+        await tmp.delete(recursive: true);
+      }
+    });
+
+    test('a part cannot supply the installed list through a link', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-install-list-link-');
+      try {
+        final zip = _zip({
+          'real.txt': 'kept',
+          'hookshot-linux.txt': ['link', 'real.txt'],
+          'usr/share/hookshot/builder/linux/AppRun': '#!/bin/sh\n',
+        });
+        Future<List<int>> get(String url) async => zip;
+        final manifest =
+            Manifest('v9.9.9', [Part(_sha(zip), zip.length, '.', 'https://example.com/p.zip', null)]);
+        await expectLater(
+            install(manifest, null, null, get: get, rootOverride: '${tmp.path}/builder'), throwsArgumentError);
+        expect(File('${tmp.path}/builder/versions/v9.9.9/real.txt').existsSync(), isFalse);
+      } finally {
+        await tmp.delete(recursive: true);
+      }
+    });
+
+    test('an unchanged part keeps its links when it is reused', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-install-reuse-');
+      try {
+        final zip = _zip({
+          'real.txt': 'data',
+          'alias.txt': ['link', 'real.txt'],
+          'usr/share/hookshot/builder/linux/AppRun': '#!/bin/sh\n',
+        });
+        Future<List<int>> get(String url) async => zip;
+        final part = Part(_sha(zip), zip.length, '.', 'https://example.com/p.zip', null);
+        final one = Manifest('v1.0.0', [part]);
+        await install(one, null, null, get: get, rootOverride: '${tmp.path}/builder');
+        final root = '${tmp.path}/builder/versions/v1.0.0';
+        final two = Manifest('v2.0.0', [part]);
+        await install(two, root, one, get: get, rootOverride: '${tmp.path}/builder');
+        expect(Link('${tmp.path}/builder/versions/v2.0.0/alias.txt').targetSync(), 'real.txt');
+        expect(File('${tmp.path}/builder/versions/v2.0.0/real.txt').readAsStringSync(), 'data');
+      } finally {
+        await tmp.delete(recursive: true);
+      }
+    });
+
+    test('a failed update keeps the installed version and its current pointer', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-install-keep-');
+      try {
+        final first = _zip({'usr/share/hookshot/builder/linux/AppRun': '#!/bin/sh\n'});
+        Future<List<int>> getFirst(String url) async => first;
+        final one = Manifest('v1.0.0', [Part(_sha(first), first.length, '.', 'https://example.com/one.zip', null)]);
+        await install(one, null, null, get: getFirst, rootOverride: '${tmp.path}/builder');
+        final installed = File('${tmp.path}/builder/versions/v1.0.0/usr/share/hookshot/builder/linux/AppRun');
+        expect(installed.readAsStringSync(), '#!/bin/sh\n');
+
+        Future<List<int>> getBad(String url) async => utf8.encode('wrong bytes');
+        final two = Manifest('v2.0.0', [Part(_sha([1, 2, 3]), 11, '.', 'https://example.com/two.zip', null)]);
+        await expectLater(
+            install(two, null, null, get: getBad, rootOverride: '${tmp.path}/builder'), throwsStateError);
+        expect(File('${tmp.path}/builder/current').readAsStringSync().trim(), 'v1.0.0');
+        expect(installed.readAsStringSync(), '#!/bin/sh\n');
+        expect(Directory('${tmp.path}/builder/versions/v2.0.0').existsSync(), isFalse);
       } finally {
         await tmp.delete(recursive: true);
       }
