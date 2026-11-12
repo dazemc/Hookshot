@@ -56,6 +56,7 @@ struct Pool {
 Pool first_pool{0x1000, 0x2000, 0, 0, handle<VkBuffer>(1), {}, {}, 0x100000};
 Pool second_pool{0x2000, 0x3000, 0, 0, handle<VkBuffer>(2), {}, {}, 0x200000};
 std::mutex pools_mu;
+void note_in_place_read(bool = false) {}   // (the readback's part wait: tests/test_readback_part.py)
 Pool* pool_of(uint64_t guest, uint64_t) {
     lookups++;
     return guest < second_pool.lo ? &first_pool : &second_pool;

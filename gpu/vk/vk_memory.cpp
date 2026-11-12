@@ -1309,20 +1309,51 @@ struct WbPages {
     }
     bool empty() const { return !any; }
 } wb_pages;
-void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value) {
+// (hookshot) and the part of that submission the write-back was recorded in (vk_replay.cpp's Recording::part), for a page
+// written back from its mirror: a submission is recorded in parts of ~120 draws (maybe_split), each part's end copies back
+// what the GPU wrote in it, and the CPU's read needs that part done, not the submission's last one. Hyrule Field: the
+// readbacks waited 5.5 ms a frame for last parts, the GPU's whole frame. 0 for a page written in place (note_direct_write:
+// no mirror; the later parts of its submission may still read or write it in guest memory, so the read waits for all of it).
+// A page's part is replaced with its value, by every note: the two are of the same write
+WbPages wb_parts;
+void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value, uint64_t part) {
     static const bool off = env_on("RX_VK_NO_READBACK_WAIT");
     if (off || !value || guest_hi <= guest_lo) return;
     std::lock_guard lk(wb_pages_mu);
-    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) wb_pages.set(p, value);
+    for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) {
+        wb_pages.set(p, value);
+        if (part || !wb_parts.empty()) wb_parts.set(p, part);
+    }
 }
 } // namespace
-uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever) {
+/// The newest write-back value of the range's pages (0: none; *ever: whether any page was ever written back). With part
+/// and whole: *part is the newest part that wrote any of them back from a mirror (0: none), *whole the newest value among
+/// the pages with no part (written in place: their whole submission is what a read waits for; 0: none)
+uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part, uint64_t* whole) {
     uint64_t v = 0;
     if (ever) *ever = false;
+    if (part) *part = 0;
+    if (whole) *whole = 0;
     if (!size) return 0;
     std::lock_guard lk(wb_pages_mu);
     if (wb_pages.empty()) return 0;
-    v = wb_pages.max_in(guest >> kPageShift, (guest + size - 1) >> kPageShift, ever);
+    const uint64_t first = guest >> kPageShift, last = (guest + size - 1) >> kPageShift;
+    v = wb_pages.max_in(first, last, ever);
+    if (v && (part || whole)) {
+        uint64_t newest = 0, in_place = 0;
+        for (uint64_t p = first; p <= last && p < kPages;) {
+            if (!wb_pages.chunks[p / kChunkPages]) {   // (a chunk never made: none of its pages, as max_in)
+                p = (p / kChunkPages + 1) * kChunkPages;
+                continue;
+            }
+            const uint64_t pv = wb_pages.get(p), pp = pv ? wb_parts.get(p) : 0;
+            if (pp) newest = std::max(newest, pp);
+            else if (pv) in_place = std::max(in_place, pv);
+            p++;
+        }
+        if (part) *part = newest;
+        if (whole) *whole = in_place;
+    }
     return v;
 }
 
@@ -1724,6 +1755,30 @@ const std::vector<std::pair<uint64_t, uint64_t>>& capture_ranges_merged() {
     }
     return merged;
 }
+// (hookshot) see vk_internal.h. Raised where a recording gets a read of guest memory itself, at the GPU's time: a pool
+// bound with no mirror (gpu_buffer_bind), a mirror's dirty pages no capture holds (mirror_sync), a mirror's first copy,
+// and the pool handed out whole (gpu_buffer: a large texture unswizzled on the GPU, a texel buffer's view). With all
+// pools mirrored and captured (the usual case on a card with room) it stays 0. outside: a binding made outside a
+// recording's uploads belongs to no part begun yet: counted for the next one, so every part begun so far is older.
+// Two reads of guest memory at the GPU's time are not noted:
+//  - memory_rb_refresh's copies of the readback pages into their mirrors, in every part's uploads. They are how a write
+//    of the CPU's to a page it reads back reaches the mirror at all, so a part after the readback's taking that write is
+//    what they are for (and what the console's one memory does); a part that writes such a page again has it noted with
+//    its own part, which the read then waits for. Noted, they would be in every part and no read would ever wait for
+//    less than its whole submission. What they do carry along is whatever else shares a 4 KB page with a readback range;
+//  - the shaders' own pointers into a pool that was never bound and so has no mirror (the page table's entry is the
+//    pool's own address): no call of ours is made for those reads.
+// Both are as they were before a value's recording became its last part's (v2.0.14 and before)
+namespace {
+std::atomic<uint64_t> mem_rec_part{0}, mem_in_place_part{0};
+void note_in_place_read(bool outside = false) {
+    const uint64_t part = mem_rec_part.load() + (outside ? 1 : 0);
+    uint64_t seen = mem_in_place_part.load();
+    while (seen < part && !mem_in_place_part.compare_exchange_weak(seen, part)) {}
+}
+} // namespace
+void memory_recording_part(uint64_t part) { mem_rec_part.store(part); }
+uint64_t memory_in_place_part() { return mem_in_place_part.load(); }
 void memory_recording_value(uint64_t value, uint64_t completed) {
     mem_rec_value = value;
     if (completed > mem_completed) mem_completed = completed;
@@ -2523,6 +2578,7 @@ void mirror_sync(Pool& p) {
     checkpoint_mark(upload_command_buffer(), p.lo, 'm');
     GprofSpan gp(upload_command_buffer(), "msync copies (CPU pages live from guest memory -> mirror)");
     gp.items = (int)runs.size();
+    note_in_place_read();   // (these pages as guest memory has them when the GPU gets here)
     vkCmdCopyBuffer(upload_command_buffer(), p.buffer, p.mirror, (uint32_t)runs.size(), runs.data());
     for (const VkBufferCopy& r : runs) st_sync_bytes += (int64_t)r.size, gp.bytes += r.size;
     st_sync_copies += (int64_t)runs.size();
@@ -2652,6 +2708,7 @@ bool memory_rb_refresh(VkCommandBuffer up) {
             if (rs[k].srcOffset + rs[k].size == rs[i].srcOffset) rs[k].size += rs[i].size;
             else rs[++k] = rs[i];
         rs.resize(k + 1);
+        // (guest memory at the GPU's time, and not noted for the readback's part wait: see note_in_place_read)
         vkCmdCopyBuffer(up, pp->buffer, pp->mirror, (uint32_t)rs.size(), rs.data());
         gp.items += (int)rs.size();
         for (const VkBufferCopy& r : rs) gp.bytes += r.size;
@@ -2671,6 +2728,7 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size) {
     Pool* p = pool_of(guest, size);
     if (!p) return {};
     if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;   // (in use: not given back under it, imports_give_back)
+    note_in_place_read();   // (the pool itself, read by the GPU where the caller's work runs)
     return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};
 }
 
@@ -2799,7 +2857,7 @@ thread_local BindMemo bind_memo[256];
 void note_direct_write(Pool& p, uint64_t off, uint64_t size) {   // (pools_mu held)
     p.direct_write_epoch = mirror_epoch;
     if (size <= (1u << 20))   // (EvilBoyce: GPU results written in place; small ones: the readbacks are)
-        wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value);
+        wb_pages_note(p.lo + off, p.lo + std::min(off + size, p.hi - p.lo), mem_rec_value, 0);
 }
 
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
@@ -2834,8 +2892,10 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         Pool* p = tl.p;
         const uint64_t off = guest - p->lo;
         if (p->last_value < mem_rec_value) p->last_value = mem_rec_value;
-        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED)
+        if (!mirror_on() || !mirror_upload || p->mstate == Pool::MIRROR_REFUSED || p->mstate == Pool::MIRROR_WANTED) {
+            note_in_place_read(!mirror_upload);
             return remember({p->buffer, off, size, 0});
+        }
         if (p->mstate == Pool::MIRROR_ON && p->synced_epoch == mirror_epoch && p->sync_seg <= texture_segment())
             return remember({p->mirror, off, size, 0});
     }
@@ -2865,6 +2925,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         // (hookshot) written by the GPU in guest memory itself, past the mirror (bound outside a recording's uploads): the
         // write-back diff's shadow no longer knows those pages, and reads them again at its next write-back, after this write
         if (written) shadow_forget(*p, off, std::min(size, p->hi - p->lo - off));
+        note_in_place_read(!mirror_upload);
         return remember({p->buffer, off, size, 0});
     }
     // (a pool's mirror is made at its first binding, in this part's uploads: bound in guest memory until the next
@@ -2892,6 +2953,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
         e.first++, e.second = (int)p->mstate;
         direct_bytes_by_pool[p->lo] += size;
         if (written) note_direct_write(*p, off, size);
+        note_in_place_read();
         return remember({p->buffer, off, size, 0});
     }
     if (p->synced_epoch != mirror_epoch || p->sync_seg > texture_segment()) mirror_sync(*p);
@@ -3267,6 +3329,7 @@ bool mirror_make(Pool& pool) {
         {
             GprofSpan gp(upload_command_buffer(), "mmake copy (a whole pool -> its new mirror)");
             gp.bytes = n;
+            note_in_place_read();
             vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);   // (all of it, at this generation)
         }
         {   // (EvilOOT) then the mirrors of the pools it took in, over their part: what the GPU wrote there and only there
@@ -3664,7 +3727,7 @@ WbdTable* wbd_table_get(uint64_t bytes) {
     return &t;
 }
 
-void memory_end_submission(VkCommandBuffer cmd) {
+void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
     std::lock_guard lk(pools_mu);
     {   // (every 600 submissions: how the mirror syncs' dirty pages were read)
         static int64_t n, l_live, l_cap;
@@ -3808,7 +3871,7 @@ void memory_end_submission(VkCommandBuffer cmd) {
             }
             for (const VkBufferCopy& r : runs) st_wb_bytes += (int64_t)r.size, gp.bytes += r.size;
             gp.items += (int)runs.size();
-            for (const VkBufferCopy& r : runs) wb_pages_note(p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value);   // (EvilBoyce)
+            for (const VkBufferCopy& r : runs) wb_pages_note(p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value, part);   // (EvilBoyce)
             {   // (hookshot) RX_VK_LOG_WRITEBACK=1: the pools written back the most, every 600 write-back submissions
                 static const bool log_wb = env_on("RX_VK_LOG_WRITEBACK");
                 if (log_wb) {
