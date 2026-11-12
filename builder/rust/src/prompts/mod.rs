@@ -12,6 +12,7 @@ pub mod cff;
 pub mod cmap;
 pub mod faces;
 pub mod font;
+pub mod guide;
 pub mod layout;
 pub mod raster;
 pub mod restbl;
