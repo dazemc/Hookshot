@@ -325,6 +325,23 @@ def patch_glyph(source):
                       "extern void hos_prompts_glyph(uint64_t slot);\n")
 
 
+ZSTD_HEAD = "void f_80115c80(Ctx *__restrict A64_NOESC c) {\n"
+ZSTD_CALL = "    if (hos_zstd_stream(c)) return;   /* (nx2/oot_patches.py: HOS_NATIVE_ZSTD, the host's libzstd) */\n"
+
+
+def patch_zstd_stream(source):
+    """f_80115c80, the game's zstd stream decode of one compressed chunk (x0 the stream object, x1 and x2 the chunk, x3 the
+    DDict or 0; its job loop f_80115bf0 calls it for each chunk read), returns at once when hos_zstd_stream did the call:
+    with HOS_NATIVE_ZSTD on, the host's libzstd decodes the stream (host/hos_zstd.c); off, the function runs as lifted"""
+    start = source.find(ZSTD_HEAD)
+    if start < 0:
+        return None
+    if ZSTD_CALL in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(ZSTD_HEAD)
+    return (source[:at] + ZSTD_CALL + source[at:]).replace('#include "a64.h"\n', '#include "a64.h"\nint hos_zstd_stream(Ctx *c);\n', 1)
+
+
 TEXT_HEAD = "void f_80b1e140(Ctx *__restrict A64_NOESC c) {"
 # (the letters' block: past the early returns, the auto-advance timer and the hidden / no-text checks; reached once a call)
 TEXT_OLD = ("L_80b1e1b4:;\n"
@@ -795,6 +812,7 @@ def apply(gen, *, protect_hearts=False, required=False):
         done["ocarina note wait"] = 0
         done["scene format"] = 0
         done["opening skip"] = 0
+        done["zstd stream hook"] = 0
     speed_hooks = 0   # (SPEED_PLACES', in one file or several)
     camera_speed = 0   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
@@ -836,6 +854,12 @@ def apply(gen, *, protect_hearts=False, required=False):
             out = glyph
             done["glyph hook"] += 1
             print("oot_patches: the glyphs' hook in", os.path.basename(path))
+        zs = patch_zstd_stream(out) if protect_hearts else None
+        if zs is not None:
+            if zs != out:
+                print("oot_patches: the zstd stream decode's host hook in", os.path.basename(path))
+            out = zs
+            done["zstd stream hook"] += 1
         layout = patch_text_layout(out) if protect_hearts else None
         if layout is not None:
             out = layout

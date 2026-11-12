@@ -53,6 +53,7 @@ NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
+ZSTD_HOST = ("prompts.c", "hos_zstd.c")   # (the host files that use it: a mod's size table; the game's stream decode)
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 PGO = os.environ.get("RX_PGO", "")
@@ -905,16 +906,16 @@ def main():
     if dav1d:
         host_deps += open(os.path.join(dav1d, "include", "dav1d", "version.h"), "rb").read()
         print("AV1 movies: dav1d (%s)" % dav1d, flush=True)
-    zstd_api = b"".join(open(os.path.join(ZSTD, f), "rb").read() for f in sorted(os.listdir(ZSTD)) if f.endswith(".h"))   # (prompts.c's)
+    zstd_api = b"".join(open(os.path.join(ZSTD, f), "rb").read() for f in sorted(os.listdir(ZSTD)) if f.endswith(".h"))   # (ZSTD_HOST's)
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
               ([stamp_def] if os.path.basename(s) == "hos_main.c" else []) +
               ([version.repository_define()] if os.path.basename(s) == "hos_main.c" else []) +
-              (["-I" + ZSTD] if os.path.basename(s) == "prompts.c" else []) +
+              (["-I" + ZSTD] if os.path.basename(s) in ZSTD_HOST else []) +
               (dav1d_fl if os.path.basename(s) in ("nn_video.c", "dav1d_av1.c") else []),
-              host_deps + (zstd_api if os.path.basename(s) == "prompts.c" else b"")) for s in host_srcs]
+              host_deps + (zstd_api if os.path.basename(s) in ZSTD_HOST else b"")) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
     # (hookshot: built for the same CPU target as the rest (CPU), so its float code can be vectorized where the target has
     # AVX2: the vendored copy has no x86 intrinsics files of its own)
@@ -924,7 +925,8 @@ def main():
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
                          oflags, b"opus-1.5.2"))
-    # zstd's decoder (as in the Vulkan back end): host/prompts.c reads a mod's resource size table to merge the prompts' into it
+    # zstd's decoder (as in the Vulkan back end): host/prompts.c reads a mod's resource size table to merge the prompts' into it,
+    # host/hos_zstd.c decodes the game's streams with it (HOS_NATIVE_ZSTD)
     if host_srcs:
         jobs += zstd_jobs(cc, target() + CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
                                                 "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"], obj_dir, "zstd_")
