@@ -50,6 +50,7 @@
 #include "vk_present_rect.h"
 #include "vk_present_trace.h"
 #include "rec_value.h"
+#include "readback_wait.h"   // (how long a readback waits for its write-back)
 
 #include "vk_internal.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
@@ -2270,6 +2271,32 @@ bool tex_pages_any(uint64_t gpu, uint64_t size) {
 }
 void texture_created_of(const nvn_tex* t) { tex_pages_add(t, +1); }
 uint64_t fence();
+/// (hookshot) invalidate's wait for a write-back's value, at most RX_VK_READBACK_WAIT_MS (default 250; 0: no limit, as before).
+/// On the Steam Deck (RADV, no buffer mirrors, queues replayed in submit order) the game's main thread and one of its jobs
+/// waited here, right after a save loaded, for a value the timeline never reached while they waited (it had been
+/// submitted; the GPU stayed one value short), and the game stopped for good: 2 of 8 starts, 4 of 4 with
+/// RX_VK_CAPTURE_WAIT=0. Past the limit the CPU reads what memory holds, as the capture's wait does (vk_timeline_wait), and
+/// the first times are logged with how far the timeline and the submits had got. True when reached
+bool readback_wait_value(uint64_t v) {
+    static const int64_t limit_ms = readback_wait::limit_ms(getenv("RX_VK_READBACK_WAIT_MS"));
+    const uint64_t timeout = readback_wait::timeout_ns(limit_ms);
+    if (timeout == UINT64_MAX) {   // (RX_VK_READBACK_WAIT_MS=0: no limit, as before)
+        wait_value(v);
+        return true;
+    }
+    queue_flush_for(FR_VALUE);
+    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    wi.semaphoreCount = 1;
+    wi.pSemaphores = &timeline;
+    wi.pValues = &v;
+    if (vkWaitSemaphores(dev.device, &wi, timeout) != VK_TIMEOUT) return true;
+    static std::atomic<int> logged{0};
+    if (logged++ < 8)
+        logf("vk: a readback's wait for write-back %llu timed out after %lld ms (done %llu, submitted %llu, handed out %llu)",
+             (unsigned long long)v, (long long)limit_ms, (unsigned long long)completed(), (unsigned long long)pushed.load(),
+             (unsigned long long)q_values.load());
+    return false;
+}
 void invalidate(uint64_t gpu, uint64_t size) {
     static const bool log_inv = env_on("RX_VK_LOG_INVALIDATE");
     static std::atomic<int> logged{0};
@@ -2332,7 +2359,7 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 int ok = 0;
                 if (!(unforced && wait_recorded(v, UINT64_MAX, &ok))) {
                     if (unforced && replay_behind()) wait_queue_empty();   // (not recorded whole: as before)
-                    wait_value(v);
+                    readback_wait_value(v);
                 }
                 w = true;
             }
