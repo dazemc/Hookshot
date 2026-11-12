@@ -16,10 +16,7 @@ const SOURCE_EXT: [&str; 13] = [
 const DEFAULT_REPOSITORY: &str = "NotRexed/Hookshot";
 
 pub fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("../.."))
+    crate::kit::root()
 }
 
 pub fn release(root: &Path) -> String {

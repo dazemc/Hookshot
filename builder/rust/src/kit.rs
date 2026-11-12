@@ -6,11 +6,25 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+/// The folder the build reads its sources from: `HOOKSHOT_TOOLS` when the
+/// packaged builder sets it, else the folder beside the executable that holds
+/// `third_party/a64-kit` (the app bundle has its sources in `tools/`), else
+/// the checkout this engine was built from.
 pub fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("../.."))
+    if let Some(folder) = std::env::var_os("HOOKSHOT_TOOLS").filter(|value| !value.is_empty()) {
+        return PathBuf::from(folder);
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(folder) = exe.parent()
+    {
+        for candidate in [folder.join("tools"), folder.to_path_buf()] {
+            if candidate.join("third_party/a64-kit").is_dir() {
+                return candidate;
+            }
+        }
+    }
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    checkout.canonicalize().unwrap_or(checkout)
 }
 
 pub fn kit() -> PathBuf {
