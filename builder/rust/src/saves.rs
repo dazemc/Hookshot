@@ -1639,7 +1639,11 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(tree(&target), tree(&source));
-        assert_eq!(answer["path"], target.to_string_lossy().as_ref());
+        // (a path, not its text: Windows writes the separator differently)
+        assert_eq!(
+            Path::new(answer["path"].as_str().unwrap()),
+            target.as_path()
+        );
         assert!(
             answer["text"]
                 .as_str()
