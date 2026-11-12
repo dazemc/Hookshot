@@ -165,6 +165,15 @@ pub fn dispatch(text: &str) -> String {
         "build.plan" => compile::plan_json(&request, &kit::root()),
         "lift.translate" => emitter::translate_json(&request),
         "lift.tables" => lift::tables_json(&string(&request, "exefs").unwrap_or_default()),
+        "lift.write" => lift::write_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+            request.get("limit").and_then(Value::as_u64).unwrap_or(0) as usize,
+            request
+                .get("chunk_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(24 << 20) as usize,
+        ),
         "lift.emit" => lift::emit_json(
             &string(&request, "exefs").unwrap_or_default(),
             u64::from_str_radix(&string(&request, "entry").unwrap_or_default(), 16).unwrap_or(0),

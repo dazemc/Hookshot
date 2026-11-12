@@ -1141,6 +1141,63 @@ impl<'a, C: Code> Lifter<'a, C> {
     }
 }
 
+pub fn write_json(
+    exefs: &str,
+    out: &str,
+    limit: usize,
+    chunk_bytes: usize,
+) -> Result<serde_json::Value, String> {
+    let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
+    let mut lift = Lifter::new(&image, image.entries.iter().copied());
+    lift.eh_starts = image.eh_starts().to_vec();
+    lift.names = image.names().clone();
+    lift.discover();
+    let out = std::path::Path::new(out);
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut chunk = String::from("#include \"a64.h\"\n");
+    let mut size = 0usize;
+    let mut file = 0usize;
+    let mut files = Vec::new();
+    let mut written = 0usize;
+    for entry in lift.funcs.keys().copied() {
+        if limit != 0 && written >= limit {
+            break;
+        }
+        let body = &lift.funcs[&entry];
+        let items: Vec<(u64, u32)> = body
+            .keys()
+            .filter_map(|pc| image.word(*pc).map(|word| (*pc, word)))
+            .collect();
+        let (translated, _) = crate::emitter::translate(&items)?;
+        let by_pc: std::collections::HashMap<u64, String> =
+            items.iter().map(|(pc, _)| *pc).zip(translated).collect();
+        let texts: Vec<String> = body
+            .keys()
+            .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
+            .collect();
+        let text = lift.emit_function(entry, &texts);
+        if !chunk.contains(&format!("void f_{entry:08x}(Ctx")) {
+            chunk.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
+        }
+        chunk.push_str(&text);
+        size += text.len();
+        written += 1;
+        if size >= chunk_bytes {
+            let path = out.join(format!("code_{file:03}.c"));
+            std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
+            files.push(path.to_string_lossy().into_owned());
+            file += 1;
+            chunk = String::from("#include \"a64.h\"\n");
+            size = 0;
+        }
+    }
+    if size > 0 {
+        let path = out.join(format!("code_{file:03}.c"));
+        std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
+        files.push(path.to_string_lossy().into_owned());
+    }
+    Ok(serde_json::json!({"files": files, "functions": written}))
+}
 pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
     let image = crate::image::Image::build(std::path::Path::new(exefs), 0, false, &[], &[])?;
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
