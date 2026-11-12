@@ -36,7 +36,7 @@ struct Push {
     int32_t base_vertex;
     uint32_t pos, sets;  // (bytes in a vertex: the position; the joint and weight sets, 1 or 2)
     uint32_t joints[2], weights[2];
-    uint32_t formats;    // (kHalfPosition, kByteJoints << set)
+    uint32_t formats;    // (kHalfPosition; kByteJoints << set; kSingle, kPair or kNoWeight << set)
     uint32_t tolerance;  // (depth steps from the scene's within which a pixel is the draw's)
 };
 static_assert(sizeof(Push) == 6 * 8 + 14 * 4 && sizeof(Push) <= 128, "dlss_actor.vert's push constants");
