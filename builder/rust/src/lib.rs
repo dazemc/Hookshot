@@ -184,6 +184,14 @@ pub fn dispatch(text: &str) -> String {
             request.get("reg").and_then(Value::as_u64).unwrap_or(0) as u8,
             u64::from_str_radix(&string(&request, "table").unwrap_or_default(), 16).unwrap_or(0),
         ),
+        "lift.flags" => {
+            let text = string(&request, "text").unwrap_or_default();
+            let (read, written) = text::flag_masks(&text);
+            let dead = request.get("dead").and_then(Value::as_u64).unwrap_or(0) as u8;
+            Ok(
+                json!({"reads": read, "writes": written, "dropped": text::drop_flag_stores(&text, dead)}),
+            )
+        }
         "lift.frame" => Ok(text::frame_json(
             &string(&request, "text").unwrap_or_default(),
         )),

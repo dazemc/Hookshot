@@ -82,3 +82,102 @@ mod tests {
         ));
     }
 }
+
+const FLAG_BITS: [u8; 4] = [8, 4, 2, 1];
+
+fn flag_index(name: &str) -> usize {
+    match name {
+        "n" => 0,
+        "z" => 1,
+        "c" => 2,
+        _ => 3,
+    }
+}
+
+/// (flags read, flags written) by one instruction's C text. Control flow
+/// inside the text reads all four and writes none.
+pub fn flag_masks(text: &str) -> (u8, u8) {
+    if text.contains("goto") || text.contains("return") || text.contains("TAILCALL") {
+        return (15, 0);
+    }
+    let mut written = 0u8;
+    let mut read = 0u8;
+    let bytes = text.as_bytes();
+    let mut at = 0usize;
+    while let Some(found) = text[at..].find("c->") {
+        let name_at = at + found + 3;
+        let Some(name) = bytes.get(name_at).copied() else {
+            break;
+        };
+        if !matches!(name, b'n' | b'z' | b'c' | b'v') {
+            at = name_at;
+            continue;
+        }
+        let bit = FLAG_BITS[flag_index(&(name as char).to_string())];
+        let mut cursor = name_at + 1;
+        while bytes.get(cursor) == Some(&b' ') {
+            cursor += 1;
+        }
+        if bytes.get(cursor) == Some(&b'=') && bytes.get(cursor + 1) != Some(&b'=') {
+            written |= bit;
+        } else {
+            read |= bit;
+        }
+        at = name_at + 1;
+    }
+    (read, written)
+}
+
+/// Remove the stores of flags in `dead` (FLAG_BITS mask).
+pub fn drop_flag_stores(text: &str, dead: u8) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0usize;
+    while let Some(found) = text[at..].find("c->") {
+        let start = at + found;
+        out.push_str(&text[at..start]);
+        let name_at = start + 3;
+        let Some(name) = text.as_bytes().get(name_at).copied() else {
+            out.push_str(&text[start..]);
+            return out;
+        };
+        if !matches!(name, b'n' | b'z' | b'c' | b'v') {
+            out.push_str(&text[start..name_at + 1]);
+            at = name_at + 1;
+            continue;
+        }
+        let mut cursor = name_at + 1;
+        while text.as_bytes().get(cursor) == Some(&b' ') {
+            cursor += 1;
+        }
+        if text.as_bytes().get(cursor) == Some(&b'=')
+            && text.as_bytes().get(cursor + 1) != Some(&b'=')
+        {
+            if let Some(end) = text[cursor..].find(';') {
+                let stop = cursor + end + 1;
+                if FLAG_BITS[flag_index(&(name as char).to_string())] & dead == 0 {
+                    out.push_str(&text[start..stop]);
+                }
+                at = stop;
+                continue;
+            }
+        }
+        out.push_str(&text[start..name_at + 1]);
+        at = name_at + 1;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    #[test]
+    fn masks_and_drops_dead_flag_stores() {
+        let text = "c->n=(x); c->z=1; c->c=c->v;";
+        assert_eq!(flag_masks(text), (1, 14));
+        assert_eq!(drop_flag_stores(text, 8), " c->z=1; c->c=c->v;");
+        assert_eq!(drop_flag_stores(text, 15), "  ");
+        assert_eq!(flag_masks("if (c->z) { goto L; }"), (15, 0));
+    }
+}
