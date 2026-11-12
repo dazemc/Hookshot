@@ -1711,11 +1711,25 @@ mod tests {
                 .any(|flag| flag == &format!("-I{}", sdk.join("include").display()))
         );
         let libs = link_libraries(Some(&resolved));
-        assert_eq!(
-            PathBuf::from(&libs[0]),
-            crate::ngx_sdk::library(&sdk, platform)
-        );
-        assert_eq!(&libs[1..], ["-ldl", "-lpthread", "-lm"]);
+        let expected = crate::ngx_sdk::library(&sdk, platform)
+            .to_string_lossy()
+            .into_owned();
+        // (the Windows link puts the platform's libraries first and NVIDIA's
+        // static library after them; the Linux link names it first)
+        match platform {
+            crate::ngx_sdk::Platform::Linux => {
+                assert_eq!(libs[0], expected);
+                assert_eq!(&libs[1..], ["-ldl", "-lpthread", "-lm"]);
+            }
+            crate::ngx_sdk::Platform::Windows => {
+                assert_eq!(&libs[..3], ["-luser32", "-lc++", "-lunwind"]);
+                assert_eq!(libs[3], expected);
+                assert_eq!(
+                    &libs[4..],
+                    ["-ladvapi32", "-Wl,-Xlink=/nodefaultlib:libcpmt"]
+                );
+            }
+        }
         // (a folder without the library is an error, not a silent stub build)
         let broken = base.join("broken");
         fs::create_dir_all(&broken).unwrap();
@@ -1723,6 +1737,25 @@ mod tests {
         assert!(error.contains("has no"), "{error}");
         assert!(error.contains("Unset HOOKSHOT_NGX_SDK"), "{error}");
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn windows_ngx_libraries_keep_their_order() {
+        let sdk = PathBuf::from("C:/ngx-sdk");
+        let libs = link_libraries_for(Platform::Windows, Some(&sdk));
+        assert_eq!(&libs[..3], ["-luser32", "-lc++", "-lunwind"]);
+        assert_eq!(
+            PathBuf::from(&libs[3]),
+            crate::ngx_sdk::library(&sdk, crate::ngx_sdk::Platform::Windows)
+        );
+        assert_eq!(
+            &libs[4..],
+            ["-ladvapi32", "-Wl,-Xlink=/nodefaultlib:libcpmt"]
+        );
+        assert_eq!(
+            link_libraries_for(Platform::Windows, None),
+            ["-luser32", "-lc++", "-lunwind"]
+        );
     }
 
     #[test]
