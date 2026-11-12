@@ -498,8 +498,8 @@ static void stick_max(int32_t stick[4], const int32_t v[4]) {
         if ((v[i] < 0 ? -v[i] : v[i]) > (stick[i] < 0 ? -stick[i] : stick[i])) stick[i] = v[i];
 }
 
-/* ---- (hookshot) the controls: the gamepad input (by position) and the keys that press each Switch button, from
-   hookshot_options.ini beside the executable when it has them: pad_<button>=<HOS_PAD_* position, -1 none> and
+/* ---- (hookshot) the controls: the gamepad inputs (by position) and the keys that press each Switch button, from
+   hookshot_options.ini beside the executable when it has them: pad_<button>=<position>[,<position>] (HOS_PAD_*, -1 none) and
    key_<button>=<key code>,<key code> (Windows key codes, 0 none), <button> one of bind_names. Read once, at the
    first use; what the file leaves out keeps its default. Keys only, after the Switch's buttons (HOS_KEY_*): the left
    stick's and the camera's directions, and the ocarina's five note controls (which take a gamepad input too).
@@ -529,13 +529,25 @@ static int has_pad(int i) { return i < HOS_SW_N || is_note_row(i); }
 /* (a mouse button bound to a note row would be seen by nobody: oc_notes never reads the mouse) */
 static int is_mouse_vk(int vk) { return vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON ||
                                         vk == VK_XBUTTON1 || vk == VK_XBUTTON2; }
-static volatile LONG pad_bind[HOS_KEY_N], key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
+static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
+static int pad_bind[HOS_KEY_N][2];   /* (the Switch's buttons and the ocarina's note rows; slot 1: Input 2) */
+static volatile LONG key_bind[HOS_KEY_N][2];   /* (the menu changes them as the game reads them) */
 
 static void binds_default(void) {
+    AcquireSRWLockExclusive(&pad_bind_lock);
     for (int i = 0; i < HOS_KEY_N; i++) {
-        if (has_pad(i)) InterlockedExchange(&pad_bind[i], i < HOS_SW_N ? pad_default[i] : -1);   /* (the note rows: unset) */
-        for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
+        pad_bind[i][0] = i < HOS_SW_N ? pad_default[i] : -1;   /* (the note rows: unset) */
+        pad_bind[i][1] = -1;
     }
+    ReleaseSRWLockExclusive(&pad_bind_lock);
+    for (int i = 0; i < HOS_KEY_N; i++)
+        for (int k = 0; k < 2; k++) InterlockedExchange(&key_bind[i][k], key_default[i][k]);
+}
+
+static int pad_code(const char *text) {
+    char *end;
+    const long code = strtol(text, &end, 10);
+    return end != text && code >= 0 && code < HOS_PAD_N ? (int)code : -1;
 }
 
 static void binds_load(void) {
@@ -568,11 +580,11 @@ static void binds_load(void) {
             for (int i = 0; (pad || keys) && i < HOS_KEY_N; i++) {
                 if (strcmp(line + 4, bind_names[i]) || (pad && !has_pad(i))) continue;
                 changed++;
+                const char *comma = strchr(eq + 1, ',');
                 if (pad) {
-                    const int v = atoi(eq + 1);
-                    pad_bind[i] = v >= 0 && v < HOS_PAD_N ? v : -1;
+                    pad_bind[i][0] = pad_code(eq + 1);
+                    pad_bind[i][1] = comma ? pad_code(comma + 1) : -1;
                 } else {
-                    const char *comma = strchr(eq + 1, ',');
                     const int a = atoi(eq + 1), b = comma ? atoi(comma + 1) : 0;
                     key_bind[i][0] = a > 0 && a < 256 ? a : 0;
                     key_bind[i][1] = b > 0 && b < 256 ? b : 0;
@@ -599,11 +611,16 @@ int hos_binding(int set, int button, int slot) {
     binds_load();
     if (button < 0 || button >= HOS_KEY_N || slot < 0 || slot > 1 || (set == HOS_BIND_PAD && !has_pad(button)))
         return set == HOS_BIND_PAD ? -1 : 0;
-    return set == HOS_BIND_PAD ? (slot ? -1 : (int)pad_bind[button]) : (int)key_bind[button][slot];
+    if (set != HOS_BIND_PAD) return (int)key_bind[button][slot];
+    AcquireSRWLockShared(&pad_bind_lock);
+    const int code = pad_bind[button][slot];
+    ReleaseSRWLockShared(&pad_bind_lock);
+    return code;
 }
-/* A gamepad input moved to another button gives that one this button's old input (one button an input, none left
-   without); a key moved to it is taken from the others. The ocarina's note rows are outside both rules: they take
-   nothing and are not taken from, so one input can be a note and its other control at once (the note wait consumes
+/* A gamepad input already bound to a slot trades places with the input being replaced; into an empty slot it is
+   taken only from a button that keeps another gamepad input (no button left without one). A key moved to a slot
+   is taken from the others. The ocarina's note rows are outside the pad rules: they take one input of their own,
+   nothing is taken from them, so one input can be a note and its other control at once (the note wait consumes
    it as a note, oc_notes) */
 void hos_bind(int set, int button, int slot, int code) {
     binds_load();
@@ -613,12 +630,35 @@ void hos_bind(int set, int button, int slot, int code) {
     }
     if (button >= HOS_KEY_N || slot < 0 || slot > 1) return;
     if (set == HOS_BIND_PAD) {
-        if (!has_pad(button) || slot || code < -1 || code >= HOS_PAD_N) return;
-        const LONG old = pad_bind[button];
-        if (button < HOS_SW_N)   /* (among the Switch's buttons: the swap; the note rows keep theirs) */
+        if (!has_pad(button) || code < -1 || code >= HOS_PAD_N) return;
+        if (is_note_row(button)) {   /* (a note takes one input, no slot and no trade: it may share it with its other control) */
+            if (slot) return;
+            AcquireSRWLockExclusive(&pad_bind_lock);
+            pad_bind[button][0] = code;
+            ReleaseSRWLockExclusive(&pad_bind_lock);
+            return;
+        }
+        AcquireSRWLockExclusive(&pad_bind_lock);
+        const int old = pad_bind[button][slot];
+        if (code >= 0 && code != old) {
+            /* (the input taken from where it is: it gets the replaced input; with none (an empty Input 2), its own
+               other input moves into its Input 1; a button it is the only gamepad input of keeps it, and nothing changes) */
             for (int i = 0; i < HOS_SW_N; i++)
-                if (i != button && code >= 0 && pad_bind[i] == code) InterlockedExchange(&pad_bind[i], old);
-        InterlockedExchange(&pad_bind[button], code);
+                for (int k = 0; k < 2; k++)
+                    if (pad_bind[i][k] == code && old < 0 && pad_bind[i][1 - k] < 0) {
+                        ReleaseSRWLockExclusive(&pad_bind_lock);
+                        return;
+                    }
+            for (int i = 0; i < HOS_SW_N; i++)
+                for (int k = 0; k < 2; k++)
+                    if (pad_bind[i][k] == code) {
+                        if (old >= 0) pad_bind[i][k] = old;
+                        else if (k == 0) pad_bind[i][0] = pad_bind[i][1], pad_bind[i][1] = -1;
+                        else pad_bind[i][1] = -1;
+                    }
+        }
+        pad_bind[button][slot] = code;
+        ReleaseSRWLockExclusive(&pad_bind_lock);
     } else {
         if (code < 0 || code > 255) return;
         if (is_note_row(button) && is_mouse_vk(code)) return;   /* (a note is a key or a pad button, never a mouse click) */
@@ -638,6 +678,17 @@ volatile int hos_oc_last_kind;
 volatile unsigned hos_oc_beat;   /* (stamped by the wait action's tick: a wait nobody ticks is not a wait) */
 static LONG oc_consumed_keys[256];
 static uint64_t oc_consumed_pads;
+static uint64_t bound_pad_buttons(uint64_t raw) {
+    binds_load();
+    uint64_t buttons = 0;
+    AcquireSRWLockShared(&pad_bind_lock);
+    for (int i = 0; i < HOS_SW_N; i++) {
+        const int a = pad_bind[i][0], alt = pad_bind[i][1];
+        if ((a >= 0 && (raw >> a & 1)) || (alt >= 0 && (raw >> alt & 1))) buttons |= 1ULL << i;
+    }
+    ReleaseSRWLockShared(&pad_bind_lock);
+    return buttons;
+}
 
 static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
 static int pad_after_menu;          /* (the menu just closed: the pads wait until they are let go; oc_pad_word too) */
@@ -744,10 +795,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
        keeps): they reach the game only one at a time */
     const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
     if ((raw & chord) == chord) raw &= ~chord;
-    binds_load();
-    uint64_t b = 0;
-    for (int i = 0; i < HOS_SW_N; i++)
-        if (pad_bind[i] >= 0 && (raw >> pad_bind[i] & 1) && !(oc_consumed_pads >> pad_bind[i] & 1)) b |= 1ULL << i;
+    const uint64_t b = bound_pad_buttons(raw & ~oc_consumed_pads);
     cached_buttons = b;
     memcpy(cached_stick, s, sizeof s);
     *buttons |= b;
@@ -861,12 +909,14 @@ static void oc_notes(void) {
     for (int i = 0; i < 5; i++) {
         const int row = HOS_KEY_OC_NOTE_L + i;
         int held = bound_down(row, 0);
-        if (!held && pad_bind[row] >= 0 && (pad_raw_now >> pad_bind[row] & 1)) held = 1;
+        const int note_pad = hos_binding(HOS_BIND_PAD, row, 0);
+        if (!held && note_pad >= 0 && (pad_raw_now >> note_pad & 1)) held = 1;
         if (held) bits |= 1ULL << i;
     }
     for (int i = 0; i < 5; i++) {
         const int row = HOS_KEY_OC_NOTE_L + i;
-        if (pad_bind[row] >= 0) oc_consumed_pads |= 1ULL << pad_bind[row];
+        const int note_pad = hos_binding(HOS_BIND_PAD, row, 0);
+        if (note_pad >= 0) oc_consumed_pads |= 1ULL << note_pad;
         for (int k = 0; k < 2; k++) {
             const int vk = (int)key_bind[row][k];
             if (vk > 0 && mouse_vk_slot(vk) < 0) oc_consumed_keys[vk] = 1;
@@ -885,7 +935,7 @@ static uint64_t oc_pad_word(uint64_t buttons) {
     uint64_t w = buttons;
     for (int i = 0; i < 5; i++) {
         const int row = HOS_KEY_OC_NOTE_L + i;
-        if (pad_bind[row] < 0 && !key_bind[row][0] && !key_bind[row][1])
+        if (hos_binding(HOS_BIND_PAD, row, 0) < 0 && !key_bind[row][0] && !key_bind[row][1])
             continue;   /* (unset: that button plays on) */
         /* (kind 2, the song lesson, teaches the game's own note buttons: the remap adds to them, never replaces) */
         if (hos_oc_last_kind != 2) w &= ~note_to[i];

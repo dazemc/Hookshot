@@ -200,7 +200,9 @@ static int cmap4_bind(uint8_t *st, size_t n, int face) {
             done++;
             continue;
         }
-        const int pad = hos_binding(HOS_BIND_PAD, b, 0), bound = pad >= 0 && pad < HOS_PAD_N;
+        const int pad = hos_binding(HOS_BIND_PAD, b, 0), bound = pad >= 0 && pad < HOS_PAD_ART_N;   /* (a paddle: the default's icon) */
+        const unsigned gid = cmap4_glyph(st, n, base + (unsigned)(bound ? pad : switch_pad[b]));
+        if (gid && cmap4_point(st, segs, switch_code[b], gid)) done += bound && !keys;
         const unsigned gid = cmap4_glyph(st, n, base + (unsigned)(bound ? pad : switch_pad[b]));
         if (gid && cmap4_point(st, segs, switch_code[b], gid)) done += bound && !keys;
     }
@@ -996,7 +998,7 @@ static int text_code(unsigned c, int face, const int *bind) {   /* the code that
     if (c >= SLOT_BASE && c < SLOT_BASE + SLOTS && (int)(c - SLOT_BASE) < nslots) b = slot_button[c - SLOT_BASE];
     for (int i = 0; i < 3 && k < 0; i++)
         if (c == static_code[i]) k = i;
-    if (c >= BIND_BASE && c < BIND_BASE + HOS_PROMPT_N * HOS_SW_N * HOS_PAD_N) b = (int)((c - BIND_BASE) / HOS_PAD_N % HOS_SW_N);
+    if (c >= BIND_BASE && c < BIND_BASE + HOS_PROMPT_N * HOS_SW_N * HOS_PAD_ART_N) b = (int)((c - BIND_BASE) / HOS_PAD_ART_N % HOS_SW_N);
     if (c >= PAD_BASE + STATIC_AT && c < PAD_BASE + FACE_CODES * HOS_PROMPT_N && (c - PAD_BASE) % FACE_CODES >= STATIC_AT &&
         (c - PAD_BASE) % FACE_CODES < STATIC_AT + 3)
         k = (int)((c - PAD_BASE) % FACE_CODES - STATIC_AT);
@@ -1006,8 +1008,8 @@ static int text_code(unsigned c, int face, const int *bind) {   /* the code that
         const int s = key_slot(b, bind[HOS_SW_N + b]);
         if (s >= 0) return s;
     }
-    const int pad = bind[b] >= 0 && bind[b] < HOS_PAD_N ? bind[b] : switch_pad[b];
-    return BIND_BASE + (face * HOS_SW_N + b) * HOS_PAD_N + pad;
+    const int pad = bind[b] >= 0 && bind[b] < HOS_PAD_ART_N ? bind[b] : switch_pad[b];   /* (a paddle: the default's icon) */
+    return BIND_BASE + (face * HOS_SW_N + b) * HOS_PAD_ART_N + pad;
 }
 
 /* the box's codes for the buttons as they are now; 1 when it changed them */

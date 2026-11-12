@@ -76,6 +76,12 @@ const PRELUDE: &str = r#"
 #include "vk_api.h"
 typedef long LONG;
 typedef unsigned long DWORD;
+typedef int SRWLOCK;
+#define SRWLOCK_INIT 0
+static void AcquireSRWLockExclusive(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockExclusive(SRWLOCK *p) { (void)p; }
+static void AcquireSRWLockShared(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
 #define VK_LBUTTON 0x01
 #define VK_RBUTTON 0x02
 #define VK_MBUTTON 0x04
@@ -131,8 +137,10 @@ static uint64_t switch_bits(void) {
 static uint64_t pad_bits(uint64_t raw) {
     uint64_t b = 0;
     for (int i = 0; i < HOS_SW_N; i++) {
-        const int a = pad_bind[i];
-        if (a >= 0 && (raw >> a & 1) && !(oc_consumed_pads >> a & 1)) b |= 1ULL << i;
+        const int a = pad_bind[i][0], alt = pad_bind[i][1];
+        if ((a >= 0 && (raw >> a & 1) && !(oc_consumed_pads >> a & 1)) ||
+            (alt >= 0 && (raw >> alt & 1) && !(oc_consumed_pads >> alt & 1)))
+            b |= 1ULL << i;
     }
     return b;
 }
