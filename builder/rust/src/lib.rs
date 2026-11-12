@@ -26,6 +26,7 @@ mod lz4;
 mod nso;
 mod nso_image;
 mod nup;
+mod orchestrate;
 mod package;
 mod poll;
 mod profiles;
@@ -136,6 +137,15 @@ pub fn dispatch(text: &str) -> String {
         }
         "version.describe" => version::describe_json(),
         "build.host" => Ok(host::json()),
+        "build.all" => orchestrate::all_json(
+            &string(&request, "exefs").unwrap_or_default(),
+            &string(&request, "romfs").unwrap_or_default(),
+            &string(&request, "out").unwrap_or_default(),
+            &string(&request, "work").unwrap_or_default(),
+            &string(&request, "assets").unwrap_or_default(),
+            &string(&request, "vk").unwrap_or_default(),
+            &string(&request, "language").unwrap_or_default(),
+        ),
         "build.package" => package::package_json(
             &string(&request, "work").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
