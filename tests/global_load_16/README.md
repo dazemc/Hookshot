@@ -27,7 +27,18 @@ entry-block variable, reset before its loop, incremented once per failed or
 successful exchange, and tested against 1024 alongside the actual exchange
 success. The failed-attempt path must feed back the returned word and retry.
 The two alternative single-exchange global CAS routes must return directly,
-without being counted as retry loops. CI validates all twenty-two modules.
+without being counted as retry loops. CI validates every emitted module.
+
+Five more modules cover the native storage-buffer float add
+(`support_float32_atomic_add` in the profile, from
+`VK_EXT_shader_atomic_float`'s `shaderBufferFloat32AtomicAdd`): a storage
+buffer's RED/ATOM.ADD.F32 authored as `StorageAtomicAddF32`, and the
+global-address fallback, each with the native feature, without it, and without
+descriptor aliasing (no f32 view). With the feature the module must hold one
+`OpAtomicFAddEXT` and no compare-exchange loop, plus the extension and
+capability; without it the add must be the compare-exchange loop and must not
+declare the native capability. The `--cas-loops` run repeats them with
+`RX_VK_FOLLOW_STORES=1`, so the page-table route's native add is checked too.
 
 The fixture checks the emitted SPIR-V dependency chain; it does not execute a
 shader or driver, and does not validate odd guest addresses or AMD hardware. It

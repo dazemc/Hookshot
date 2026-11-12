@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -715,6 +716,143 @@ static void check_cas_functions(const ModuleInfo& module) {
     std::printf("PASS: %u retry loops reset/count/exit on success or 1024; %u one-shot exchanges return directly\n", bounded, single);
 }
 
+static size_t op_count(const ModuleInfo& module, spv::Op op) {
+    size_t n = 0;
+    for (const auto& inst : module.instructions) n += inst.op == op;
+    return n;
+}
+
+static size_t op_count(const std::vector<const Instruction*>& body, spv::Op op) {
+    size_t n = 0;
+    for (const Instruction* inst : body) n += inst->op == op;
+    return n;
+}
+
+// (the global-address float add's helper: a function returning f32 that takes the u64 address)
+static std::vector<const Instruction*> float_add_fallback(const ModuleInfo& module) {
+    u32 f32_type = 0;
+    u32 u64_type = 0;
+    for (const auto& inst : module.instructions) {
+        if (inst.op == spv::Op::OpTypeFloat && inst.words.size() >= 2 && inst.words[1] == 32)
+            f32_type = inst.words[0];
+        if (inst.op == spv::Op::OpTypeInt && inst.words.size() >= 3 && inst.words[1] == 64 &&
+            inst.words[2] == 0)
+            u64_type = inst.words[0];
+    }
+    if (!f32_type || !u64_type) fail("float-add fallback fixture lacks its f32 or u64 type");
+    for (size_t i = 0; i < module.instructions.size(); ++i) {
+        const auto& function = module.instructions[i];
+        if (function.op != spv::Op::OpFunction || function.words.size() < 2 ||
+            function.words[0] != f32_type)
+            continue;
+        std::vector<const Instruction*> body;
+        bool takes_u64 = false;
+        for (size_t j = i + 1; j < module.instructions.size(); ++j) {
+            const auto& inst = module.instructions[j];
+            if (inst.op == spv::Op::OpFunctionEnd) break;
+            if (inst.op == spv::Op::OpFunctionParameter && !inst.words.empty() &&
+                inst.words[0] == u64_type)
+                takes_u64 = true;
+            body.push_back(&inst);
+        }
+        if (takes_u64) return body;
+    }
+    fail("the global-address float add has no f32(u64, f32) helper");
+}
+
+static bool has_capability(const ModuleInfo& module, spv::Capability capability) {
+    for (const auto& inst : module.instructions)
+        if (inst.op == spv::Op::OpCapability && !inst.words.empty() &&
+            inst.words[0] == static_cast<u32>(capability))
+            return true;
+    return false;
+}
+
+static bool has_extension(const ModuleInfo& module, const char* name) {
+    std::vector<u32> packed((std::strlen(name) + 4) / 4, 0);
+    std::memcpy(packed.data(), name, std::strlen(name));
+    for (const auto& inst : module.instructions)
+        if (inst.op == spv::Op::OpExtension && inst.words == packed) return true;
+    return false;
+}
+
+// (native_f32_add, spirv_emit_context.cpp DefineStorageBuffers / EmitStorageAtomicAddF32) A float add to a storage buffer is
+// one OpAtomicFAddEXT where the device has VK_EXT_shader_atomic_float's shaderBufferFloat32AtomicAdd and descriptor aliasing
+// gives it an f32 view; otherwise it is the compare-exchange loop, which gives up after 1024 attempts and loses that add.
+// The global-address fallback (DefineGlobalMemoryFunctions) follows the same choice.
+static ModuleInfo emit_float_add_module(bool global, bool native, bool aliasing, const char* name) {
+    ObjectPool<IR::Inst> inst_pool;
+    IR::Block block{inst_pool};
+    IR::Program program;
+    program.stage = Stage::Compute;
+    program.workgroup_size = {1, 1, 1};
+    program.blocks.push_back(&block);
+    program.post_order_blocks.push_back(&block);
+    IR::AbstractSyntaxNode node{};
+    node.type = IR::AbstractSyntaxNode::Type::Block;
+    node.data.block = &block;
+    program.syntax_list.push_back(node);
+    program.syntax_list.push_back({.type = IR::AbstractSyntaxNode::Type::Return});
+    IR::IREmitter ir{block};
+    if (global) {
+        (void)ir.GlobalAtomicF32Add(ir.Imm64(u64{0x1000}), ir.Imm32(1.0f));
+    } else {
+        // (the lowered form the global-memory pass makes of a tracked RED/ATOM.ADD.F32)
+        block.AppendNewInst(IR::Opcode::StorageAtomicAddF32, {ir.Imm32(0u), ir.Imm32(0u), ir.Imm32(1.0f)});
+    }
+    ir.Epilogue();
+    TestEnvironment env;
+    Optimization::CollectShaderInfoPass(env, program);
+    program.info.constant_buffer_descriptors.push_back({0, 1});
+    program.info.storage_buffers_descriptors.push_back({0, 0, 1, true});
+    program.info.used_constant_buffer_types |= IR::Type::U32 | IR::Type::U32x2;
+    program.info.used_storage_buffer_types |= IR::Type::U32;
+    Profile profile{};
+    profile.supported_spirv = 0x00010600;
+    profile.support_int64 = true;
+    profile.support_descriptor_aliasing = aliasing;
+    profile.support_float32_atomic_add = native;
+    profile.min_ssbo_alignment = 16;
+    return inspect(save_module(name, EmitSPIRV(profile, program)));
+}
+
+static void check_native_float_add() {
+    const auto native = emit_float_add_module(false, true, true, "native-fadd-storage");
+    if (op_count(native, spv::Op::OpAtomicFAddEXT) != 1)
+        fail("the native storage float add is not one OpAtomicFAddEXT");
+    if (op_count(native, spv::Op::OpAtomicCompareExchange) != 0)
+        fail("the native storage float add still has a compare-exchange loop");
+    if (!has_capability(native, spv::CapabilityAtomicFloat32AddEXT) ||
+        !has_extension(native, "SPV_EXT_shader_atomic_float_add"))
+        fail("the native storage float add lacks its capability or extension");
+
+    const auto loop = emit_float_add_module(false, false, true, "loop-fadd-storage");
+    if (op_count(loop, spv::Op::OpAtomicFAddEXT) != 0 ||
+        op_count(loop, spv::Op::OpAtomicCompareExchange) == 0)
+        fail("without the native add the storage float add is not the compare-exchange loop");
+    if (has_capability(loop, spv::CapabilityAtomicFloat32AddEXT) ||
+        has_extension(loop, "SPV_EXT_shader_atomic_float_add"))
+        fail("the compare-exchange loop declares the native float-add capability");
+
+    // (no f32 view of the buffer: support_descriptor_aliasing off, the loop even where the device has the native add)
+    const auto no_alias = emit_float_add_module(false, true, false, "no-alias-fadd-storage");
+    if (op_count(no_alias, spv::Op::OpAtomicFAddEXT) != 0 ||
+        op_count(no_alias, spv::Op::OpAtomicCompareExchange) == 0)
+        fail("without descriptor aliasing the native storage float add has no f32 view");
+
+    const auto native_global = emit_float_add_module(true, true, true, "native-fadd-global");
+    const auto native_fallback = float_add_fallback(native_global);
+    if (op_count(native_fallback, spv::Op::OpAtomicFAddEXT) == 0 ||
+        op_count(native_fallback, spv::Op::OpAtomicCompareExchange) != 0)
+        fail("the native global-address float add fallback is not native");
+    const auto loop_global = emit_float_add_module(true, false, true, "loop-fadd-global");
+    const auto loop_fallback = float_add_fallback(loop_global);
+    if (op_count(loop_fallback, spv::Op::OpAtomicFAddEXT) != 0 ||
+        op_count(loop_fallback, spv::Op::OpAtomicCompareExchange) == 0)
+        fail("the global-address float add fallback is not the compare-exchange loop");
+    std::printf("PASS: storage and global float adds native with the feature, the loop without it or without aliasing\n");
+}
+
 static void check_cas_program() {
     if (!std::getenv("RX_VK_FOLLOW_STORES")) fail("CAS fixture needs RX_VK_FOLLOW_STORES=1 to exercise the page-table route");
     ObjectPool<IR::Inst> inst_pool;
@@ -843,6 +981,7 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--cas-loops") {
         output_dir = argv[2];
         check_cas_program();
+        check_native_float_add();   // (RX_VK_FOLLOW_STORES: the page-table route's native float add too)
         return 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--expect-original-stub") {
@@ -881,4 +1020,5 @@ int main(int argc, char** argv) {
     check_vertex_load_controls(false, "vertex-global-load-default");
     check_vertex_load_controls(true, "vertex-global-load-inline128");
     check_table_loop();
+    check_native_float_add();
 }
