@@ -860,7 +860,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             match kind {
                 Kind::Op => {
                     let text = processed.get(index).map(String::as_str).unwrap_or("");
-                    if text.is_empty() || text.contains("recomp_unhandled") {
+                    if text.contains("recomp_unhandled") {
                         out.push(format!(
                             "\x01A{index}\x01a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"
                         ));
