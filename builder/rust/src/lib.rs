@@ -14,6 +14,7 @@ mod host;
 mod image;
 mod kit;
 mod lifted_c;
+mod linker;
 mod logo_rgba;
 mod lz4;
 mod nso;
@@ -168,6 +169,10 @@ pub fn dispatch(text: &str) -> String {
             )
         }
         "build.toolchain" => Ok(toolchain::json()),
+        "build.link_check" => {
+            linker::check_symbols_json(&string(&request, "file").unwrap_or_default())
+        }
+        "build.link" => linker::link_json(&request),
         "build.seed_pipelines" => stage::seed_pipelines_json(
             &string(&request, "root").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
