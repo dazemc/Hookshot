@@ -61,8 +61,9 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
 
 The launcher's **Manage** menu imports a save into the chosen profile
 ([profiles](../readme.md#profiles-and-saves-from-emulators)); it never writes into an emulator (its **Export** copies the
-profile's save into a new folder of its own). Import asks for the folder to read and lists the saves in it, one per
-emulator user, with the name the emulator gives that user; when the folder has saves of several users, the launcher
+profile's save into a new folder of its own). A link inside a save is refused, not followed, on import and export; an
+export that fails leaves no half-written folder behind. Import asks for the folder to read and lists the saves in it,
+one per emulator user, with the name the emulator gives that user; when the folder has saves of several users, the launcher
 asks whose save it is. It copies into that profile's save folder (`save/<id>`, made for a new profile) and backs up the
 side it overwrites to `oot-save-backups` in the builder's data folder (`~/.local/share/hookshot/builder` on Linux,
 `%LOCALAPPDATA%\HookshotBuilder` on Windows). The builder does this in its Rust engine (`builder/rust/src/saves.rs`),
