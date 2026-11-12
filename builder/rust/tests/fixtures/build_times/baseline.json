@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "baseline": true,
+  "tolerance": {
+    "percent": 10.0,
+    "seconds": 2.0
+  },
+  "total_seconds": 1180.0,
+  "compile_seconds": 820.0,
+  "stages": {
+    "driver.read": 50.0,
+    "driver.assets": 2.0,
+    "lift.total": 25.0,
+    "driver.compile": 820.0,
+    "compile.planning": 9.0,
+    "compile.compiling": 807.0,
+    "driver.link": 3.0,
+    "driver.copy": 0.5,
+    "host.build": 90.0,
+    "vk.build": 98.0,
+    "package": 10.0,
+    "shaders": 11.0,
+    "prepare": 19.0
+  }
+}
