@@ -112,6 +112,19 @@ fn run(exe: &Path, args: &[&str]) -> Output {
         .expect("run the fixture")
 }
 
+/// A C array initializer for a byte string.
+fn c_bytes(bytes: &[u8]) -> String {
+    let mut out = String::from("{");
+    for (i, b) in bytes.iter().enumerate() {
+        if i % 16 == 0 {
+            out.push_str("\n    ");
+        }
+        out.push_str(&format!("0x{b:02x},"));
+    }
+    out.push_str("\n}");
+    out
+}
+
 #[test]
 fn short_sleep_pollers_follow_the_processor_count_and_the_switch() {
     let host = source("host/hos_thread.c");
@@ -293,5 +306,229 @@ int main(int argc, char **argv) {{
     assert_eq!(case_other("16", "0", "20", "1"), 1_000);
     assert_eq!(case_other("16", "0", "5", "20"), 5_000);
     assert_eq!(case_other("6", "0", "20", "1"), 1_000);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_native_zstd_stream_round_trips_and_stays_off_unless_asked() {
+    let host = source("host/hos_zstd.c");
+    assert!(
+        host.contains("HOS_NATIVE_ZSTD") && host.contains("hos_vcore_away"),
+        "host/hos_zstd.c no longer has the switch or the core give-up"
+    );
+    let plain: Vec<u8> = (0..96 * 1024)
+        .map(|i| {
+            let w = (i / 7) % 29;
+            b"the quick brown fox jumps over the lazy dog. "[w % 45] ^ (i % 11) as u8
+        })
+        .collect();
+    let packed = zstd::bulk::compress(&plain, 3).expect("make a zstd frame");
+    assert!(
+        packed.len() > 32 && packed.len() < plain.len(),
+        "the fixture frame is not compressed"
+    );
+    let plain_c = c_bytes(&plain);
+    let packed_c = c_bytes(&packed);
+    let fixture = format!(
+        r#"#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "hos.h"
+#define SIZE 0x400000ull
+uint8_t *zs_mem;
+static int aways, backs, marks;
+void zs_mark(const void *p, size_t n) {{
+    const size_t a = (size_t)((const uint8_t *)p - zs_mem);
+    if (n && a < SIZE) marks++;
+}}
+int hos_vcore_away(void) {{ aways++; return 1; }}
+void hos_vcore_back(void) {{ backs++; }}
+void hos_log(const char *fmt, ...) {{ (void)fmt; }}
+#include "hos_zstd.c"
+static const unsigned char plain[] = {plain_c};
+static const unsigned char packed[] = {packed_c};
+enum {{ PLAIN_LEN = sizeof plain, PACKED_LEN = sizeof packed }};
+#define S0 (ZS_BASE + 0x100ull)
+#define WORK (ZS_BASE + 0x2000ull)
+#define STAGE (ZS_BASE + 0x4000ull)
+#define STAGE_CAP 0x10000u
+#define SRC (ZS_BASE + 0x90000ull)
+#define DST (ZS_BASE + 0x200000ull)
+#define DST_CAP 0x40000u
+#if defined(_WIN32)
+static void put(const char *name, const char *value) {{ _putenv_s(name, value ? value : ""); }}
+#else
+static void put(const char *name, const char *value) {{ if (value) setenv(name, value, 1); else unsetenv(name); }}
+#endif
+static void reset(uint64_t g, uint64_t dst, uint32_t room, uint64_t work) {{
+    memset(GP(g), 0, 0x60);
+    S_STATE(g) = 1;
+    S_DST(g) = dst;
+    S_ROOM(g) = room;
+    S_LEFT(g) = 0;
+    S_WORK(g) = work;
+    S_STAGE(g) = STAGE;
+    S_STAGE_CAP(g) = STAGE_CAP;
+    S_STAGED(g) = 0;
+    S_CTX(g) = 0;
+}}
+static int32_t call(uint64_t g, const unsigned char *p, uint32_t n) {{
+    memcpy(GP(SRC), p, n);
+    Ctx c;
+    memset(&c, 0, sizeof c);
+    c.x[0] = g, c.x[1] = SRC, c.x[2] = n, c.x[3] = 0;
+    if (!hos_zstd_stream(&c)) return -1000;
+    return (int32_t)(uint32_t)c.x[0];
+}}
+static int round_trip(int split) {{
+    reset(S0, DST, DST_CAP, WORK);
+    uint32_t at = 0, first = split ? 18u : (uint32_t)PACKED_LEN;
+    if (first > PACKED_LEN) first = PACKED_LEN;
+    int32_t r = call(S0, packed, first);
+    at += first;
+    if (r < 0) {{ fprintf(stderr, "first call: %d\n", r); return 10; }}
+    while (at < PACKED_LEN) {{
+        uint32_t n = split ? 7u : (uint32_t)PACKED_LEN - at;
+        if (n > PACKED_LEN - at) n = (uint32_t)PACKED_LEN - at;
+        r = call(S0, packed + at, n);
+        at += n;
+        const int32_t left = (int32_t)((uint64_t)PLAIN_LEN - (S_DST(S0) - DST));
+        if (r != left) {{ fprintf(stderr, "call at %u: %d, left %d\n", at, r, left); return 11; }}
+    }}
+    if (S_STATE(S0) != 4 || S_LEFT(S0) != 0 || S_STAGED(S0) != 0 || S_CTX(S0) != WORK) {{
+        fprintf(stderr, "end: state %u left %u staged %u ctx %llu\n", S_STATE(S0), S_LEFT(S0), S_STAGED(S0),
+                (unsigned long long)S_CTX(S0));
+        return 12;
+    }}
+    if (S_DST(S0) != DST + PLAIN_LEN || S_ROOM(S0) != DST_CAP - PLAIN_LEN) {{
+        fprintf(stderr, "output: dst %llu room %u\n", (unsigned long long)S_DST(S0), S_ROOM(S0));
+        return 13;
+    }}
+    if (memcmp(GP(DST), plain, PLAIN_LEN)) {{ fprintf(stderr, "the output differs\n"); return 14; }}
+    return 0;
+}}
+int main(int argc, char **argv) {{
+    if (argc != 2) return 2;
+    zs_mem = calloc(1, SIZE);
+    if (!zs_mem) return 3;
+    const int mode = atoi(argv[1]);
+    if (mode == 0) {{
+        put("HOS_NATIVE_ZSTD", "0");
+        reset(S0, DST, DST_CAP, WORK);
+        if (call(S0, packed, PACKED_LEN) != -1000) return 20;
+        if (S_STATE(S0) != 1 || S_DST(S0) != DST || aways || backs || marks) return 21;
+        puts("ok: off");
+        return 0;
+    }}
+    if (mode == 3) {{   /* (the switch off: an unaligned workspace falls back to the lifted code) */
+        put("HOS_NATIVE_ZSTD", "1");
+        reset(S0, DST, DST_CAP, WORK + 1);
+        if (call(S0, packed, PACKED_LEN) != -1000) return 30;
+        if (S_STATE(S0) != 1 || S_DST(S0) != DST) return 31;
+        puts("ok: unaligned");
+        return 0;
+    }}
+    if (mode == 4) {{   /* (a bad magic: the game's wrapper fails the stream) */
+        put("HOS_NATIVE_ZSTD", "2");
+        unsigned char bad[64];
+        memcpy(bad, packed, sizeof bad);
+        bad[0] ^= 0xff;
+        reset(S0, DST, DST_CAP, WORK);
+        const int32_t r = call(S0, bad, sizeof bad);
+        if (r != -1 || S_STATE(S0) != 3) {{ fprintf(stderr, "bad: %d state %u\n", r, S_STATE(S0)); return 40; }}
+        puts("ok: bad frame");
+        return 0;
+    }}
+    put("HOS_NATIVE_ZSTD", mode == 1 ? "1" : "2");
+    if (round_trip(1)) return 50;
+    if (mode == 1 && (aways == 0 || aways != backs)) return 51;
+    if (mode == 2 && (aways || backs)) return 52;
+    if (!marks) return 53;
+    /* (a second frame on the same stream object, whole) */
+    reset(S0, DST, DST_CAP, WORK);
+    const int32_t r = call(S0, packed, PACKED_LEN);
+    if (r != 0 || S_STATE(S0) != 4 || memcmp(GP(DST), plain, PLAIN_LEN)) return 54;
+    printf("ok: mode %d, %d calls gave the core up\n", mode, aways);
+    return 0;
+}}
+"#
+    );
+    let dir = scratch("native-zstd");
+    fs::write(
+        dir.join("hos.h"),
+        r#"#pragma once
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+typedef struct { uint64_t x[32]; } Ctx;
+#define ZS_BASE 0x10000000ull
+extern uint8_t *zs_mem;
+#define GP(a) ((void *)(zs_mem + ((uint64_t)(a) - ZS_BASE)))
+#define G64(a) (*(uint64_t *)GP(a))
+#define G32(a) (*(uint32_t *)GP(a))
+void zs_mark(const void *p, size_t n);
+#define HOS_WRITTEN(p, n) zs_mark((p), (n))
+int hos_vcore_away(void);
+void hos_vcore_back(void);
+void hos_log(const char *fmt, ...);
+"#,
+    )
+    .expect("write the zstd stand-in hos.h");
+    fs::write(dir.join("fixture.c"), fixture).expect("write the zstd fixture");
+    fs::copy(root().join("host/hos_zstd.c"), dir.join("hos_zstd.c")).expect("copy hos_zstd.c");
+    let Some(cc) = compiler("CC", &["cc", "gcc", "clang"]) else {
+        eprintln!("skipping the native zstd fixture: no C compiler (CC, cc, gcc or clang)");
+        let _ = fs::remove_dir_all(dir);
+        return;
+    };
+    let zstd = root().join("third_party/zstd/lib");
+    let mut sources: Vec<PathBuf> = [
+        "common/debug.c",
+        "common/entropy_common.c",
+        "common/error_private.c",
+        "common/fse_decompress.c",
+        "common/xxhash.c",
+        "common/zstd_common.c",
+        "decompress/huf_decompress.c",
+        "decompress/zstd_ddict.c",
+        "decompress/zstd_decompress.c",
+        "decompress/zstd_decompress_block.c",
+    ]
+    .iter()
+    .map(|f| zstd.join(f))
+    .collect();
+    sources.push(dir.join("fixture.c"));
+    let exe = dir.join(if cfg!(windows) { "fixture.exe" } else { "fixture" });
+    let mut build = Command::new(&cc);
+    build
+        .args(["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-DZSTD_DISABLE_ASM", "-D_GNU_SOURCE"])
+        .arg(format!("-I{}", dir.display()))
+        .arg(format!("-I{}", zstd.display()))
+        .arg(format!("-include{}", root().join("gpu/vk/compat/hookshot_env.h").display()))
+        .args(&sources)
+        .arg("-o")
+        .arg(&exe);
+    let built = build.output().expect("run the C compiler");
+    assert!(
+        built.status.success(),
+        "{cc}: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    for (mode, want) in [(0, "ok: off"), (1, "ok: mode 1"), (2, "ok: mode 2"), (3, "ok: unaligned"), (4, "ok: bad frame")] {
+        let out = run(&exe, &[&mode.to_string()]);
+        assert!(
+            out.status.success(),
+            "mode {mode}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(want),
+            "mode {mode}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
     let _ = fs::remove_dir_all(dir);
 }
