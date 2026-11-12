@@ -170,5 +170,36 @@ int main() {
         CHECK("21:9 on a 21:9 window", dlss_jitter_clip(wide, 21.0f / 9.0f, 5, 8, 5040, 2160, out));
         CHECK("16:9 still, on a 21:9 window", dlss_jitter_clip(scene, 21.0f / 9.0f, 5, 8, 5040, 2160, out));
     }
+    // a camera cut (a new upscaler history): a move over 5 m, or a turn over 30 degrees with a move over 0.5, a 60 Hz frame
+    {
+        const float none[2] = {0.0f, 0.0f}, jitter[2] = {0.3f, -0.2f};
+        float a[16], b[16];
+        double move = 0, turn = 0, pos[3], fwd[3];
+        camera(0.0f, 0.0f, 0.0f, none, a);
+        camera(0.0f, 0.0f, 0.0f, none, b);
+        CHECK("the same camera is no cut", !dm::camera_cut(a, b, 16.7, &move, &turn) && move == 0 && turn == 0);
+        CHECK("its pose", dm::camera_pose(a, pos, fwd) && std::fabs(pos[0]) < 1e-4 && std::fabs(pos[1]) < 1e-4 &&
+                             std::fabs(pos[2]) < 1e-4 && std::fabs(fwd[0]) < 1e-4 && std::fabs(fwd[1]) < 1e-4 &&
+                             near((float)fwd[2], -1.0f, 1e-4f));
+        camera(0.0f, 0.0f, 0.0f, jitter, b);
+        CHECK("a jitter moves neither", dm::camera_pose(b, pos, fwd) && std::fabs(pos[0]) < 1e-4 && near((float)fwd[2], -1.0f, 1e-4f));
+        camera(0.0f, 6.0f, 0.0f, none, b);
+        CHECK("a 6 m move is a cut", dm::camera_cut(a, b, 16.7, &move, &turn) && move > 5.0 && turn < 1.0);
+        camera(0.0f, 4.0f, 0.0f, none, b);
+        CHECK("a 4 m move is not", !dm::camera_cut(a, b, 16.7, &move, &turn) && move > 3.9 && move < 4.1);
+        camera(40.0f * 3.14159265f / 180.0f, 0.0f, 0.0f, none, b);
+        CHECK("a 40 degree turn alone is not", !dm::camera_cut(a, b, 16.7, &move, &turn) && turn > 39.0 && turn < 41.0);
+        camera(40.0f * 3.14159265f / 180.0f, 1.0f, 0.0f, none, b);
+        CHECK("a 40 degree turn with 1 m is", dm::camera_cut(a, b, 16.7, &move, &turn) && move > 0.9 && turn > 39.0);
+        camera(0.0f, 6.0f, 0.0f, none, b);
+        CHECK("a 6 m move in 10 ms is", dm::camera_cut(a, b, 10.0, &move, &turn));
+        CHECK("a 6 m move in 200 ms is not", !dm::camera_cut(a, b, 200.0, &move, &turn));
+        float bad[16];
+        std::memcpy(bad, b, sizeof bad);
+        bad[0] = std::numeric_limits<float>::quiet_NaN();
+        CHECK("not a non-finite camera", !dm::camera_cut(a, bad, 16.7, &move, &turn) && move == 0 && turn == 0);
+        const float ortho[16] = {0.0984f, 0, 0, 5.78f, 0, 0.1535f, 0, 0.31f, 0, 0, -0.11f, 10.66f, 0, 0, 0, 1};
+        CHECK("not an orthographic one", !dm::camera_cut(a, ortho, 16.7, &move, &turn));
+    }
     std::puts("dlss math: all checks passed");
 }

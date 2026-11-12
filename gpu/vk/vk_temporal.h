@@ -44,7 +44,7 @@ struct SkinnedDraw {
     uint64_t vbuf = 0, vsize = 0;     // (vertex stream 0)
     uint32_t stride = 0;
     uint32_t pos = 0;                 // (byte offsets in a vertex: the position, RGB32F or RGBA16F)
-    uint32_t joints[2]{}, weights[2]{};   // (RGBA16UI or RGBA8UI joints and RGBA8 weights, four a set; sets: 1 or 2)
+    uint32_t joints[2]{}, weights[2]{};   // (the layout's joints and weights: four RGBA8 / RGBA16UI or RGBA8UI a set, two RG8 / RG8UI, one R8 / R8UI or R16UI, or one joint without weights; sets: 1 or 2)
     int sets = 0;
     uint32_t formats = 0;             // (dlss_actor::Push::formats)
     uint64_t ibuf = 0;

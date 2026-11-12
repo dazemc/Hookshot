@@ -198,6 +198,16 @@ commits, not upstream ancestors. Ported recently:
   `gpu/vk/vk_bug_report.cpp` is compiled alone by `builder/rust/tests/bug_report.rs` with `tests/bug_report_test.cpp`;
   the menu row, host map line and picture wiring are source-checked there too. The fork has no separate System/About
   tab, so the row sits under a System section heading with Restart and Quit on Gameplay.
+- **Actor motion for every bone layout (#2787, upstream `dfc8fa5e`)**: the temporal chain's skinned-draw pass now reads
+  Link's cap and shield's fifth bone (one influence in a second set), Navi's wings (two, RG8 / RG8UI) and Navi's body,
+  props and held items (a rigid model on one bone, no weight), besides four influences a set; those draws no longer
+  ghost under DLSS and FSR. The classification and weight decoding live in `dlss_actor.h`, `tests/test_dlss_actor.cpp`
+  covers them with authored bones, and `builder/rust/tests/actor_motion.rs` runs it and checks the shader and SPIR-V.
+- **A camera cut starts a new upscaler history (#2927, upstream `7a0c89f0`)**: a move over 5 m, or a turn over 30
+  degrees with a move over 0.5 m, starts a new history for DLSS, FSR and their frame generation, so an area load, a
+  spawn or a cutscene's cut does not smear the new view into the old one. Play and a quick swing round Link stay under
+  it; `RX_VK_TEMPORAL_CUT=0` turns it off and each cut is logged. `tests/test_dlss_math.cpp` covers the thresholds and
+  `builder/rust/tests/actor_motion.rs` checks the chain's call.
 - **FSR 3.1 on the temporal chain (#2305, upstream `579c6d48`)**: FSR 3.1 is now the chain's third engine, so it
   receives the same colour, depth, jitter and skinned-character motion as DLSS and FSR 4 instead of camera motion
   alone; Link and the other characters keep their outlines while they move. The chain reverses depth for FSR's
