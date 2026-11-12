@@ -6224,14 +6224,30 @@ static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, c
     if (!bones.addr || bones.size < 48 || bones.size % 48) return;
     SkinnedDraw k;
     k.formats = pos.fmt == NVN_FORMAT_RGBA16F ? dlss_actor::kHalfPosition : 0;
+    const auto kind = [](uint32_t f) {
+        switch (f) {
+        case NVN_FORMAT_NONE: return dlss_actor::kNone;
+        case NVN_FORMAT_R8: return dlss_actor::kR8;
+        case NVN_FORMAT_R8UI: return dlss_actor::kR8UI;
+        case NVN_FORMAT_R16UI: return dlss_actor::kR16UI;
+        case NVN_FORMAT_RG8: return dlss_actor::kRG8;
+        case NVN_FORMAT_RG8UI: return dlss_actor::kRG8UI;
+        case NVN_FORMAT_RGBA8: return dlss_actor::kRGBA8;
+        case NVN_FORMAT_RGBA8UI: return dlss_actor::kRGBA8UI;
+        case NVN_FORMAT_RGBA16UI: return dlss_actor::kRGBA16UI;
+        default: return dlss_actor::kOther;
+        }
+    };
+    dlss_actor::SkinAttributes sa;
     for (int set = 0; set < 2 && 6 + set < s.nvattr; set++) {
         const nvn_va_st w = attr(4 + set), j = attr(6 + set);
-        if (w.fmt != NVN_FORMAT_RGBA8 || (j.fmt != NVN_FORMAT_RGBA16UI && j.fmt != NVN_FORMAT_RGBA8UI) || w.stream || j.stream ||
-            w.offset % 4 || j.offset % 4)
-            break;
-        if (j.fmt == NVN_FORMAT_RGBA8UI) k.formats |= dlss_actor::kByteJoints << set;
-        k.weights[set] = w.offset, k.joints[set] = j.offset, k.sets = set + 1;
+        sa.weights[set] = kind(w.fmt), sa.joints[set] = kind(j.fmt);
+        sa.weight_offset[set] = w.offset, sa.joint_offset[set] = j.offset;
+        sa.weight_stream[set] = w.stream != 0, sa.joint_stream[set] = j.stream != 0;
     }
+    const dlss_actor::SkinLayout layout = dlss_actor::classify(sa);
+    k.formats |= layout.formats, k.sets = layout.sets;
+    for (int set = 0; set < 2; set++) k.weights[set] = layout.weights[set], k.joints[set] = layout.joints[set];
     const uint32_t stride = s.vstream[0].stride;
     if (!k.sets || !stride || stride % 4 || pos.offset % 4 || !s.vbuf[0].address) return;
     k.depth = at.depth, k.vbuf = s.vbuf[0].address, k.vsize = s.vbuf[0].size, k.stride = stride, k.pos = pos.offset;

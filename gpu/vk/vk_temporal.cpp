@@ -619,19 +619,10 @@ uint32_t bones_used(const SkinnedDraw& k) {
     if (first < 0 || n > (1 << 20) || (uint64_t)(first + n) * k.stride > k.vsize) return 0;
     std::vector<uint8_t> v((size_t)n * k.stride);
     if (!memory_read_as_submitted(k.vbuf + (uint64_t)first * k.stride, v.data(), v.size())) return 0;
-    uint32_t most = 0;
-    for (int64_t i = 0; i < n; i++) {
-        const uint8_t* q = v.data() + (size_t)i * k.stride;
-        for (int set = 0; set < k.sets; set++)
-            for (int j = 0; j < 4; j++) {
-                if (!q[k.weights[set] + j]) continue;
-                uint32_t joint = 0;
-                if (k.formats & (dlss_actor::kByteJoints << set)) joint = q[k.joints[set] + j];
-                else std::memcpy(&joint, q + k.joints[set] + 2 * j, 2);
-                most = std::max(most, joint + 1);
-            }
-    }
-    return most;
+    dlss_actor::SkinLayout layout;
+    layout.formats = k.formats, layout.sets = k.sets;
+    for (int set = 0; set < 2; set++) layout.weights[set] = k.weights[set], layout.joints[set] = k.joints[set];
+    return dlss_actor::bones_used(v.data(), (size_t)n, k.stride, layout);
 }
 
 /// The chain's images and buffers let go (the engine's own: its release)
