@@ -162,65 +162,17 @@ local artifacts; they are never committed.
 
 ## Testing
 
-### Game-free checks
+The Python source-reading suite and `tests/run_all.py` were removed. The checks are now:
 
-These need no dump and are what CI runs, on every pull request and every push to `main`. One command runs them all:
-
-```powershell
-python -I -B tests/run_all.py
-```
-
-It runs every `tests/test_*.py` and `nx2/test_*.py` in its own process, the C++ unit tests under `gpu/vk/tests` and a
-byte-compile of every tracked Python file, goes on after a failure, and ends with a table (slowest first) and every
-failure's output. Name a check to run only the ones whose path contains it (`python -I -B tests/run_all.py ub_`). A new
-`test_*.py` file is picked up by itself: no workflow to edit. The slowest checks start first, by the times in
-`tests/run_all_times.json`, which also split CI's Linux and Windows runs into two parts each (`--shard 1/2`,
-`--shard 2/2`); a full run with `--write-times` refreshes this OS's times there.
-
-Some checks compile a small C or C++ fixture and need a compiler (`g++`, `gcc` or `clang++` on PATH), the SPIR-V
-validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` / `HOOKSHOT_VULKAN_HEADERS`, or the CPM
-cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
-says so; CI passes `--strict`, which fails it instead. A check that cannot run in CI (a GPU, the game, a Visual Studio
-prompt), or runs on one OS only, says so in its own file with `RUN_ALL_SKIP`; `--no-skip` runs it anyway.
-
-### Checks that need your dump or a run
-
-These are slow and local, and they need `work/dump.txt` from `nx2/dump.py --set`:
-
-| Command | What it checks |
+| Command | What it runs |
 |---|---|
-| `python -I nx2/test_insn.py` | Every instruction form the game uses, Unicorn against the lifted C. |
-| `python -I nx2/test_leaf.py --calls` | Whole functions and call trees on the relocated image, native against Unicorn. |
-| `python -I nx2/census.py --nx2` | The instruction census per module. |
-| `python -I nx2/lower_test.py work/lowfail` | Shader programs that failed to lower. |
-| `powershell -File scripts/run-vk.ps1 -Window` | An in-game run: screenshots, the flash detector, frame dumps and the profiler. |
+| `cargo test --workspace` in `builder/rust` | Rust engine unit and CLI tests. |
+| `flutter test` and `flutter analyze` in `builder/flutter` | Builder state, routing and UI tests. |
+| CMake under `tests/` and `gpu/vk/tests` | The C and C++ fixtures that do not need the game. |
+| A run in the game on your hardware | Runtime, renderer and performance changes. Record what you did, what you saw, and the numbers from `hookshot_log.txt`. |
 
-For a graphics fix, look at the screenshots in `work/runs/<name>/shots` and delete them afterwards; they reach
-gigabytes and are derived from the game. The switches for scripted input, screenshots, frame dumps and profiles are in
-the development guide's [reference](docs/development.md#switches-for-testing-and-debugging).
-
-### When you add a fix or a check
-
-- Add a game-free test where the behavior can be tested without the dump. The existing tests are small Python files
-  under `tests/` or `nx2/` that read source files and run them, or compile a tiny C++ fixture.
-- Name it `tests/test_*.py` or `nx2/test_*.py`: `tests/run_all.py` picks it up by itself and CI runs it on every pull
-  request, so there is no workflow to edit. What it needs from the runner it declares in its own file, after its
-  docstring and imports, as plain literals `tests/run_all.py` reads without importing the test (its docstring has
-  the details); there is no central list to add a line to:
-
-  ```python
-  RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]   # a compiler, headers, spirv-val ...
-  RUN_ALL_MODULES = ["zstandard"]                                       # packages it imports
-  RUN_ALL_SKIP = {"windows": "POSIX signals: the Linux guard"}          # cannot run in CI there (a GPU, the game,
-                                                                        # one OS only), and why
-  ```
-
-  `{name}` is a tool the runner finds (`cxx`, `vulkan_headers`, `spirv_headers`, `spirv_val`, `glslang`, `dotnet`);
-  a check whose tool is missing is skipped, or fails with `--strict`. A test that needs none of this declares nothing.
-- Keep the test fast: every check shares one CI job with a 20-minute limit. Make it pass on both Ubuntu and Windows
-  where it can.
-- If the fix is in the renderer or the runtime, say what you saw before and after, on which GPU and driver, and in
-  which part of the game.
+Add a Rust or Flutter test for a fix where the behavior can be tested without the game. Never add game files or
+generated game data to the repository or to CI.
 
 ## Code and data conventions
 

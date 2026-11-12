@@ -78,8 +78,8 @@ problem with a log outranks an NVIDIA one of the same severity.
    a claim out loud when you stop.
 3. **Fix.** A branch from current `main`, one topic. Find the cause before the fix: a log, a trace, a measurement.
 4. **Test.**
-   - A game-free test that fails without the change (see AGENTS.md: tests read the source).
-   - `python -I -B tests/run_all.py`, all of it.
+   - A Rust or Flutter test that fails without the change.
+   - `cargo test --workspace` in `builder/rust` and `flutter test` in `builder/flutter`.
    - In the game, on your hardware: what you did and what you saw, with numbers from `hookshot_log.txt` for performance.
    - Add a row to [tested configurations](tested-configurations.md) for each run you measured.
    - Say what you could not test (another OS, another vendor, real input devices).
