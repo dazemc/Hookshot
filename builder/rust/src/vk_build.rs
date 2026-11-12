@@ -1952,7 +1952,8 @@ mod tests {
             ("Detail", &["Anisotropic filtering"][..]),
             (
                 "GPU and memory",
-                &["GPU device", "VRAM budget", "Mesh shaders"][..],
+                // (no Mesh shaders row: a launch switch now, RX_VK_MESH_SHADERS, gpu/vk/mesh_mode.h)
+                &["GPU device", "VRAM budget"][..],
             ),
         ];
         let graphics: Vec<_> = rows.iter().filter(|row| row.0 == "GRAPHICS").collect();

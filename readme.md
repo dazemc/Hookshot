@@ -105,7 +105,14 @@ The engine also takes one JSON command on stdin; `hookshot_engine --help` and th
 Press **Insert**, **F1** or **Esc** to open the Insert menu. It has Graphics, Audio, Gameplay, Controls, Debug/cheats
 and developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, field of view, camera speed, text speed and the
 debug teleport are there. The Graphics tab groups its rows under section titles: Resolution and upscaling, Frame
-generation and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong). The
+generation and latency, Screen, HDR, Detail, and GPU and memory (last: the rows to change when something is wrong).
+The Quality preset's **Auto (this PC)** picks the scaling rows, upscaler and output from the graphics card, its video
+memory and the screen, and measures the Render resolution in the first seconds of play; the log's `vk: Auto (this PC)`
+line says what it chose and why. A preset or row you saved is never changed by it.
+Mesh shaders is not a row: `RX_VK_MESH_SHADERS=native` or `compute` in `hookshot_env.txt` (or the environment) chooses
+it for a launch, and an existing `mesh_shaders=` line in `hookshot_options.ini` still chooses as its old row did. With
+frame generation on, **Frame generation by** and the FPS counter name who makes the frames: `DLSS FG`, `FSR 3.1 FG` or
+`Built-in FG` (the FPS counter's second line is `Base 60, DLSS FG`). The
 Controls page also gives the ocarina's five note rows of their own, `Ocarina note (L)`, `(R)`, `(A)`, `(Y)` and `(X)`,
 unset by default: until you bind one, the game's own button plays it, and a bound note answers only its own key or
 gamepad input while the game waits for a note. With HDR set to Native, the HDR section's tone mapper row chooses the
