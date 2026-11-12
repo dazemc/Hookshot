@@ -166,8 +166,14 @@ commits, not upstream ancestors. Ported recently:
   and scripted events keep their angles. The Python patch's site check is a Rust after-site with all three original
   words, and `host/oot_fov.c` applies the live choice. Game-free fixtures cover the hook, the host helper's bounds and
   camera ownership, the menu row and option IDs; the Vulkan backend builds with the change.
-- **2 DLSS/V-Sync fixes**: V-Sync Auto follows the Frame Gen runtime's real frame limit (#2701); a failed DLSS
-  feature is retried when a menu setting changes, not for the rest of the run (#2550).
+- **5 DLSS/V-Sync fixes**: V-Sync Auto follows the Frame Gen runtime's real frame limit (#2701); a failed DLSS
+  feature is retried when a menu setting changes, not for the rest of the run (#2550); the quality mode joins that retry
+  key, a failing evaluation is logged when its result changes and remakes the feature after 30 failures in a row, and
+  frame generation reads the multiplier its sets were made for (#2658); a fixed multiplier makes no more frames than the
+  display shows, and the display thread drops a made frame when the game's next frame is already waiting (upstream
+  `6cdee4c1`); switching from scaled DLSS to DLAA waits up to three scene frames for the native scene instead of making
+  a DLAA feature for a queued small one (#2145). `builder/rust/tests/nvidia_parity.rs` covers these game-free and pins
+  Reflex's submit IDs, V-Sync Auto and both NGX runtimes, which were already ported.
 - **4 Vulkan memory/perf fixes**: GPU-written mirrors are kept instead of remade empty (cyan after a pause or reload,
   #2154); six background workers on 16-thread machines (#2440); part of the image pool's blocks are made at the start
   (#2438); retired imports on Windows AMD/Intel go back after a grace wait instead of being kept for the session
