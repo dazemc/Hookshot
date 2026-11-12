@@ -933,9 +933,28 @@ impl<'a, C: Code> Lifter<'a, C> {
                     falls = false;
                 }
                 Kind::Br(reg) => {
-                    out.push(format!(
-                        "\x01A{index}\x01A64_IJUMP(c, c->x[{reg}]); return;"
-                    ));
+                    if let Some(targets) = self.jt.get(&pc) {
+                        let mut sorted: Vec<u64> = targets.iter().copied().collect();
+                        sorted.sort_unstable();
+                        sorted.dedup();
+                        let cases = sorted
+                            .iter()
+                            .map(|target| {
+                                format!(
+                                    "case 0x{target:x}ULL: {}",
+                                    self.transfer(pc, *target, body)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        out.push(format!(
+                            "switch (c->x[{reg}]) {{ {cases} default: A64_IJUMP(c, c->x[{reg}]); return; }}"
+                        ));
+                    } else {
+                        out.push(format!(
+                            "\x01A{index}\x01A64_IJUMP(c, c->x[{reg}]); return;"
+                        ));
+                    }
                     falls = false;
                 }
                 Kind::Svc(imm) => out.push(format!(
