@@ -1865,6 +1865,170 @@ mod tests {
     }
 
     #[test]
+    fn the_graphics_tab_is_grouped_under_section_titles() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let menu = fs::read_to_string(root.join("gpu/vk/vk_menu.cpp")).unwrap();
+        let table = &menu[menu.find("Row rows[] = {").unwrap()..];
+        let table = &table[..table.find("\n};").unwrap()];
+        // (tab, name, value expression, heading: a heading's name is its section's title)
+        let rows: Vec<(&str, String, String, bool)> = table
+            .split("\n    {TAB_")
+            .skip(1)
+            .map(|entry| {
+                let tab = &entry[..entry.find(',').unwrap()];
+                let q1 = entry.find('"').unwrap();
+                let q2 = q1 + 1 + entry[q1 + 1..].find('"').unwrap();
+                let name = entry[q1 + 1..q2].to_string();
+                let after = &entry[q2 + 1..];
+                let value = after[after.find(',').unwrap() + 1..]
+                    .trim_start()
+                    .split(',')
+                    .next()
+                    .unwrap()
+                    .trim()
+                    .to_string();
+                let heading = entry.contains(
+                    "nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true}",
+                );
+                (tab, name, value, heading)
+            })
+            .collect();
+        assert!(rows.len() >= 40, "the rows table was not found");
+
+        // (the sections the tab draws, in order, each with the rows it holds)
+        let sections = [
+            (
+                "Resolution and upscaling",
+                &[
+                    "Output resolution",
+                    "Profile",
+                    "Upscaler",
+                    "DLSS model",
+                    "Render resolution",
+                    "Sharpness",
+                ][..],
+            ),
+            (
+                "Frame generation and latency",
+                &[
+                    "Frame generation",
+                    "Frame generation by",
+                    "Frame pacing",
+                    "Game frame rate cap",
+                    "NVIDIA Reflex",
+                    "AMD Anti-Lag 2",
+                ][..],
+            ),
+            (
+                "Screen",
+                &[
+                    "Fullscreen",
+                    "V-Sync",
+                    "Window scaling filter",
+                    "Ultrawide",
+                    "Ultrawide menus",
+                ][..],
+            ),
+            (
+                "HDR",
+                &[
+                    "HDR",
+                    "HDR paper white",
+                    "HDR peak brightness",
+                    "HDR contrast",
+                ][..],
+            ),
+            ("Detail", &["Anisotropic filtering"][..]),
+            (
+                "GPU and memory",
+                &["GPU device", "VRAM budget", "Mesh shaders"][..],
+            ),
+        ];
+        let graphics: Vec<_> = rows.iter().filter(|row| row.0 == "GRAPHICS").collect();
+        assert_eq!(
+            graphics[0].1, "Quality preset",
+            "the Graphics tab no longer starts with the Quality preset"
+        );
+        assert!(!graphics[0].3);
+        let mut want = vec!["Quality preset".to_string()];
+        for (title, members) in sections {
+            want.push(format!("[{title}]"));
+            want.extend(members.iter().map(|name| name.to_string()));
+        }
+        let got: Vec<String> = graphics
+            .iter()
+            .map(|row| {
+                if row.3 {
+                    format!("[{}]", row.1)
+                } else {
+                    row.1.clone()
+                }
+            })
+            .collect();
+        assert_eq!(got, want, "the Graphics tab's sections and rows moved");
+
+        // (a heading draws as a title and the selection steps over it)
+        let function = |marker: &str| {
+            let start = menu.find(marker).unwrap();
+            let mut depth = 0;
+            for (at, c) in menu[start..].char_indices() {
+                if c == '{' {
+                    depth += 1;
+                } else if c == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &menu[start..start + at + 1];
+                    }
+                }
+            }
+            panic!("unterminated {marker}");
+        };
+        let draw = function("void draw_options(ui::Ctx& c) {");
+        assert!(
+            draw.contains("if (r.heading) {"),
+            "heading rows are no longer drawn as titles"
+        );
+        let tick = function("void menu_tick() {");
+        assert!(
+            tick.contains("while (heading_at(selected));"),
+            "the keys no longer step over heading rows"
+        );
+
+        // (no section can be left with only rows row_shown hides: a title over nothing on a GPU without them)
+        let shown = function("bool row_shown(int i) {");
+        let mut hidable = Vec::new();
+        let mut at = 0;
+        while let Some(found) = shown[at..].find("&opts.") {
+            let start = at + found;
+            let end = shown[start + 1..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+                .map(|end| start + 1 + end)
+                .unwrap_or(shown.len());
+            hidable.push(&shown[start..end]);
+            at = end;
+        }
+        assert!(hidable.contains(&"&opts.reflex") && hidable.contains(&"&opts.hdr_white"));
+        for (i, heading) in rows.iter().enumerate().filter(|(_, row)| row.3) {
+            let section: Vec<_> = rows[i + 1..]
+                .iter()
+                .take_while(|row| row.0 == heading.0 && !row.3)
+                .collect();
+            assert!(
+                !section.is_empty(),
+                "{}: the section {} has no rows",
+                heading.0,
+                heading.1
+            );
+            assert!(
+                section.iter().any(|row| !hidable.contains(&row.2.as_str())),
+                "{}: every row of the section {} can be hidden (row_shown)",
+                heading.0,
+                heading.1
+            );
+        }
+    }
+
+    #[test]
     fn radv_and_the_xtxh_navi_21_ids_are_out_of_the_amd_workarounds() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
