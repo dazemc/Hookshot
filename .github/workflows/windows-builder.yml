@@ -89,6 +89,8 @@ jobs:
           path: ${{ runner.temp }}/llvm
           key: ${{ steps.llvm.outputs.name }}
       - name: llvm-mingw
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           llvm=$(scripts/windows/release_parts.sh llvm-mingw "$RUNNER_TEMP/llvm")
           test -n "$llvm"
@@ -251,7 +253,12 @@ jobs:
           path: ${{ runner.temp }}/llvm
           key: ${{ steps.llvm.outputs.name }}
       - name: llvm-mingw
-        run: echo "HOOKSHOT_MINGW=$(scripts/windows/release_parts.sh llvm-mingw "$RUNNER_TEMP/llvm")" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          llvm=$(scripts/windows/release_parts.sh llvm-mingw "$RUNNER_TEMP/llvm")
+          test -n "$llvm"
+          echo "HOOKSHOT_MINGW=$llvm" >> "$GITHUB_ENV"
       # The back end's compiled objects (the Rust engine's object cache, vk-work/build/objcache: each object under the
       # SHA-1 of its source, its flags and the headers it can see), for pull requests, as the Linux AppImage workflow keeps
       # its own: a pull request compiles only the files its change reaches, not all of them (about 160 s here). Written after
@@ -283,6 +290,7 @@ jobs:
           RX_TARGET: windows
           RX_VK_ONLY: '1'
           RX_RELEASE: '1'
+          RX_CPM: ${{ github.workspace }}/_deps/cpm
         run: |
           work=$(cygpath -m "$RUNNER_TEMP/vk-work")
           printf '{"command":"build.vk","work":"%s"}\n' "$work" |

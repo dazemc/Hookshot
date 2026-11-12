@@ -244,6 +244,12 @@ llvm_mingw() {
     fi
     local dest
     dest="$(cache_dir)/$(basename "$url")"
+    # (GitHub's asset CDN has answered GitHub-hosted runners with a short
+    # body; the release API is the reliable path when a token is available)
+    if ! check_file "$dest" "$sha" "$size" && command -v gh >/dev/null 2>&1 && [ -n "${GH_TOKEN:-}" ]; then
+        mkdir -p "$(dirname "$dest")"
+        gh release download 20261104 --repo mstorsjo/llvm-mingw             --pattern "$(basename "$url")" --dir "$(dirname "$dest")" --clobber >/dev/null 2>&1 || true
+    fi
     fetch_verified "$url" "$sha" "$size" "$dest"
     mkdir -p "$folder"
     say "unpacking $(basename "$dest")"

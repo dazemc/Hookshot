@@ -93,7 +93,12 @@ if [[ -z $info ]]; then
     fi
     # (the other workflow can make it between the find and the create: its release is then the one used)
     gh release create "$tag" --verify-tag --title "$tag" --generate-notes "${kind[@]}" >/dev/null || true
-    info=$("$files" find "$tag")
+    # (GitHub's release listing can lag the create by a moment)
+    for try in 1 2 3 4 5; do
+        info=$("$files" find "$tag")
+        [[ -n $info ]] && break
+        sleep 2
+    done
     [[ -n $info ]] || { echo "::error::$tag: its release could not be made" >&2; exit 1; }
 fi
 "$files" upload "$tag" "$@"
