@@ -192,6 +192,9 @@ pub fn dispatch(text: &str) -> String {
                 json!({"reads": read, "writes": written, "dropped": text::drop_flag_stores(&text, dead)}),
             )
         }
+        "lift.stack" => {
+            Ok(json!({"stores": text::stack_stores(&string(&request, "text").unwrap_or_default())}))
+        }
         "lift.frame" => Ok(text::frame_json(
             &string(&request, "text").unwrap_or_default(),
         )),

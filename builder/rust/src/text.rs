@@ -46,6 +46,26 @@ pub fn fp_is_frame(text: &str) -> bool {
     !fp_write(&rest)
 }
 
+fn sp_store_pre() -> Regex {
+    Regex::new(r"(\{ uint64_t _b=c->x\[31\]; int64_t _o=-?\d+; )recomp_(store8|store16|store32|store64|stp32|stp64)\(").unwrap()
+}
+fn sp_store() -> Regex {
+    Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,(\(?)c->x\[31\]").unwrap()
+}
+
+/// Give SP-based stores the stack variants.
+pub fn stack_stores(text: &str) -> String {
+    if !text.contains("c->x[31]") {
+        return text.to_owned();
+    }
+    let first = sp_store_pre()
+        .replace_all(text, "${1}recomp_${2}_sp(")
+        .into_owned();
+    sp_store()
+        .replace_all(&first, "recomp_${1}_sp(c,${2}c->x[31]")
+        .into_owned()
+}
+
 /// Give x29-based stores the stack variants.
 pub fn frame_stores(text: &str) -> String {
     let first = fp_store_pre()
@@ -63,6 +83,22 @@ pub fn frame_json(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stack_stores_rewrite_both_forms() {
+        assert_eq!(
+            stack_stores("{ uint64_t _b=c->x[31]; int64_t _o=-8; recomp_store64(c,c->x[31],v); }"),
+            "{ uint64_t _b=c->x[31]; int64_t _o=-8; recomp_store64_sp(c,c->x[31],v); }"
+        );
+        assert_eq!(
+            stack_stores("recomp_store32(c,c->x[31],v);"),
+            "recomp_store32_sp(c,c->x[31],v);"
+        );
+        assert_eq!(
+            stack_stores("recomp_store32(c,c->x[0],v);"),
+            "recomp_store32(c,c->x[0],v);"
+        );
+    }
 
     #[test]
     fn frame_writes_and_stores() {

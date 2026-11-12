@@ -814,6 +814,7 @@ impl<'a, C: Code> Lifter<'a, C> {
                             .get(&pc)
                             .map(|mask| crate::text::drop_flag_stores(text, *mask))
                             .unwrap_or_else(|| text.to_owned());
+                        let text = crate::text::stack_stores(&text);
                         out.push(text.trim_end_matches('\n').to_owned());
                     }
                 }
