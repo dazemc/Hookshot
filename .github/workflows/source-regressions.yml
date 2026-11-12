@@ -2,7 +2,7 @@
 # it: cargo test --workspace in builder/rust on Linux and Windows, flutter test and flutter analyze in builder/flutter,
 # the focused SPIR-V fixtures (global narrow load/store, direct surface atomics, F2I immediate) and actionlint over the
 # workflows. No Python test step is involved and no game data is read. The paths below start a run only for a change
-# one of these checks reads; actionlint's own job runs when a workflow changes.
+# one of these checks reads (the docs some Rust tests read included); actionlint's own job runs when a workflow changes.
 name: Game-free source regressions
 
 on:
@@ -11,6 +11,11 @@ on:
     paths:
       - 'builder/rust/**'
       - 'builder/flutter/**'
+      # (the Rust tests read these: a docs-only change can break them, so it runs the checks too)
+      - 'docs/development.md'
+      - 'docs/versioning.md'
+      - 'readme.md'
+      - 'gpu/PROVENANCE.md'
       - 'gpu/vk/eden/**'
       - 'gpu/vk/sirit/**'
       - 'gpu/vk/compat/**'
@@ -89,12 +94,18 @@ on:
       - 'builder/rust/src/host_build.rs'
       - 'builder/rust/tests/host_video_fixtures.rs'
       - 'scripts/windows/dav1d.sh'
+      - 'scripts/windows/release_parts.sh'
       - '.github/workflows/**'
   pull_request:
     branches: [main]
     paths:
       - 'builder/rust/**'
       - 'builder/flutter/**'
+      # (the Rust tests read these: a docs-only change can break them, so it runs the checks too)
+      - 'docs/development.md'
+      - 'docs/versioning.md'
+      - 'readme.md'
+      - 'gpu/PROVENANCE.md'
       - 'gpu/vk/eden/**'
       - 'gpu/vk/sirit/**'
       - 'gpu/vk/compat/**'
@@ -173,6 +184,7 @@ on:
       - 'builder/rust/src/host_build.rs'
       - 'builder/rust/tests/host_video_fixtures.rs'
       - 'scripts/windows/dav1d.sh'
+      - 'scripts/windows/release_parts.sh'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -189,7 +201,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # (pinned: a new -latest image must not change what the checks compile with. The same images as the other jobs)
+        os: [ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     defaults:
@@ -214,7 +227,7 @@ jobs:
 
   flutter:
     name: Flutter tests and analyzer
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
@@ -443,7 +456,7 @@ jobs:
           VERSION: 1.7.12
           SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
-          curl -fsSL --retry 5 --retry-delay 10 -o "$RUNNER_TEMP/actionlint.tar.gz" \
+          curl -fsSL --retry 5 --retry-delay 10 --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/actionlint.tar.gz" \
             "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
           echo "$SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint

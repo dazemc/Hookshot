@@ -102,7 +102,8 @@ check_file() { # path sha size
 }
 
 fetch() { # url dest
-    curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 \
+    # (only https: a redirect to plain http, or a file: link, is refused before anything is written)
+    curl -fsSL --retry 5 --retry-delay 5 --connect-timeout 30 --max-time 900 --proto '=https' --tlsv1.2 \
         -o "$2.part" "$1"
     mv -f "$2.part" "$2"
 }
@@ -134,11 +135,34 @@ windows_tar() {
     printf '%s' "$path"
 }
 
+zip_members() { # zip -> its member names, one a line
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -Z1 "$1"
+    elif command -v bsdtar >/dev/null 2>&1; then
+        bsdtar -tf "$1"
+    elif command -v 7z >/dev/null 2>&1; then
+        # (the first Path is the archive itself)
+        7z l -ba -slt "$1" | sed -n 's/^Path = //p' | tail -n +2
+    else
+        "$(windows_tar)" -tf "$1"
+    fi
+}
+
 extract_zip() { # zip folder
-    local archive folder
+    local archive folder members member
     archive=$(posix_path "$1")
     folder=$(posix_path "$2")
     mkdir -p "$folder"
+    # (a member with a drive, a root or a .. component would leave the folder: such an archive is refused whole, as
+    # scripts/release_parts.py did for the part zips)
+    members=$(zip_members "$archive") || die "$archive: its members could not be listed"
+    while IFS= read -r member; do
+        [ -n "$member" ] || continue
+        case "/${member//\\//}/" in
+            *"/../"*|//*|*"/"[A-Za-z]":/"*)
+                die "$archive: $member leaves $folder" ;;
+        esac
+    done <<<"$members"
     if command -v unzip >/dev/null 2>&1; then
         unzip -q "$archive" -d "$folder"
     elif command -v bsdtar >/dev/null 2>&1; then
@@ -223,7 +247,7 @@ previous() {
     json=$(mktemp)
     for repo in "${repos[@]}"; do
         if [ -n "${GH_TOKEN:-}" ]; then
-            curl -fsSL --retry 3 --retry-delay 5 \
+            curl -fsSL --retry 3 --retry-delay 5 --proto '=https' --tlsv1.2 \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
                 "https://api.github.com/repos/$repo/releases?per_page=30" -o "$json" || {
@@ -231,7 +255,8 @@ previous() {
                 continue
             }
         else
-            curl -fsSL --retry 3 --retry-delay 5 -H "Accept: application/vnd.github+json" \
+            curl -fsSL --retry 3 --retry-delay 5 --proto '=https' --tlsv1.2 \
+                -H "Accept: application/vnd.github+json" \
                 "https://api.github.com/repos/$repo/releases?per_page=30" -o "$json" || {
                 say "$repo: GitHub did not answer"
                 continue

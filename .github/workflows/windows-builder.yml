@@ -8,7 +8,7 @@
 # every run; for a release, the new parts go to the builder-parts release and the setup (HookshotBuilder.exe) and its
 # list (hookshot-setup.txt) to the release, beside the Linux AppImage. A release is a tag pushed by hand, or the tag the
 # Release workflow passes when it calls this one (inputs.tag). On any other push to main, the same files replace those
-# of the nightly prerelease, the latest development build.
+# of the nightly prerelease, the latest development build, when its commit comes after the one the nightly holds.
 name: Windows builder
 
 on:
@@ -19,8 +19,8 @@ on:
       - 'docs/**'
       - '*.md'
       - '.release-please-manifest.json'
-  # (not for a pull request that changes only documentation or the release manifest: nothing of them is compiled or
-  # packaged but readme.md, which is only copied in. A push to main builds every time)
+  # (not for a push or pull request that changes only documentation or the release manifest: nothing of them is compiled
+  # or packaged but readme.md, which is only copied in)
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -42,9 +42,10 @@ env:
   RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '') }}
 
 concurrency:
-  # (a fixed name: when called, github.workflow is the caller's)
+  # (a fixed name: when called, github.workflow is the caller's. One run of main at a time, and one waiting, replaced by a
+  # newer push's: scripts/release_upload.sh counts on it, so this platform's nightly files never go back)
   group: windows-builder-${{ inputs.tag || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type != 'tag') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -53,8 +54,8 @@ defaults:
 jobs:
   package:
     name: Hookshot Builder package and setup
-    # (builder-parts holds the installer's parts: no package there. nightly is moved by the release job of a push to main,
-    # and rc by the Release workflow)
+    # (builder-parts holds the installer's parts: no package there. nightly is moved forward by the release job of a push
+    # to main, here or in the Linux AppImage workflow, and rc by the Release workflow)
     if: github.ref_name != 'builder-parts' && github.ref_name != 'nightly' && github.ref_name != 'rc'
     needs: [dav1d]
     runs-on: windows-2022
@@ -77,7 +78,8 @@ jobs:
         with:
           channel: stable
           flutter-version: '3.47.9'
-          cache: true
+          # (a release takes its Flutter SDK from the pinned download, not from a cache other runs write)
+          cache: ${{ env.RELEASE_TAG == '' }}
       - name: Set up stable Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
