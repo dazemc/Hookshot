@@ -1164,30 +1164,78 @@ pub fn write_json(
         .iter()
         .map(|entry| format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"))
         .collect();
+    let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(8)
+        .max(1)
+        .min(entries.len().max(1));
+    let mut emitted: Vec<(usize, String)> = if workers <= 1 {
+        let mut out = Vec::new();
+        for (index, entry) in entries.iter().copied().enumerate() {
+            let body = &lift.funcs[&entry];
+            let items: Vec<(u64, u32)> = body
+                .keys()
+                .filter_map(|pc| image.word(*pc).map(|word| (*pc, word)))
+                .collect();
+            let (translated, _) = crate::emitter::translate(&items)?;
+            let by_pc: std::collections::HashMap<u64, String> =
+                items.iter().map(|(pc, _)| *pc).zip(translated).collect();
+            let texts: Vec<String> = body
+                .keys()
+                .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
+                .collect();
+            out.push((index, lift.emit_function(entry, &texts)));
+        }
+        out
+    } else {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|worker| {
+                    let lift = &lift;
+                    let image = &image;
+                    let entries = &entries;
+                    scope.spawn(move || {
+                        let mut out = Vec::new();
+                        let mut index = worker;
+                        while index < entries.len() {
+                            let entry = entries[index];
+                            let body = &lift.funcs[&entry];
+                            let items: Vec<(u64, u32)> = body
+                                .keys()
+                                .filter_map(|pc| image.word(*pc).map(|word| (*pc, word)))
+                                .collect();
+                            if let Ok((translated, _)) = crate::emitter::translate(&items) {
+                                let by_pc: std::collections::HashMap<u64, String> =
+                                    items.iter().map(|(pc, _)| *pc).zip(translated).collect();
+                                let texts: Vec<String> = body
+                                    .keys()
+                                    .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
+                                    .collect();
+                                out.push((index, lift.emit_function(entry, &texts)));
+                            }
+                            index += workers;
+                        }
+                        out
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_default())
+                .collect()
+        })
+    };
+    emitted.sort_by_key(|(index, _)| *index);
+    let written = entries.len();
+    let written_entries = entries.clone();
     let mut chunk = format!("#include \"a64.h\"\n{declarations}");
     let mut size = 0usize;
     let mut file = 0usize;
     let mut files = Vec::new();
-    let mut written = 0usize;
-    let mut written_entries = Vec::new();
-    for entry in entries {
-        let body = &lift.funcs[&entry];
-        let items: Vec<(u64, u32)> = body
-            .keys()
-            .filter_map(|pc| image.word(*pc).map(|word| (*pc, word)))
-            .collect();
-        let (translated, _) = crate::emitter::translate(&items)?;
-        let by_pc: std::collections::HashMap<u64, String> =
-            items.iter().map(|(pc, _)| *pc).zip(translated).collect();
-        let texts: Vec<String> = body
-            .keys()
-            .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
-            .collect();
-        let text = lift.emit_function(entry, &texts);
+    for (_, text) in emitted {
         chunk.push_str(&text);
         size += text.len();
-        written += 1;
-        written_entries.push(entry);
         if size >= chunk_bytes {
             let path = out.join(format!("code_{file:03}.c"));
             std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
