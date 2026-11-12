@@ -1,5 +1,6 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <shobjidl.h>
 #include <windows.h>
 
 #include "flutter_window.h"
@@ -17,6 +18,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // plugins.
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+  // The taskbar groups the Builder under its own id and icon, not under the
+  // runner's generic name (the legacy Python builder set the same id; the
+  // packaged exe is HookshotBuilder.exe).
+  ::SetCurrentProcessExplicitAppUserModelID(L"NotRexed.Hookshot.Builder");
+
   flutter::DartProject project(L"data");
 
   std::vector<std::string> command_line_arguments =
@@ -27,7 +33,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"hookshot_builder", origin, size)) {
+  if (!window.Create(L"Hookshot Builder", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
