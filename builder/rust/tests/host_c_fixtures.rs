@@ -1,8 +1,10 @@
 // Game-free checks of the C host's pure parts, compiled with the host C compiler: the Steam pads' ignore-list filter
 // (host/steam_pads.h, upstream NotRexed/Hookshot e4d45157), the gameplay field of view (host/oot_fov.c, upstream
-// ba472ea3) and, later here, the other fixtures that need nothing but a compiler. A machine with no C compiler skips
-// them, as CI's Rust job may have none on Windows.
+// ba472ea3), the RomFS mods and their resource size table (host/mods.c, host/prompts.c, upstream bd9b07e6) and, later
+// here, the other fixtures that need nothing but a compiler. A machine with no C compiler skips them, as CI's Rust job
+// may have none on Windows.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -64,14 +66,15 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// Compile a C fixture with the host compiler, returning its output. `None` when there is no compiler, so the caller
-/// can say it skipped.
-fn compile_and_run(
+/// Compile a C fixture with the host compiler, returning its folder and executable. `None` when there is no compiler,
+/// so the caller can say it skipped. `strict` adds -Werror (some production sources carry warnings under it).
+fn compile_fixture(
     name: &str,
     sources: &[PathBuf],
     includes: &[PathBuf],
     flags: &[&str],
-) -> Option<Output> {
+    strict: bool,
+) -> Option<(PathBuf, PathBuf)> {
     let cc = compiler()?;
     let dir = scratch(name);
     let exe = dir.join(if cfg!(windows) {
@@ -80,7 +83,10 @@ fn compile_and_run(
         "fixture"
     });
     let mut build = Command::new(&cc);
-    build.args(["-std=c11", "-Wall", "-Wextra", "-Werror"]);
+    build.args(["-std=c11", "-Wall", "-Wextra"]);
+    if strict {
+        build.arg("-Werror");
+    }
     for include in includes {
         build.arg(format!("-I{}", include.display()));
     }
@@ -94,9 +100,38 @@ fn compile_and_run(
         "{cc}: {}",
         String::from_utf8_lossy(&built.stderr)
     );
-    let run = Command::new(&exe).output().expect("run the fixture");
+    Some((dir, exe))
+}
+
+/// Compile a C fixture with the host compiler, run it, and return its output. `None` when there is no compiler, so
+/// the caller can say it skipped.
+fn compile_and_run_with(
+    name: &str,
+    sources: &[PathBuf],
+    includes: &[PathBuf],
+    flags: &[&str],
+    args: &[&str],
+    envs: &[(&str, &str)],
+    strict: bool,
+) -> Option<Output> {
+    let (dir, exe) = compile_fixture(name, sources, includes, flags, strict)?;
+    let mut run = Command::new(&exe);
+    run.args(args);
+    for (name, value) in envs {
+        run.env(name, value);
+    }
+    let run = run.output().expect("run the fixture");
     let _ = fs::remove_dir_all(dir);
     Some(run)
+}
+
+fn compile_and_run(
+    name: &str,
+    sources: &[PathBuf],
+    includes: &[PathBuf],
+    flags: &[&str],
+) -> Option<Output> {
+    compile_and_run_with(name, sources, includes, flags, &[], &[], true)
 }
 
 #[test]
@@ -482,4 +517,475 @@ int main(void) {
         String::from_utf8_lossy(&run.stderr)
     );
     assert!(String::from_utf8_lossy(&run.stdout).starts_with("PASS"));
+}
+
+fn put(base: &Path, rel: &str, body: &str) {
+    let path = base.join(rel);
+    fs::create_dir_all(path.parent().expect("a file's folder")).expect("make the fixture folder");
+    fs::write(path, body).expect("write the fixture file");
+}
+
+#[test]
+fn mods_load_the_emulator_layout_and_pick_the_exact_size_table() {
+    let repo = root();
+    let dir = scratch("mods-layout");
+    let mods = dir.join("mods");
+    // Two mods replace the same file: 02-b sorts last and wins. Each also has a file the other lacks.
+    put(&mods, "01-a/romfs/UI/Shared.zs", "a");
+    put(&mods, "02-b/romfs/UI/Shared.zs", "b");
+    put(&mods, "01-a/romfs/UI/OnlyA.zs", "a");
+    put(&mods, "02-b/romfs/UI/ModOnly.zs", "b");
+    fs::create_dir_all(mods.join("02-b/romfs/UI/Sub")).expect("make the mod folder");
+    // A mod may carry several game versions' tables: the prompts ask for the game's exact one.
+    put(
+        &mods,
+        "01-a/romfs/System/Resource/ResourceSizeTable.Product.110.Nin_Ounce_NVN2.rsizetable.zs",
+        "110",
+    );
+    put(
+        &mods,
+        "02-b/romfs/System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs",
+        "111",
+    );
+    // The emulator layout that sits deeper is a mod too.
+    put(
+        &mods,
+        "contents/0100000000001000/deep/romfs/Deep/File.zs",
+        "deep",
+    );
+    // Off folders, a folder that is not a mod, and an exefs-only mod.
+    put(&mods, "_off/romfs/Off.zs", "off");
+    put(&mods, "-off2/romfs/Off2.zs", "off");
+    put(&mods, "notamod/NotAMod.zs", "not a mod");
+    put(&mods, "exefs-only/exefs/main.pchtxt", "patch");
+    // The game's own folder, for the listing: UI/Shared.zs is the game's, not a mod extra.
+    put(&mods, "game/UI/Shared.zs", "game");
+
+    let stub = dir.join("stub.h");
+    fs::write(
+        &stub,
+        "#pragma once\n#include <stddef.h>\nvoid hos_log(const char *fmt, ...);\n",
+    )
+    .expect("write the hos.h stand-in");
+    let stub_arg = stub.to_str().expect("the stub path");
+    let mut flags = vec!["-DHOS_H", "-include", stub_arg];
+    if !cfg!(windows) {
+        flags.push("-D_GNU_SOURCE");
+    }
+    let mut sources = vec![repo.join("tests/mods_test.c"), repo.join("host/mods.c")];
+    let mut includes = vec![repo.join("host")];
+    if !cfg!(windows) {
+        sources.push(repo.join("host/posix/win32_posix.c"));
+        includes.push(repo.join("host/posix"));
+    }
+    let mods_arg = mods.to_str().expect("the mods path");
+    let Some(run) = compile_and_run_with(
+        "mods-layout",
+        &sources,
+        &includes,
+        &flags,
+        &[],
+        &[("HOS_MODS", mods_arg)],
+        false,
+    ) else {
+        eprintln!("skipping the mods fixture: no C compiler (CC, cc, gcc or clang)");
+        let _ = fs::remove_dir_all(dir);
+        return;
+    };
+    let _ = fs::remove_dir_all(dir);
+    assert!(
+        run.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&run.stdout).starts_with("ok:"),
+        "{}",
+        String::from_utf8_lossy(&run.stdout)
+    );
+}
+
+#[test]
+fn the_prompts_pick_the_game_size_table_not_another_version() {
+    let repo = root();
+    let source = fs::read_to_string(repo.join("host/prompts.c")).expect("host/prompts.c");
+    let table = function(&source, "static int game_table(");
+    // (the prompts ask for the exact table the game opens, not the first matching one in a mod)
+    assert!(source.contains("hos_mods_file(table"));
+    assert!(!source.contains("hos_mods_find("));
+    let fixture = format!(
+        r#"#include <stdio.h>
+#include <string.h>
+#include <windows.h>
+const char *hos_romfs_dir;
+{table}
+int main(int argc, char **argv) {{
+    if (argc != 2) return 2;
+    hos_romfs_dir = argv[1];
+    char out[4096];
+    if (!game_table(out, sizeof out)) {{ puts("none"); return 3; }}
+    puts(out);
+    return 0;
+}}
+"#
+    );
+    let dir = scratch("game-table");
+    let c = dir.join("fixture.c");
+    fs::write(&c, fixture).expect("write the game table fixture");
+    let romfs = dir.join("romfs");
+    let resource = romfs.join("System/Resource");
+    fs::create_dir_all(&resource).expect("make the RomFS folder");
+    // (the version that sorts first is made second, so directory order is not the answer)
+    fs::write(
+        resource.join("ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs"),
+        b"111",
+    )
+    .expect("write a table");
+    fs::write(
+        resource.join("ResourceSizeTable.Product.110.Nin_Ounce_NVN2.rsizetable.zs"),
+        b"110",
+    )
+    .expect("write the table");
+
+    let mut sources = vec![c];
+    let mut includes = Vec::new();
+    let mut flags = Vec::new();
+    if !cfg!(windows) {
+        sources.push(repo.join("host/posix/win32_posix.c"));
+        includes.push(repo.join("host/posix"));
+        flags.push("-D_GNU_SOURCE");
+    }
+    let romfs_arg = romfs.to_str().expect("the RomFS path");
+    let Some(run) = compile_and_run_with(
+        "game-table",
+        &sources,
+        &includes,
+        &flags,
+        &[romfs_arg],
+        &[],
+        false,
+    ) else {
+        eprintln!("skipping the game table fixture: no C compiler (CC, cc, gcc or clang)");
+        let _ = fs::remove_dir_all(dir);
+        return;
+    };
+    assert!(
+        run.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        "System/Resource/ResourceSizeTable.Product.110.Nin_Ounce_NVN2.rsizetable.zs"
+    );
+
+    let empty = dir.join("empty");
+    fs::create_dir_all(&empty).expect("make the empty RomFS folder");
+    let empty_arg = empty.to_str().expect("the empty RomFS path");
+    let Some(run) = compile_and_run_with(
+        "game-table-none",
+        &sources,
+        &includes,
+        &flags,
+        &[empty_arg],
+        &[],
+        false,
+    ) else {
+        let _ = fs::remove_dir_all(dir);
+        return;
+    };
+    let _ = fs::remove_dir_all(dir);
+    assert_eq!(run.status.code(), Some(3));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "none");
+}
+
+#[test]
+fn a_mods_size_table_is_merged_with_the_prompts_entries() {
+    let repo = root();
+    let source = fs::read_to_string(repo.join("host/prompts.c")).expect("host/prompts.c");
+    let functions = [
+        function(&source, "static uint32_t rd32le("),
+        function(&source, "static void wr32le("),
+        function(&source, "static int restbl_head("),
+        function(&source, "static int restbl_cmp("),
+        function(&source, "static long restbl_part("),
+        function(&source, "static uint8_t *merge_restbl("),
+    ]
+    .join("\n");
+    let harness = format!(
+        r#"#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+{functions}
+static uint8_t *load(const char *path, size_t *n) {{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    const long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *p = len > 0 ? (uint8_t *)malloc((size_t)len) : NULL;
+    if (!p || fread(p, 1, (size_t)len, f) != (size_t)len) {{ fclose(f); free(p); return NULL; }}
+    fclose(f);
+    *n = (size_t)len;
+    return p;
+}}
+int main(int argc, char **argv) {{
+    if (argc != 4) return 2;
+    size_t an = 0, bn = 0, n = 0;
+    uint8_t *a = load(argv[1], &an), *b = load(argv[2], &bn);
+    if (!a || !b) return 3;
+    int raised = 0;
+    uint8_t *t = merge_restbl(a, an, b, bn, &n, &raised);
+    if (!t) {{ puts("refused"); free(a); free(b); return 0; }}
+    FILE *f = fopen(argv[3], "wb");
+    if (!f) return 4;
+    const int ok = fwrite(t, 1, n, f) == n && fclose(f) == 0;
+    free(t), free(a), free(b);
+    if (!ok) return 5;
+    printf("%d\n", raised);
+    return 0;
+}}
+"#
+    );
+    let dir = scratch("merge-restbl");
+    let c = dir.join("fixture.c");
+    fs::write(&c, harness).expect("write the merge fixture");
+    let Some((build_dir, exe)) = compile_fixture("merge-restbl", &[c], &[], &[], true) else {
+        eprintln!("skipping the size table fixture: no C compiler (CC, cc, gcc or clang)");
+        let _ = fs::remove_dir_all(dir);
+        return;
+    };
+
+    fn restbl_unsorted(
+        hashed: &[(u32, u32)],
+        named: &[(&str, u32)],
+        name_size: u32,
+        magic: &[u8],
+    ) -> Vec<u8> {
+        assert_eq!(magic.len(), 6);
+        let mut out = Vec::new();
+        out.extend_from_slice(magic);
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&name_size.to_le_bytes());
+        out.extend_from_slice(&(hashed.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(named.len() as u32).to_le_bytes());
+        for (key, size) in hashed {
+            out.extend_from_slice(&key.to_le_bytes());
+            out.extend_from_slice(&size.to_le_bytes());
+        }
+        for (name, size) in named {
+            let mut field = name.as_bytes().to_vec();
+            field.resize(name_size as usize, 0);
+            out.extend_from_slice(&field);
+            out.extend_from_slice(&size.to_le_bytes());
+        }
+        out
+    }
+
+    fn restbl(
+        hashed: &[(u32, u32)],
+        named: &[(&str, u32)],
+        name_size: u32,
+        magic: &[u8],
+    ) -> Vec<u8> {
+        let mut hashed = hashed.to_vec();
+        hashed.sort_by_key(|e| e.0);
+        let mut named = named.to_vec();
+        named.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        restbl_unsorted(&hashed, &named, name_size, magic)
+    }
+
+    fn entries(t: &[u8]) -> (u32, BTreeMap<u32, u32>, BTreeMap<String, u32>) {
+        let name_size = u32::from_le_bytes(t[10..14].try_into().unwrap());
+        let hashed_n = u32::from_le_bytes(t[14..18].try_into().unwrap()) as usize;
+        let named_n = u32::from_le_bytes(t[18..22].try_into().unwrap()) as usize;
+        let mut hashed = BTreeMap::new();
+        for i in 0..hashed_n {
+            let at = 22 + 8 * i;
+            hashed.insert(
+                u32::from_le_bytes(t[at..at + 4].try_into().unwrap()),
+                u32::from_le_bytes(t[at + 4..at + 8].try_into().unwrap()),
+            );
+        }
+        let at = 22 + 8 * hashed_n;
+        let mut named = BTreeMap::new();
+        for i in 0..named_n {
+            let e = at + (name_size as usize + 4) * i;
+            let end = e + name_size as usize;
+            let name =
+                String::from_utf8(t[e..end].iter().take_while(|b| **b != 0).copied().collect())
+                    .unwrap();
+            named.insert(
+                name,
+                u32::from_le_bytes(t[end..end + 4].try_into().unwrap()),
+            );
+        }
+        (name_size, hashed, named)
+    }
+
+    fn merged(a: &[u8], b: &[u8]) -> Vec<u8> {
+        let (name_size, ah, an) = entries(a);
+        let (_, bh, bn) = entries(b);
+        let hashed: BTreeMap<u32, u32> = ah
+            .keys()
+            .chain(bh.keys())
+            .map(|k| {
+                (
+                    *k,
+                    ah.get(k)
+                        .copied()
+                        .unwrap_or(0)
+                        .max(bh.get(k).copied().unwrap_or(0)),
+                )
+            })
+            .collect();
+        let named: BTreeMap<String, u32> = an
+            .keys()
+            .chain(bn.keys())
+            .map(|k| {
+                (
+                    k.clone(),
+                    an.get(k)
+                        .copied()
+                        .unwrap_or(0)
+                        .max(bn.get(k).copied().unwrap_or(0)),
+                )
+            })
+            .collect();
+        let hashed: Vec<(u32, u32)> = hashed.into_iter().collect();
+        let named: Vec<(&str, u32)> = named.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        restbl(&hashed, &named, name_size, b"RESTBL")
+    }
+
+    let run = |a: &[u8], b: &[u8]| -> Option<(i32, Vec<u8>)> {
+        fs::write(dir.join("a"), a).expect("write a table");
+        fs::write(dir.join("b"), b).expect("write a table");
+        let out = Command::new(&exe)
+            .arg(dir.join("a"))
+            .arg(dir.join("b"))
+            .arg(dir.join("out"))
+            .output()
+            .expect("run the merge fixture");
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if text == "refused" {
+            None
+        } else {
+            Some((
+                text.parse().expect("the raised count"),
+                fs::read(dir.join("out")).expect("read the merged table"),
+            ))
+        }
+    };
+
+    // (made-up tables: the prompts raise the font's entry; the mod raises a file's and adds another)
+    let ours = restbl(
+        &[(0x10, 100), (0x20, 200), (0x30, 900), (0x40, 400)],
+        &[("Collide/A", 50), ("Collide/B", 60)],
+        160,
+        b"RESTBL",
+    );
+    let mod_b = restbl(
+        &[
+            (0x10, 100),
+            (0x20, 250),
+            (0x30, 300),
+            (0x40, 400),
+            (0x50, 500),
+        ],
+        &[("Collide/A", 50), ("Collide/B", 70)],
+        160,
+        b"RESTBL",
+    );
+    let (raised, got) = run(&mod_b, &ours).expect("the mod's table merged");
+    assert_eq!(got, merged(&mod_b, &ours));
+    assert_eq!(raised, 1);
+    assert_eq!(
+        u32::from_le_bytes(got[22 + 8 * 2..22 + 8 * 2 + 4].try_into().unwrap()),
+        0x30
+    );
+    assert_eq!(
+        u32::from_le_bytes(got[22 + 8 * 2 + 4..22 + 8 * 2 + 8].try_into().unwrap()),
+        900
+    );
+    assert_eq!(
+        u32::from_le_bytes(got[22 + 8 * 1 + 4..22 + 8 * 1 + 8].try_into().unwrap()),
+        250
+    );
+
+    // (entries on one side only, both ways, and named ones: each the larger, sorted)
+    let a = restbl(
+        &[(5, 1), (0x20, 999), (0xFFFFFFF0, 7)],
+        &[("B", 9), ("D", 1)],
+        160,
+        b"RESTBL",
+    );
+    let b = restbl(
+        &[(1, 3), (0x20, 10), (0x30, 4)],
+        &[("A", 2), ("B", 10), ("C", 3)],
+        160,
+        b"RESTBL",
+    );
+    let (raised, got) = run(&a, &b).expect("entries on one side only merged");
+    assert_eq!(got, merged(&a, &b));
+    assert_eq!(raised, 5);
+    let (raised, got) = run(&restbl(&[], &[], 160, b"RESTBL"), &b).expect("an empty mod table");
+    assert_eq!(got, b);
+    assert_eq!(raised, 6);
+
+    // (tables it cannot merge: the mod's is served as it is, and the game's icons stay)
+    for (what, table, ours) in [
+        (
+            "not a RESTBL",
+            restbl(&[(1, 1)], &[], 160, b"RESTBX"),
+            ours.clone(),
+        ),
+        (
+            "a wrong length",
+            [mod_b.clone(), vec![0]].concat(),
+            ours.clone(),
+        ),
+        (
+            "a short table",
+            b"RESTBL"
+                .iter()
+                .copied()
+                .chain([0u8; 10])
+                .collect::<Vec<u8>>(),
+            ours.clone(),
+        ),
+        (
+            "other name fields",
+            restbl(&[(1, 1)], &[], 128, b"RESTBL"),
+            ours.clone(),
+        ),
+        (
+            "hashed entries out of order",
+            restbl_unsorted(&[(2, 1), (1, 1)], &[], 160, b"RESTBL"),
+            ours.clone(),
+        ),
+        (
+            "a hashed entry twice",
+            restbl_unsorted(&[(1, 1), (1, 2)], &[], 160, b"RESTBL"),
+            ours.clone(),
+        ),
+        (
+            "named entries out of order",
+            mod_b.clone(),
+            restbl_unsorted(&[], &[("B", 1), ("A", 1)], 160, b"RESTBL"),
+        ),
+    ] {
+        assert!(run(&table, &ours).is_none(), "{what} was merged");
+    }
+
+    let _ = fs::remove_dir_all(dir);
+    let _ = fs::remove_dir_all(build_dir);
 }

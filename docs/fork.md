@@ -127,6 +127,14 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **Mods' resource size table with prompts (#2592, upstream `bd9b07e6`)**: RomFS mods load in the emulator layout
+  (`mods/<name>/romfs`, deeper `contents/<title id>/<name>/romfs`, `-`/`_` folders off, last-sorted mod wins). When a
+  mod ships its own `ResourceSizeTable.*.rsizetable.zs`, the button prompts' entries are merged into it. The prompts
+  now find the table name in the game's own RomFS first (first by name, as the Rust prompt build does) and look up that
+  exact path in the mod, so a mod carrying several game versions' tables cannot seed the one-time merge with the wrong
+  version, whichever of the font or table is opened first. `tests/mods_test.c` checks the folder layout, last-sorted
+  replacement, prompts precedence and exact lookup; `builder/rust/tests/host_c_fixtures.rs` also checks the game-table
+  choice and `merge_restbl`.
 - **Keyboard button prompts (#2435)**: a sixth prompt face draws the keys and mouse buttons the Controls page binds,
   with the key glyphs, stick icons and live binding changes, and Auto picks it when no gamepad is present. The Kenney
   Input Prompts keyboard/mouse font is vendored under `third_party/kenney_input_keyboard` (CC0, provenance
