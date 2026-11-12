@@ -137,6 +137,81 @@ fn the_appimage_ships_every_tracked_zbic_source() {
 }
 
 #[test]
+fn the_nightly_tag_only_moves_forward() {
+    let upload = source("scripts/release_upload.sh");
+    let advance = shell_function(&upload, "advance_nightly");
+    assert!(
+        advance.contains("repos/$GH_REPO/compare/$held...$sha")
+            && advance.contains("-F force=false"),
+        "the nightly tag is not moved as a checked fast-forward:\n{advance}"
+    );
+    assert!(
+        advance.contains("behind)")
+            && advance.contains("left to that commit's files")
+            && advance.contains("diverged)")
+            && advance.contains("main's newest commit"),
+        "a nightly older than the tag, or main rewritten, is not handled:\n{advance}"
+    );
+    assert!(
+        upload.contains("advance_nightly \"$sha\" || exit 0"),
+        "the nightly no longer takes the tag only when it comes after the held one"
+    );
+    assert!(
+        !upload.contains("is no longer main's newest commit"),
+        "the nightly still waits for main's newest commit instead of moving forward"
+    );
+    assert!(
+        upload.contains("Each file is named by the commit it was built from"),
+        "the nightly's notes name one commit and date, which the two platforms race to write"
+    );
+}
+
+#[test]
+fn nightly_builds_do_not_cancel_each_other() {
+    for file in [
+        ".github/workflows/linux-appimage.yml",
+        ".github/workflows/windows-builder.yml",
+    ] {
+        let workflow = source(file);
+        assert!(
+            workflow.contains("cancel-in-progress: ${{ github.event_name == 'pull_request' }}"),
+            "{file}: a newer push cancels a nightly build that may be moving the tag"
+        );
+        assert!(
+            !workflow.contains("ref_type != 'tag'"),
+            "{file}: push builds are cancelled instead of queued one at a time"
+        );
+        assert!(
+            workflow.contains("scripts/release_upload.sh counts on it"),
+            "{file}: the concurrency comment does not say the nightly's forward-only move relies on it"
+        );
+    }
+}
+
+#[test]
+fn the_docs_the_rust_tests_read_trigger_the_source_checks() {
+    let workflow = source(".github/workflows/source-regressions.yml");
+    for path in [
+        "docs/development.md",
+        "docs/versioning.md",
+        "readme.md",
+        "gpu/PROVENANCE.md",
+        "scripts/windows/release_parts.sh",
+    ] {
+        assert!(
+            workflow.matches(&format!("- '{path}'")).count() == 2,
+            "{path} does not trigger both the push and pull request checks"
+        );
+    }
+    let versioning = source("docs/versioning.md");
+    assert!(
+        versioning.contains("The tag only\nmoves forward")
+            && versioning.contains("moved as a\nfast-forward"),
+        "docs/versioning.md still says a nightly waits for main to be quiet"
+    );
+}
+
+#[test]
 fn the_release_workflow_finishes_before_it_publishes() {
     let workflow = source(".github/workflows/release.yml");
     let finish = workflow

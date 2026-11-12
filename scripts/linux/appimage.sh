@@ -21,8 +21,8 @@ VERSION=${HOOKSHOT_VERSION:-$(git describe --tags --long --always --match "v[0-9
 REPOSITORY=${HOOKSHOT_REPOSITORY:-${GITHUB_REPOSITORY:-dazemc/Hookshot-rs}}
 
 # ---- the Rust engine: the Flutter app's FFI library, its CLI, ZBIC ----
-echo "== cargo build --release (hookshot_engine)"
-cargo build --release --workspace --manifest-path builder/rust/Cargo.toml
+echo "== cargo build --release --locked (hookshot_engine)"
+cargo build --release --locked --workspace --manifest-path builder/rust/Cargo.toml
 for f in hookshot_engine libhookshot_engine.so libhookshot_zbic.so; do
     [ -f "builder/rust/target/release/$f" ] || { echo "builder/rust/target/release/$f was not built"; exit 1; }
 done
