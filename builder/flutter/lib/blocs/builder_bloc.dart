@@ -14,6 +14,7 @@ import '../config.dart' as cfg;
 import '../engine.dart';
 import '../gamescope.dart';
 import '../play_scope.dart';
+import '../updater/dlss.dart' as dlss;
 import '../updater/installer.dart' show latestTag, fetchCheck;
 import '../updater/manifest.dart' as upd;
 
@@ -456,17 +457,23 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     return f;
   }
 
-  static bool _folderHasDlss(String folder) {
-    if (folder.isEmpty) return false;
+  bool _folderHasDlss(String folder, {bool ticked = false, bool toggled = false}) {
+    if (folder.isEmpty) return ticked;
     try {
       final hasRuntime = Directory('$folder/ngx').listSync().any((e) {
         final name = e.path.split(RegExp(r'[/\\]')).last;
         return name.startsWith('libnvidia-ngx-dlss') || name == 'nvngx_dlss.dll' || name == 'nvngx_dlssg.dll';
       });
       final sdk = '${dlssSdkDir()}/LICENSE.txt';
-      return hasRuntime && File(sdk).existsSync();
+      return dlss.updateDlss(
+        toggled: toggled,
+        ticked: ticked,
+        hasRuntime: hasRuntime,
+        licenseAccepted: dlss.dlssLicenseAccepted(_cfg),
+        sdkLicense: File(sdk).existsSync(),
+      );
     } catch (_) {
-      return false;
+      return ticked;
     }
   }
 
@@ -501,7 +508,10 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     final s = state;
     if (s is! BuilderForm) return;
     emit(s.copyWith(dlss: e.value, dlssToggled: true));
-    _cfg['dlss'] = e.value ? '1' : '0';
+    final next = dlss.dlssAfterToggle(_cfg, e.value);
+    _cfg
+      ..clear()
+      ..addAll(next);
     cfg.saveConfig(_cfg);
     final ns = state;
     if (ns is BuilderForm) emit(_refreshedForm(ns));
@@ -668,7 +678,14 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     if (e.folder.isEmpty) return;
     final s = state;
     final prepare = s is BuilderForm ? s.prepare : true;
-    final dlss = s is BuilderForm ? s.dlss : _folderHasDlss(e.folder);
+    // (a folder built with DLSS keeps it on update: the tick, or its runtime with the accepted-license record, even
+    // when the SDK's files are gone. Upstream b56bf07c. An explicit tick change still wins, so unticking and updating
+    // removes DLSS as the first page says; a rebuild without the tick does it too)
+    final dlss = _folderHasDlss(
+      e.folder,
+      ticked: s is BuilderForm && s.dlss,
+      toggled: s is BuilderForm && s.dlssToggled,
+    );
     final rust = rustEngineCli();
     if (rust != null) {
       if (!rustUpdateReady(e.folder)) {
