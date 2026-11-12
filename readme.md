@@ -39,8 +39,9 @@ the game and renderer and replaces the builder with one Flutter desktop app and 
 
 ## Download and play
 
-The current release downloads are the upstream builders. The Flutter + Rust builder is built from source while the
-new release pipeline is finished; see [Build your game](#build-your-game).
+The pre-release `v2.2.0-rs.1` is built entirely by the Flutter + Rust pipeline: the Windows setup and the Linux
+AppImage below. The AppImage is a development image, so building a game from it needs your distribution's clang and
+Vulkan, SPIR-V and VMA headers; a source build needs nothing extra.
 
 - **Windows:** download `HookshotBuilder.exe` from [Releases](https://github.com/dazemc/Hookshot-rs/releases) or the
   latest development build.
