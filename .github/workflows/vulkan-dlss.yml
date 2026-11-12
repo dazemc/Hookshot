@@ -100,8 +100,6 @@ jobs:
           path: ${{ runner.temp }}/llvm
           key: ${{ steps.llvm.outputs.name }}
       - name: llvm-mingw
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           llvm=$(scripts/windows/release_parts.sh llvm-mingw "$RUNNER_TEMP/llvm")
           test -n "$llvm"
@@ -133,12 +131,27 @@ jobs:
           RX_CPM: ${{ github.workspace }}/_deps/cpm
         run: |
           work=$(cygpath -m "$RUNNER_TEMP/vk-work")
+          rc=0
           printf '{"command":"build.vk","work":"%s"}\n' "$work" |
-            ./builder/rust/target/release/hookshot_engine.exe > "$RUNNER_TEMP/vk-build.json"
-          cat "$RUNNER_TEMP/vk-build.json"
-          if ! jq -e '.built == true and .ngx != null and .fsr4 != null' "$RUNNER_TEMP/vk-build.json" >/dev/null; then
-            jq -r '.message // .reason // .error // "the Vulkan back end was not built with DLSS and FSR 4"' \
+            ./builder/rust/target/release/hookshot_engine.exe > "$RUNNER_TEMP/vk-build.json" || rc=$?
+          echo "engine exit: $rc"
+          report() {
+            if [ ! -s "$RUNNER_TEMP/vk-build.json" ]; then
+              echo "the engine wrote no answer" >&2
+              return
+            fi
+            jq -r '"stage=\(.stage // "?") built=\(.built) reason=\(.reason // "-") ngx=\(.ngx // "-") fsr4=\(.fsr4 // "-")"' \
               "$RUNNER_TEMP/vk-build.json" >&2 || true
+            jq -r '.message // empty' "$RUNNER_TEMP/vk-build.json" >&2 || true
+            jq -r '"failed=\(.compiled.failed | length)"' "$RUNNER_TEMP/vk-build.json" >&2 || true
+            jq -r '.compiled.failed[0:3][]? | "\(.src): \(.error)"' "$RUNNER_TEMP/vk-build.json" 2>/dev/null |
+              cut -c1-500 >&2 || true
+            jq -r '.link.error // empty' "$RUNNER_TEMP/vk-build.json" >&2 || true
+            jq -r '.undefined[0:5][]? | "undefined: \(.)"' "$RUNNER_TEMP/vk-build.json" >&2 || true
+          }
+          report
+          if [ "$rc" -ne 0 ] || ! jq -e '.built == true and .ngx != null and .fsr4 != null' "$RUNNER_TEMP/vk-build.json" >/dev/null; then
+            echo "::error::the Vulkan back end was not built with DLSS and FSR 4" >&2
             exit 1
           fi
           test -f "$RUNNER_TEMP/vk-work/sa/build/hookshot_vk.dll"

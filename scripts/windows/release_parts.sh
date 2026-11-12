@@ -56,8 +56,27 @@ is_windows() {
     esac
 }
 
+# (Git Bash hands a native tool a D:\... path, but its own coreutils and
+# tar read POSIX paths; the scripts keep POSIX paths inside and print the
+# Windows form only where a Windows program stores it)
+posix_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+win_path() {
+    if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 cache_dir() {
-    printf '%s/release-parts' "${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+    printf '%s/release-parts' "$(posix_path "${RUNNER_TEMP:-${TMPDIR:-/tmp}}")"
 }
 
 file_size() {
@@ -65,7 +84,9 @@ file_size() {
 }
 
 file_sha() {
-    sha256sum "$1" | awk '{print $1}'
+    # (coreutils prefixes the hash with a backslash when the file name has
+    # one, as a Windows path does; reading stdin keeps the output a bare hash)
+    sha256sum <"$1" | awk '{print $1}'
 }
 
 check_file() { # path sha size
@@ -108,20 +129,25 @@ windows_tar() {
 }
 
 extract_zip() { # zip folder
-    mkdir -p "$2"
+    local archive folder
+    archive=$(posix_path "$1")
+    folder=$(posix_path "$2")
+    mkdir -p "$folder"
     if command -v unzip >/dev/null 2>&1; then
-        unzip -q "$1" -d "$2"
+        unzip -q "$archive" -d "$folder"
     elif command -v bsdtar >/dev/null 2>&1; then
-        bsdtar -xf "$1" -C "$2"
+        bsdtar -xf "$archive" -C "$folder"
     elif command -v 7z >/dev/null 2>&1; then
-        7z x -y -o"$2" "$1" >/dev/null
+        7z x -y -o"$folder" "$archive" >/dev/null
     else
-        "$(windows_tar)" -xf "$1" -C "$2"
+        "$(windows_tar)" -xf "$archive" -C "$folder"
     fi
 }
 
 create_zip() { # out folder
-    local out=$1 folder=$2
+    local out folder
+    out=$(posix_path "$1")
+    folder=$(posix_path "$2")
     mkdir -p "$(dirname "$out")"
     rm -f "$out"
     if command -v zip >/dev/null 2>&1; then
@@ -236,20 +262,15 @@ llvm_mingw() {
         printf '%s\n' "$name"
         return 0
     fi
-    local folder=$1 target
+    local folder target
+    folder=$(posix_path "$1")
     target="$folder/$name"
     if [ -f "$target/bin/clang.exe" ] || [ -f "$target/bin/clang" ]; then
-        printf '%s\n' "$target"
+        win_path "$target"
         return 0
     fi
     local dest
     dest="$(cache_dir)/$(basename "$url")"
-    # (GitHub's asset CDN has answered GitHub-hosted runners with a short
-    # body; the release API is the reliable path when a token is available)
-    if ! check_file "$dest" "$sha" "$size" && command -v gh >/dev/null 2>&1 && [ -n "${GH_TOKEN:-}" ]; then
-        mkdir -p "$(dirname "$dest")"
-        gh release download 20261104 --repo mstorsjo/llvm-mingw             --pattern "$(basename "$url")" --dir "$(dirname "$dest")" --clobber >/dev/null 2>&1 || true
-    fi
     fetch_verified "$url" "$sha" "$size" "$dest"
     mkdir -p "$folder"
     say "unpacking $(basename "$dest")"
@@ -259,7 +280,7 @@ llvm_mingw() {
         extract_zip "$dest" "$folder"
     fi
     [ -d "$target" ] || die "$(basename "$dest") did not unpack $name"
-    printf '%s\n' "$target"
+    win_path "$target"
 }
 
 a64emit() {
@@ -300,6 +321,13 @@ package() {
     [ -n "$bundle" ] || die "package needs --bundle"
     [ -n "$engine" ] || die "package needs --engine"
     [ -n "$tag" ] || die "package needs --tag"
+
+    out=$(posix_path "$out")
+    bundle=$(posix_path "$bundle")
+    engine=$(posix_path "$engine")
+    a64=$(posix_path "$a64")
+    setup=$(posix_path "$setup")
+    previous=$(posix_path "$previous")
 
     local app="$out/HookshotBuilder" tools="$out/HookshotBuilder/tools"
     rm -rf "$out"
@@ -368,7 +396,10 @@ package() {
 
 parts() {
     [ $# -ge 3 ] || usage
-    local package=$1 tag=$2 out=$3
+    local package tag out
+    package=$(posix_path "$1")
+    tag=$2
+    out=$(posix_path "$3")
     shift 3
     local base="" reuse="" require=0
     while [ $# -gt 0 ]; do
