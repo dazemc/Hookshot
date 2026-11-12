@@ -424,6 +424,27 @@ fn archive_files(romfs: &Path) -> Vec<PathBuf> {
     out
 }
 
+enum Scan {
+    Read(String),
+    Unpack(String),
+    Parsed(Vec<(&'static str, Result<Vec<Vec<Stage>>, String>)>),
+}
+
+fn scan_file(path: &Path, dictionaries: &[Vec<u8>]) -> Scan {
+    let Ok(raw) = fs::read(path) else {
+        return Scan::Read(format!("{}: read", path.display()));
+    };
+    let Ok(data) = unpack(&raw, dictionaries) else {
+        return Scan::Unpack(format!("{}: unpack", path.display()));
+    };
+    Scan::Parsed(
+        blobs(&data, dictionaries)
+            .into_iter()
+            .map(|blob| programs_in(&blob))
+            .collect(),
+    )
+}
+
 /// The seed file for the back end: every program, every stage once.
 pub fn census(romfs: &Path, out: Option<&Path>) -> Result<Value, String> {
     let dictionaries = dictionaries(romfs)?;
@@ -436,57 +457,103 @@ pub fn census(romfs: &Path, out: Option<&Path>) -> Result<Value, String> {
     let mut containers = 0usize;
     let mut by_kind: HashMap<&'static str, (usize, usize)> = HashMap::new();
     let mut skipped_files: Vec<String> = Vec::new();
-    for path in archive_files(romfs) {
-        files += 1;
-        let Ok(raw) = fs::read(&path) else {
-            skipped += 1;
-            skipped_files.push(format!("{}: read", path.display()));
-            continue;
+    let paths = archive_files(romfs);
+    let jobs = std::env::var("HOOKSHOT_CENSUS_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+                .min(8)
+        })
+        .max(1)
+        .min(paths.len().max(1));
+    // (a few files at a time bound the decompressed data held while a batch
+    // is merged; the merge stays in archive order, so the seed is the same)
+    let batch = (jobs * 2).max(1);
+    for paths in paths.chunks(batch) {
+        let scans: Vec<Scan> = if jobs <= 1 {
+            paths
+                .iter()
+                .map(|path| scan_file(path, &dictionaries))
+                .collect()
+        } else {
+            let per = paths.len().div_ceil(jobs);
+            std::thread::scope(|scope| -> Result<Vec<Scan>, String> {
+                let handles: Vec<_> = paths
+                    .chunks(per)
+                    .map(|chunk| {
+                        let dictionaries = &dictionaries;
+                        scope.spawn(move || {
+                            chunk
+                                .iter()
+                                .map(|path| scan_file(path, dictionaries))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                let mut scans = Vec::with_capacity(paths.len());
+                for handle in handles {
+                    scans.extend(
+                        handle
+                            .join()
+                            .map_err(|_| "a shader worker stopped".to_string())?,
+                    );
+                }
+                Ok(scans)
+            })?
         };
-        let Ok(data) = unpack(&raw, &dictionaries) else {
-            skipped += 1;
-            skipped_files.push(format!("{}: unpack", path.display()));
-            continue;
-        };
-        for blob in blobs(&data, &dictionaries) {
-            containers += 1;
-            let (kind, found) = programs_in(&blob);
-            let found = match found {
-                Ok(found) => found,
-                Err(error) => {
+        for (at, scan) in scans.into_iter().enumerate() {
+            files += 1;
+            let path = &paths[at];
+            let blobs = match scan {
+                Scan::Read(reason) | Scan::Unpack(reason) => {
                     skipped += 1;
-                    skipped_files.push(format!("{} {kind}: {error}", path.display()));
+                    skipped_files.push(reason);
                     continue;
                 }
+                Scan::Parsed(blobs) => blobs,
             };
-            let entry = by_kind.entry(kind).or_default();
-            entry.0 += found.len();
-            entry.1 += found.iter().map(Vec::len).sum::<usize>();
-            for stages in found {
-                let mut ids = Vec::new();
-                for (kind, control, code) in stages {
-                    let end = u32_at(&control, 0x44).unwrap_or(0) as usize;
-                    let control = &control[..control.len().min(0xd8)];
-                    let code = if end <= code.len() {
-                        &code[..end]
-                    } else {
-                        &code[..]
-                    };
-                    let mut digest = Sha1::new();
-                    digest.update(control);
-                    digest.update(code);
-                    let hash: [u8; 20] = digest.finalize().into();
-                    let key = u64::from_le_bytes(hash[..8].try_into().unwrap());
-                    let at = *stage_index.entry(key).or_insert_with(|| {
-                        stage_list.push((key, (kind, control.to_vec(), code.to_vec())));
-                        stage_list.len() - 1
-                    });
-                    ids.push(at as u32);
-                }
-                ids.sort_unstable();
-                ids.dedup();
-                if seen.insert(ids.clone()) {
-                    programs.push(ids);
+            for (kind, found) in blobs {
+                containers += 1;
+                let found = match found {
+                    Ok(found) => found,
+                    Err(error) => {
+                        skipped += 1;
+                        skipped_files.push(format!("{} {kind}: {error}", path.display()));
+                        continue;
+                    }
+                };
+                let entry = by_kind.entry(kind).or_default();
+                entry.0 += found.len();
+                entry.1 += found.iter().map(Vec::len).sum::<usize>();
+                for stages in found {
+                    let mut ids = Vec::new();
+                    for (kind, control, code) in stages {
+                        let end = u32_at(&control, 0x44).unwrap_or(0) as usize;
+                        let control = &control[..control.len().min(0xd8)];
+                        let code = if end <= code.len() {
+                            &code[..end]
+                        } else {
+                            &code[..]
+                        };
+                        let mut digest = Sha1::new();
+                        digest.update(control);
+                        digest.update(code);
+                        let hash: [u8; 20] = digest.finalize().into();
+                        let key = u64::from_le_bytes(hash[..8].try_into().unwrap());
+                        let at = *stage_index.entry(key).or_insert_with(|| {
+                            stage_list.push((key, (kind, control.to_vec(), code.to_vec())));
+                            stage_list.len() - 1
+                        });
+                        ids.push(at as u32);
+                    }
+                    ids.sort_unstable();
+                    ids.dedup();
+                    if seen.insert(ids.clone()) {
+                        programs.push(ids);
+                    }
                 }
             }
         }
