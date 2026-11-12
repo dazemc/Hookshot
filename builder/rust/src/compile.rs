@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -144,28 +145,37 @@ pub fn many_json(request: &Value, root: &Path) -> Result<Value, String> {
     let mut compiled = 0usize;
     let mut cached = 0usize;
     let mut failed = Vec::new();
-    let mut at = 0usize;
-    while at < jobs.len() {
-        let end = (at + limit).min(jobs.len());
-        let results: Vec<(usize, Result<Value, String>)> = std::thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for (offset, job) in jobs[at..end].iter().enumerate() {
-                handles.push(scope.spawn(move || (at + offset, compile_one_json(job, root))));
-            }
-            handles
-                .into_iter()
-                .filter_map(|handle| handle.join().ok())
-                .collect()
-        });
-        for (index, result) in results {
-            match result {
-                Ok(value) if value["compiled"] == Value::Bool(true) => compiled += 1,
-                Ok(value) if value["cached"] == Value::Bool(true) => cached += 1,
-                Ok(value) => failed.push(json!({"index": index, "error": value["error"]})),
-                Err(error) => failed.push(json!({"index": index, "error": error})),
-            }
+    let next = AtomicUsize::new(0);
+    let results: Vec<Vec<(usize, Result<Value, String>)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..limit.min(jobs.len()))
+            .map(|_| {
+                let next = &next;
+                let jobs = &jobs;
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(job) = jobs.get(index) else {
+                            break;
+                        };
+                        out.push((index, compile_one_json(job, root)));
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect()
+    });
+    for (index, result) in results.into_iter().flatten() {
+        match result {
+            Ok(value) if value["compiled"] == Value::Bool(true) => compiled += 1,
+            Ok(value) if value["cached"] == Value::Bool(true) => cached += 1,
+            Ok(value) => failed.push(json!({"index": index, "error": value["error"]})),
+            Err(error) => failed.push(json!({"index": index, "error": error})),
         }
-        at = end;
     }
     Ok(json!({
         "planned": jobs.len(),
