@@ -526,10 +526,11 @@ const char* tx_mic(int v) {
     if (v <= 0) return "Off";
     if (v == 1) return "Default";
     if (mic_missing && v == 2 + mic_listed) {
-        const int room = (int)sizeof buf - (int)sizeof " (not connected)";
+        const char* suffix = i18n::tr(" (not connected)");
+        const int room = (int)sizeof buf - (int)strlen(suffix) - 1;
         snprintf(buf, (size_t)room + 1, "%s", mic_want.c_str());
         utf8_whole(buf);
-        strcat(buf, " (not connected)");
+        strcat(buf, suffix);
         return buf;
     }
     const char* n = can_mic() ? host->mic_name(v - 2) : "";
