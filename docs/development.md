@@ -153,6 +153,7 @@ case-sensitive, and an unknown one is ignored.
 |---|---|
 | `RX_VK_VALIDATION` (set) | The Khronos validation layer |
 | `RX_VK_CHECKPOINTS=0` | No NVIDIA checkpoints (on by default; after a lost device they name the draw it stopped at) |
+| `RX_VK_FAULT_INFO=1` | The VK_EXT_device_fault report on a lost device even where NVIDIA's checkpoints or the AMD buffer markers can name it (on AMD and Intel it is read automatically when neither is there) |
 | `RX_VK_HANG_DUMP=<file>` | Every thread's stack to the file once no frame was shown for `RX_VK_HANG_SEC` seconds (20) (Windows) |
 | `RX_VK_GPU_HANG_SEC=<s>` | Work sent to the GPU that finishes nothing for this long (30) is a hang: the lost-device report, then the game ends. `0`: the stall is logged and the game waits |
 | `RX_VK_NOOPT` (set) | Pipelines built without the driver's optimisations |
