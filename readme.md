@@ -14,12 +14,14 @@
 
 
 <p align="center">
+  <a href="#this-fork">This fork</a> |
   <a href="#project-status">Status</a> |
   <a href="#install-and-play">Install and play</a> |
   <a href="#in-game-menu">In-game menu</a> |
   <a href="#if-something-goes-wrong">Problems</a> |
   <a href="#build-from-source">Build from source</a> |
   <a href="#how-it-works">How it works</a> |
+  <a href="#testing">Testing</a> |
   <a href="#want-to-help">Want to help?</a> |
   <a href="#credits">Credits</a> |
   <a href="#license">License</a>
@@ -28,6 +30,16 @@
 Hookshot is a static recompilation. The game's code is translated to C and compiled into a Windows or Linux program,
 the console's system software is reimplemented, and the Switch 2 graphics are rebuilt on Vulkan. All of this happens
 **on your PC, from your own copy of the game**.
+
+This tree is the build-system fork of [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot). The game, the renderer
+and the player documentation come from upstream; the fork moves the build to **one Flutter desktop app** and a **Rust
+engine**. The Flutter app is `builder/flutter`; the engine is the `hookshot_engine` crate in `builder/rust`. On Linux, a
+game build started from the Flutter app runs no Python: the `.nup` read, lift, patches, compile, host link, Vulkan
+backend, package and shader preparation are Rust.
+
+The release AppImage and the Windows builder package are still produced by the older Python and .NET scripts and still
+use the Tk and WPF builders; a few build stages are not ported yet. [This fork](#this-fork) says exactly which. The game
+itself and the player instructions below are upstream's.
 <br>
 
 > [!WARNING]
@@ -42,7 +54,115 @@ Discord: https://discord.gg/DVQQJphbBf
 > need your own copy. Everything the build creates (`hookshot.exe`, the generated code, the shader caches and your
 > saves) comes from your game and stays on your PC. Never share those files.
 
+## This fork
+
+**One Flutter desktop UI and one Rust engine.** The builder in this tree is one Flutter app with Linux and Windows
+runners: it chooses the game files and install folder, shows the build, launches the game, manages profiles and updates.
+The Rust engine does the work behind it. The app calls the engine in-process for small queries (version check, profiles,
+saves, diagnostics, gamescope options, the NVIDIA DLSS SDK download) and runs `hookshot_engine --stream` for a build,
+reading the builder's `@@stage`, `@@progress`, `@@done` and `@@error` lines.
+
+A game build without DLSS, started from the Flutter app on Linux, runs no Python: the `.nup` read, lift, patches,
+compile, host link, package, Vulkan backend and shader preparation are Rust. It can reuse the AppImage's prebuilt
+Vulkan renderer (`HOOKSHOT_VK_PREBUILT`). The AppImage itself, the Windows package, the NGX/DLSS and FSR 4 build
+flags, the Windows Vulkan DLL, and the button-prompt textures are the parts still on the Python path or in progress.
+
+The older Tk and WPF builder sources remain in the tree for the release pipeline. They are not the build path this
+README documents.
+
+### Measured on one Linux machine
+
+These are development measurements from this tree, on one Linux PC with the same dump and disk. They are not release
+benchmarks and not universal: CPU, RAM, SSD, filesystem, driver and background load all change them, and only the
+machine tested is claimed. A "before" figure belongs to that row's earlier implementation; the rows are not one common
+baseline.
+
+| Work | Before | Now (Rust) | Check |
+|---|---:|---:|---|
+| Full lift, 294,523 functions | 10 m 30 s | 57 s cold, 49 s cached | same machine and dump; the cache is the per-function lift cache |
+| 5,000-function lift | 65 s | 8.1 s | earlier lift against the current one |
+| OoT patches, full 59-chunk lift | Python's output | byte-identical | `diff -r -q` reported no differences; the required output-size edits match |
+| OoT after-instruction sites | Python's output | byte-identical | all 20 sites: 11 widescreen, 3 jitter, 6 occlusion |
+| Shader census | — | 9.7 s | 1,445 files, 38,809 programs, 42,856 stages, 539 MB list |
+| Shader preparation | — | 36.8 s first run; 17.6 s for the whole cached `build.all` | 2,863 programs; 15,330 graphics + 71 compute pipelines |
+| `.nup` read | — | 25.6 GB package | read to exefs + 1.7 GB romfs, 0 unresolved |
+| Vulkan backend build | — | 140 s clean, 0.7 s repeat | 195 sources, 212 jobs, content-addressed objects; 11,665,496-byte `hookshot_vk.so` with 3 compile jobs |
+| End-to-end `build.all` | — | packaged | 66/66 objects cached, host link ok |
+| Boot | — | 3,000 presents at about 58 fps | nnMain reached, Vulkan renderer, content and save mounted, 0 traps |
+
+The boot run used the host build from before the teleport minimap repair landed and before the Rust Vulkan backend
+build, so it does not test either change; it is not a result for the latest backend. The shader, `.nup` and Vulkan rows
+have no "before" figure because the same Rust stage did not exist to time.
+
+### What changed from upstream
+
+| Area | Upstream | This tree |
+|---|---|---|
+| Builder UI | separate Tk (Linux) and WPF (Windows) apps | one Flutter desktop app, `builder/flutter`, for Linux and Windows |
+| Build driver | Python `nx2/make_game.py` | Rust `hookshot_engine`: `build.prepare`, `build.all`, `--stream` |
+| NUP and image | Python `nx2/nup.py`, `nx2/image.py` | Rust NUP reader, NSO/ZBIC/RELR and image builder |
+| Lift and OoT changes | Python lift; patches through a Python bridge | Rust lift with jump tables and a per-function cache; native patch table and after-sites |
+| Compile and object cache | Python `nx2/build.py` | Rust `build.compile_many` with a content-addressed object cache |
+| Windows host link | Python `nx2/build.py` | Rust `build.host_link`: llvm-mingw, the same host sources/flags/libraries, content-keyed objects, UTF-8 response files and DLL staging; cross-built with stub objects, not yet a real game link |
+| Vulkan backend | Python `nx2/build.py` | Rust `build.vk`: the same 195 sources, 212 jobs, content-addressed objects and a symbol check; NGX/DLSS and FSR 4 flags and the Windows Vulkan DLL are not ported |
+| Button prompts | Python `nx2/prompt_assets.py` | Rust package step: the font, layouts, ring, hints and size table; the prompt textures are not ported |
+| Shaders | Python census and prepare stages | Rust `build.shaders`, and prepare inside `build.all` |
+| Updates | `make_game.py --update` | Rust `build.all` from the folder's kept `.hookshot_exefs` and `romfs` |
+| Tests | Python source-reading suite, `tests/run_all.py` | Rust, Flutter and C/C++ checks |
+| Release packaging | Python and .NET scripts | unchanged so far; port in progress |
+
+### What is Rust now
+
+| Part | Entry points | Notes |
+|---|---|---|
+| NUP read, verify and extract | `build.prepare`, `nup.list`, `nup.verify`, `nup.extract` | ZBIC NSOs unpacked; damaged-file stand-ins; writes `work/exefs` and `out/romfs` |
+| Image, NSO, ZBIC and RELR | `image.build`, `image.adr`, `nso.load`, `nso.dump`, `build.image` | the image layout and relocations the lift reads |
+| Lift | `lift.write`, `lift.tables`, `build.driver` | jump tables; per-function cache in `gen/lift_cache` |
+| OoT patches and after-sites | `build.driver` | native table, 20 after-sites, no Python fallback |
+| Compile and object cache | `build.compile_many`, `build.compile_one` | content-addressed objects; 66/66 cached in the end-to-end run |
+| Host link (Linux) | `build.host_link` | `nx2/build.py`'s Linux source list and link line |
+| Host link (Windows) | `build.host_link` | llvm-mingw, the same host sources, flags and libraries as `nx2/build.py`, content-keyed objects, UTF-8 response files, PE manifest/map/stack, and SDL, wgpu-native and FFmpeg DLLs staged beside the executable |
+| Vulkan backend (Linux) | `build.vk` | the same 195 sources as `nx2/build.py`, 212 jobs, content-addressed objects and an exported-symbol check; NGX/DLSS and FSR 4 flags and the Windows Vulkan DLL are not ported |
+| Package | `build.package` | stages the executable, image, romfs, shader list and language |
+| Button prompts | `build.package` | writes `prompts/External.bfotf`, `Common.blarc`, `ring.bin`, all five `hint.bin` and `rsizetable.zs` from the game's files; no Python |
+| Shader census | `build.shaders` | writes `hookshot_shaders.bin` |
+| Prepare shaders | `build.all` with `prepare` | runs the built game with `--prepare-shaders` |
+| Builder services | `profiles.*`, `diagnostics`, `gamescope.command`, `build.cpu`, `build.toolchain`, `build.jobs`, `build.check`, `version.describe` | profiles list/add/rename/remove/export; diagnostics; gamescope; CPU, jobs and toolchain checks |
+| Saves | `saves.list`, `saves.import` | the app's save scan and import: emulator layouts, profile ids, backup to `oot-save-backups`, running-game and NX2navi guards, rollback |
+| Updates | `build.all` from `.hookshot_exefs` and `romfs` | a built folder keeps the game files an update needs |
+| DLSS SDK | `build.ngx_fetch`, `build.ngx_install` | headers, library and runtime, each checked against its SHA-256; an NGX-enabled link is still Python |
+
+The prompt font is semantically identical to Python's, not byte-identical: the glyphs, outlines, cmap and hmtx match,
+while the CFF layout differs (37,360 bytes against Python's 33,452). `Common.blarc`, `ring.bin` and all five `hint.bin`
+are byte-identical; `rsizetable.zs` has the same content with a different compressed frame. `Common.bntx` and
+`prompts/<face>/textures.bin` are not generated, so the game keeps its own button textures.
+
+### What still needs Python, or is not ported
+
+| Part | What runs today | Status |
+|---|---|---|
+| NVIDIA DLSS build stage | The SDK fetch is Rust, and so is the ordinary Linux Vulkan backend; the NGX/DLSS and FSR 4 build flags are not wired, so an NGX-enabled backend is still built by `make_game.py`. | in progress |
+| Windows Vulkan DLL | The Rust engine links the Windows host, but `build.vk` still links only the Linux `hookshot_vk.so`; the Windows `hookshot_vk.dll` is still `nx2/build.py`'s. | in progress |
+| Prompt textures | The package writes the font, layouts, ring, hints and size table; `Common.bntx` and `prompts/<face>/textures.bin` are not generated, so the game keeps its own button textures. | not ported |
+| Release and AppImage packaging | `scripts/linux/appimage.sh`, `scripts/release_parts.py`, `scripts/make_setup_parts.py`; the AppImage still launches the Tk builder and the Windows package is still the .NET builder's. | not ported |
+
+### Still to come
+
+- Windows Vulkan DLL linking in Rust.
+- The NGX/DLSS and FSR 4 build flags in the Rust Vulkan backend; the DLSS build still uses Python until they are wired.
+- The prompt textures: `Common.bntx` and `prompts/<face>/textures.bin`.
+- A Windows boot test of the cross-built host and a real game link; the VM is prepared but not started while builds run.
+- A boot of the Vulkan backend this engine builds; the boot row above is the earlier host and backend, not the new one.
+- Release, AppImage and Windows packaging in the new builder.
+- A build-performance pass is in progress over the lift, NUP read, shader census, package and object cache. The table
+  above is the verified baseline; no further gain is promised yet.
+
+Until the Windows Vulkan DLL, DLSS and packaging stages land, those paths still use Python. Everything else in a Linux
+Flutter game build is Rust; the prompt textures are the one asset it does not write.
+
 ## Project status
+
+This table is the game's status, not the builder's. The build system's status is [above](#this-fork).
 
 Experimental. Most testing so far has been around the start of the game. Players have reported on many PCs since:
 the table says what works and what does not yet.
@@ -159,8 +279,8 @@ Do not run the game as root or make the device world-writable.
 
 When a new release is out, the launcher says "Update available". Press **Update**: in `hookshot.exe` on Windows, or in
 `hookshot` (or the AppImage) on Linux. It downloads only the parts that changed and builds the game again in the same
-folder. The build files of the last build are gone by then (see [Where the files go](#where-the-files-go)), so an
-update takes about as long as the first build. Your saves and settings are kept. What changed is on the
+folder. The folder keeps the game files and the builder keeps its object cache, so an update reuses what did not change
+instead of compiling everything again. Your saves and settings are kept. What changed is on the
 [Releases page](https://github.com/NotRexed/Hookshot/releases).
 
 <details>
@@ -176,10 +296,15 @@ To be safe, copy your saves somewhere first: the `user` folder in the game folde
 | `hookshot_env.txt` | `language.txt`, written again with the game's language |
 | `mods` | |
 
-The game files the first build read are kept in the game folder, so an update does not need your `.nup` again.
+The game files the first build read are kept in the game folder, so an update does not need your `.nup` again. The
+exefs is in `.hookshot_exefs` and the romfs is the folder's `romfs`.
 
-From a clone: `git pull`, then `python -I nx2/make_game.py --update <game folder>`. The Linux AppImage does the same
-with `--update <game folder>`.
+From the Flutter builder, an update runs the Rust engine's `build.all` with those two folders. A folder built before
+the builder kept them has no copy to update from: it shows an error asking for the game files once, and building into
+the same folder again fixes it. Folders built with NVIDIA DLSS still use the Python update path until the DLSS build
+stage is ported. The release AppImage's `--update <game folder>` also still takes its old path until the packaging port
+lands. From the command line, the same update is a `build.all` request with `exefs` = `<folder>/.hookshot_exefs`,
+`romfs` = `<folder>/romfs`, and `out` = the folder.
 
 </details>
 
@@ -195,6 +320,11 @@ exports its save, opens its save folder, or removes it. Removing a profile does 
 launcher lists the saves it finds in the emulators' usual folders and asks whose save it is when a folder holds more
 than one user's. Only the save's files are copied, and never while a game or emulator runs. **Export save** copies the
 profile's save into a new folder you choose; it never writes into an emulator and replaces nothing.
+
+Profile list, add, rename, remove and export are Rust, and so are the save scan and **Import save** (`saves.list` and
+`saves.import`). `scripts/oot_saves.py` remains only for the command-line modes the app does not use: a human-readable
+list, export or import by emulator name, `to-lichii`, and `to-hookshot`.
+[Using a save from an emulator](docs/saves.md) covers both paths.
 
 The default profile, first on the list and marked "(default)", has the saves from before profiles; it is called
 "Player" until you rename it. The game plays it when it is started without the launcher, so it cannot be removed. A game
@@ -220,13 +350,14 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 
 ### Where the files go
 
-- The build reads your game and never changes it. It writes to the folder you choose and to the builder's own folder:
-  `%LOCALAPPDATA%\HookshotBuilder` on Windows, `~/.cache/hookshot-builder` on Linux.
-- The romfs is hard-linked instead of copied where the disk allows it.
-- The build files (about 4 GB: the translated code and the compiled objects) are deleted once the game is ready. None
-  of them are needed to play. To keep them, so that an update compiles only what changed, set the environment variable
-  `HOOKSHOT_KEEP_BUILD_FILES=1` for the builder; on Windows, **Free up space** on the "Your game is ready" page then
-  deletes them when you want. The build files folder can be moved before a build (**Change**, **Default**).
+- The build reads your game and never changes it. It writes to the game folder you choose and to the builder's own work
+  folder: `%LOCALAPPDATA%\HookshotBuilder` on Windows, `~/.cache/hookshot-builder` on Linux.
+- The romfs is hard-linked instead of copied where the disk allows it. The folder also keeps `.hookshot_exefs`, the
+  game's code as read, and its `romfs`, so an update can build again without your `.nup`.
+- The Rust builder keeps its work folder: the lifted C, the generated runtime and the object cache, several GB. Later
+  builds and updates compile only what changed. The folder is not deleted when the game is ready; delete it to reclaim
+  the space. The old Python path deletes it unless `HOOKSHOT_KEEP_BUILD_FILES=1` is set; the old Windows builder's
+  **Free up space** button removes it.
 - Saves: the `user` folder in the game folder on Windows, `~/.local/share/hookshot` on Linux (a `user` folder from an
   earlier Linux build is moved there once). `--user <folder>` puts them somewhere else ([command line
   arguments](#running-the-game-from-the-command-line)).
@@ -565,51 +696,113 @@ format, or a zstd frame that does not give its size) is used as it is, with the 
 
 ## Build from source
 
-For developers, and for players who prefer the command line. The builder windows run the same script,
-`nx2/make_game.py`. [CONTRIBUTING.md](CONTRIBUTING.md) has more.
+For developers, and for players who prefer the command line. The build has three layers: the Flutter app, the Rust
+engine, and the Python path kept for the stages in [What still needs Python](#what-still-needs-python-or-is-not-ported).
+[CONTRIBUTING.md](CONTRIBUTING.md) has the wider rules.
 
-<details>
-<summary>Windows, from the command line</summary>
+### The Rust engine
 
-```powershell
-python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US
-python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Hookshot" --language en-US
+Build the engine and run its tests:
+
+```sh
+cd builder/rust
+cargo build --release --workspace
+cargo test --workspace
 ```
 
-Add `--check` with your `.nup` or `--exefs` to only check the game's version. It builds nothing.
-Add `--log "C:\path\build.log"` to also save the build's output to a file (UTF-8, replaced if it exists); it works
-with `--check` and `--update` too, and on Linux.
-`HOOKSHOT_JOBS=<n>` (or `--jobs <n>`) limits how many files compile at once.
-`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now; up to 4 always run.
+`target/release/hookshot_engine` (or `hookshot_engine.exe`) takes one JSON request on stdin and prints one JSON answer.
+`--stream` is the builder's form: it prints `@@stage`, `@@progress`, `@@done` and `@@error` lines instead.
 
-You need:
+```sh
+printf '%s' '{"command":"build.check","exefs":"/path/to/exefs","work":"/tmp/hookshot-work"}' \
+  | builder/rust/target/release/hookshot_engine
+```
 
-- Python 3 from python.org (the Microsoft Store's Python installs packages where `python -I` does not look), with
-  `pip install -r requirements.txt` (core tools plus the button-prompt packages).
-- [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), unpacked as `llvm-mingw` in the
-  clone or with `HOOKSHOT_MINGW` set to its folder. Without it the build uses the clang from
-  [emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools and the Windows SDK
-  (`HOOKSHOT_MSVC=1` forces that route).
-- What the builder's `tools` folder carries and a clone does not. Run `HookshotBuilder.exe` once: the folder is
-  `%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`. The builder sets the variables itself;
-  from the command line, set them before you run `make_game.py`:
-  - `tools\cpm`: the Vulkan headers and FFmpeg. Set `RX_CPM` to this folder. Without it (and without system
-    Vulkan / SPIR-V / VMA headers or `HOOKSHOT_*_HEADERS`), the standalone build stops instead of shipping a
-    game with no renderer.
-  - `tools\wgpu-native`: set `WGPU_NATIVE` to this folder.
-  - `tools\third_party`: the prebuilt files a clone lacks (`a64emit`, `lld-link`, `zbic` and SDL2). Copy its `.dll`,
-    `.exe`, `.lib` and `.sha1` files to the same places under `third_party\`.
-  - `tools\work`: copy it to `work\`. It holds the hot-function list, the link order, the profile and the icon;
-    without them the game builds but runs slower.
-- Visual Studio 2022 with .NET 8, only if you want to change the builder itself.
+A `.nup` build is two requests. `build.prepare` reads, checks and extracts it:
 
-</details>
+```json
+{"command":"build.prepare","nup":"/path/to/game.nup","out":"/path/to/game-folder","work":"/path/to/build-files"}
+```
+
+It writes `work/exefs` and `out/romfs`. `build.all` takes those two folders:
+
+```json
+{"command":"build.all","exefs":"/path/to/build-files/exefs","romfs":"/path/to/game-folder/romfs","out":"/path/to/game-folder","work":"/path/to/build-files","language":"en-US","prepare":true}
+```
+
+An unpacked pair goes straight to `build.all` with your own `exefs` and `romfs`. `build.shaders` writes the shader list
+alone, `build.vk` builds the Vulkan backend alone, and `build.host_link` links the Linux host. The commands are
+dispatched in `builder/rust/src/lib.rs`; `builder/rust/tests/cli_stream.rs` covers the `--stream` protocol.
+
+### The Flutter app
+
+The app is in `builder/flutter`. Build the engine first, then install Flutter with the Linux desktop toolchain (or
+Visual Studio's C++ tools on Windows), and run:
+
+```sh
+cd builder/flutter
+flutter pub get
+flutter run -d linux      # or: flutter run -d windows
+flutter test
+flutter analyze
+```
+
+The app looks for the engine beside itself, in `builder/rust/target/release`, or where `HOOKSHOT_ENGINE_CLI` and
+`HOOKSHOT_ENGINE_LIB` point. `builder/rust/build.sh` builds the release engine and copies it, the CLI and the ZBIC
+library into an existing Flutter bundle; run it after `flutter build linux --release` if you want the engine beside the
+app instead of in `target/release`.
+
+The app's arguments match the old builder:
+
+| Command | What it does |
+|---|---|
+| `hookshot_builder` | the builder window |
+| `hookshot_builder --play [folder]` | start the game built last, or the one in that folder, without the window |
+| `hookshot_builder --launch <folder>` | that folder's launcher: Play, and Update when a newer release is out |
+| `hookshot_builder --update <folder> [--tag <tag>]` | download the release and build that folder again |
+
+With `flutter run`, put the app's arguments after `--`.
+
+### Work and output folders
+
+- `work` holds the build's scratch: the lifted C in `work/sa/gen`, the image in `work/sa/image`, generated runtime and
+  assets under `work/rt64` and `work/build/gen`, objects in `work/obj`, and caches in `work/objcache` and
+  `work/build/objcache`. The Flutter app uses `~/.cache/hookshot-builder` on Linux and
+  `%LOCALAPPDATA%\HookshotBuilder` on Windows. A CLI request names it, or the engine uses `work/` in the checkout;
+  `OOT_WORK` moves that default.
+- `out` is the game folder: `image.bin`, `romfs`, `bin/hookshot` (or `bin\hookshot.exe`), the shader list, the language
+  file and `.hookshot_exefs`. The Flutter app suggests `~/Games/Hookshot`.
+- `build.prepare` writes `work/exefs` and `out/romfs`; `build.all` reads an exefs/romfs pair and writes the folder.
+- The dump is read in place and never modified. Name the exefs and romfs in each request; `OOT_WORK` moves the default
+  `work/` folder.
+
+### Linux
+
+From the AppImage, nothing else is needed: it carries the compiler, libraries and a prebuilt Vulkan renderer. The
+AppImage is still built by `scripts/linux/appimage.sh` from the dependencies `scripts/linux/deps.sh` puts in
+`build-linux/deps`, and it still launches the older Python/Tk builder, so an AppImage build uses the Python path until
+that packaging port lands. A build from the Flutter app in this tree is the Rust path described above: no Python runs.
+
+From a checkout, install `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one builds without it),
+FFmpeg's development files with dav1d, and SDL3 (SDL2 works too). Vulkan, SPIR-V and VMA headers come from the distro,
+from `HOOKSHOT_*_HEADERS`, or from a CPM cache via `RX_CPM`. Then build the engine and the Flutter app above. On the
+machine these measurements were made on, the SPIR-V and VMA headers are in `build-linux/deps/cpm`; set
+`RX_CPM=/home/daze/GitHub/Hookshot/build-linux/deps/cpm` before the build (or point it at your checkout's copy).
+
+`build.all` builds `hookshot_vk.so` with `build.vk` when neither an explicit path nor `HOOKSHOT_VK_PREBUILT` is given.
+It discovers the same 195 sources as `nx2/build.py`, compiles 212 jobs, caches objects by content and checks the
+exported symbols. The AppImage's `AppRun` sets `HOOKSHOT_VK_PREBUILT` to its own `hookshot_vk.so`, so an AppImage build
+reuses it. If the Vulkan, SPIR-V or VMA headers are missing, the engine says so and still writes the folder without a
+renderer; install the headers, set `HOOKSHOT_*_HEADERS`, or use a CPM cache via `RX_CPM`. The Windows Vulkan DLL link
+and the NGX/DLSS and FSR 4 flags are not ported.
+
+A folder built from a source checkout has no launcher: `hookshot` there is the game.
 
 <details>
 <summary>Linux, the AppImage from the command line</summary>
 
 ```sh
-./Hookshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Hookshot   # make_game.py's options
+./Hookshot-<version>-x86_64.AppImage --cli --nup ~/your-game.nup --out ~/Games/Hookshot   # the Python path
 ./Hookshot-<version>-x86_64.AppImage --play                    # the game the builder built last, without the window
 ./Hookshot-<version>-x86_64.AppImage --play ~/Games/Hookshot   # the game in that folder
 ./Hookshot-<version>-x86_64.AppImage --update ~/Games/Hookshot # the new release, and that folder built again
@@ -624,16 +817,55 @@ In a game folder, `hookshot` is the launcher and the game itself is `bin/hooksho
 
 </details>
 
+### Windows
+
+The Rust engine now links `hookshot.exe` for Windows with llvm-mingw. It uses the same host source set, flags and
+libraries as `nx2/build.py`, content-keyed objects, UTF-8 response files, the PE manifest, map and stack size, and
+stages the SDL, wgpu-native and FFmpeg DLLs beside the executable. A cross-build on Linux produced a real PE32+
+executable: 192 host objects compiled, 0 failed, link ok, 0 undefined symbols; `llvm-objdump` shows PE32+, an 8 MB
+stack reserve and a UTF-8 manifest. That cross-build used scratch lifted code and FFmpeg stubs, not a real game link.
+
+No Windows boot has been made yet. A real game executable still needs the game's lifted objects and a Windows FFmpeg
+build, and `hookshot_vk.dll` (the Windows Vulkan backend) is not built by the Rust engine; only the Linux
+`hookshot_vk.so` is. A Windows VM is available for the boot test, but it is deliberately not started while builds run;
+the verification steps are prepared. Until that run, a Windows game build and gameplay are not verified. For a complete
+Windows build today, use the Python path below.
+
+You need [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) (the `ucrt-x86_64` build), unpacked as `llvm-mingw` in the
+clone or with `HOOKSHOT_MINGW` set to its folder. Without it the Python path uses the clang from
+[emsdk](https://github.com/emscripten-core/emsdk) at `C:\emsdk` with Visual Studio's C++ tools and the Windows SDK
+(`HOOKSHOT_MSVC=1` forces that route).
+
 <details>
-<summary>Linux, without the AppImage</summary>
+<summary>The Python path: Windows, DLSS and packaging</summary>
 
-You need `clang` and `lld` (LLVM 23 or newer reads the play profile; an older one builds without it), Python 3 with
-`pip install -r requirements.txt`, FFmpeg's development files (with dav1d, for the movies) and SDL3 (SDL2 works too).
-Then run `python -I nx2/make_game.py ...` as on Windows. Vulkan / SPIR-V / VMA headers come from the distro, from
-`HOOKSHOT_*_HEADERS`, or from a CPM cache via `RX_CPM`.
+`nx2/make_game.py` is still the complete builder for a Windows game, a build with NVIDIA's DLSS SDK, the full prompt
+assets including textures, and the release packages. Run it with `python -I` from the repository root. Python 3 from
+python.org (not the Microsoft Store build) needs `pip install -r requirements.txt`.
 
-`scripts/linux/deps.sh` fetches and builds all of these into `build-linux/deps`, and `scripts/linux/appimage.sh` makes
-the AppImage from them. A folder built from a source checkout has no launcher: `hookshot` there is the game.
+```powershell
+python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US
+python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Hookshot" --language en-US
+```
+
+Add `--check` with your `.nup` or `--exefs` to only check the game's version. It builds nothing.
+Add `--log "C:\path\build.log"` to also save the build's output to a file (UTF-8, replaced if it exists); it works
+with `--check` and `--update` too, and on Linux.
+`HOOKSHOT_JOBS=<n>` (or `--jobs <n>`) limits how many files compile at once.
+`HOOKSHOT_MEM_LIMIT_GB=<n>` lets the compilers take that many GB together, whatever is free now; up to 4 always run.
+
+A clone still needs what the builder's `tools` folder carries. Run `HookshotBuilder.exe` once: the folder is
+`%LOCALAPPDATA%\HookshotBuilder\versions\<version>\HookshotBuilder\tools`. The builder sets the variables itself;
+from the command line, set them before you run `make_game.py`:
+
+- `tools\cpm`: the Vulkan headers and FFmpeg. Set `RX_CPM` to this folder. Without it (and without system
+  Vulkan / SPIR-V / VMA headers or `HOOKSHOT_*_HEADERS`), the standalone build stops instead of shipping a
+  game with no renderer.
+- `tools\wgpu-native`: set `WGPU_NATIVE` to this folder.
+- `tools\third_party`: the prebuilt files a clone lacks (`a64emit`, `lld-link`, `zbic` and SDL2). Copy its `.dll`,
+  `.exe`, `.lib` and `.sha1` files to the same places under `third_party\`.
+- `tools\work`: copy it to `work\`. It holds the hot-function list, the link order, the profile and the icon;
+  without them the game builds but runs slower.
 
 </details>
 
@@ -641,8 +873,10 @@ the AppImage from them. A folder built from a source checkout has no launcher: `
 <summary>The Windows game, built on Linux</summary>
 
 Unpack llvm-mingw's Linux build (`ucrt-ubuntu-22.04-x86_64`), then run `make_game.py` with `RX_TARGET=windows` and
-`HOOKSHOT_MINGW` set to its folder. The objects go to `~/.cache/hookshot-builder-windows`, apart from the Linux game's.
-The game folder runs under Proton or on Windows.
+`HOOKSHOT_MINGW` set to its folder. The objects go to `~/.cache/hookshot-builder-windows`, apart from the Linux
+game's. The game folder runs under Proton or on Windows. This is the Python path; the Rust engine can cross-link the
+Windows host now, but it does not build `hookshot_vk.dll` yet and still needs the game's lifted objects and a Windows
+FFmpeg build for a real link.
 
 </details>
 
@@ -659,7 +893,7 @@ use them.
 | `--romfs <folder>` | The extracted RomFS folder |
 | `--user <folder>` | Where the game keeps per-user data: saves, caches and temp files (and `mouse_sens.txt` when `HOS_MOUSE_SENS` is set; the menu keeps the sensitivity otherwise). Default: `user` in the game folder on Windows, `~/.local/share/hookshot` on Linux; with an explicit image path, `user` in the current folder |
 | `--trace` | Log every Horizon OS call (the same as `HOS_TRACE=1`) |
-| `--prepare-shaders` | Prepare the shaders as the first start does, then exit without starting the game (no build step runs it) |
+| `--prepare-shaders` | Prepare the shaders as the first start does, then exit without starting the game (the builder runs it before the folder is ready; the first start does it when a build skipped it) |
 
 For example, keep saves somewhere else:
 
@@ -699,7 +933,9 @@ the game's own upscaler, with camera jitter (**NVIDIA Reflex** needs no SDK and 
 every build). NVIDIA's files are NVIDIA's, under its own license, the
 [NVIDIA RTX SDKs license](https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt).
 Hookshot never includes or redistributes them: each build downloads them for itself, and only after you accept that
-license. Never share a game folder built with them, and do not post builds made with them.
+license. Never share a game folder built with them, and do not post builds made with them. The Flutter builder fetches
+the SDK with the Rust engine (`build.ngx_fetch`); the remaining NGX build stage is still Python, as in the commands
+below.
 
 - **Windows, the Hookshot Builder:** tick **NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)** before you
   build. It is off by default and shows NVIDIA's license when you tick it. The build downloads the SDK into
@@ -761,6 +997,9 @@ With HDR on **Native**, it takes the game's HDR colour as linear light, so highl
 (`RX_VK_FSR4_HDR=0`: cut at the paper white, as before).
 Unlike FSR 3.1 (above), it runs AMD's own DLLs, so it needs them beside the game. Choose it in the menu (`dlss=4` or `5`
 in `hookshot_options.ini`, `RX_VK_FSR4=1` or `2` for one run, `RX_VK_FSR4=0` to leave it out).
+
+The Flutter builder's form does not offer FSR 4 yet, and the Rust Vulkan build has no FSR 4 flags; use the Python path
+below for it. The no-FSR-4 Rust build compiles the same stubs as a build without AMD's SDK.
 
 - **Windows, the Hookshot Builder:** tick **AMD FSR 4** before you build. It shows AMD's license first and stays ticked
   only if you accept; the build then fetches AMD's DLLs for you (below), into the builder's `ffx-sdk` folder and the
@@ -848,13 +1087,39 @@ same scene to 59-60 fps. `0` or unset copies every written binding, as before.
 
 ## How it works
 
-1. `nx2/lift.py` translates the game's ARM64 code to C.
-2. `nx2/build.py` compiles that C together with `host/`, which plays the part of the console's system.
-3. `host/nvn_native.c` records the game's NVN2 graphics calls, and `gpu/vk/` replays them on Vulkan.
+1. On the Rust path, the Flutter builder sends a build request to the engine: `build.prepare` for a `.nup`, then
+   `build.all` with the exefs and romfs. The same engine prints the progress lines the builder shows.
+2. The engine builds the image, lifts the game's ARM64 code to C (jump tables and a per-function cache), applies the
+   OoT patches and after-sites, and compiles the C with clang.
+3. It links `host/`, which plays the part of the console's system software, into `hookshot`/`hookshot.exe`; on Linux
+   the engine also builds `hookshot_vk.so` with `build.vk`. `host/nvn_native.c` records the game's NVN2 graphics calls,
+   and `gpu/vk/` replays them on Vulkan.
 4. Switch 2 Ampere shaders are lowered to Maxwell (`lower_to_maxwell.h`) and translated to SPIR-V by Eden's shader
-   recompiler.
+   recompiler. The engine lists them and runs the built game with `--prepare-shaders` before the folder is ready.
+5. Python still builds the NGX/DLSS- and FSR 4-enabled Vulkan backend for DLSS, the Windows Vulkan DLL and the release
+   packages. The Windows host link and the prompt font and layouts are Rust now; the prompt textures are not generated
+   yet. Those are the open items above.
 
-More detail is in the [development guide](docs/development.md) and the [design notes](docs/design.md).
+More detail on the architecture is in the [design notes](docs/design.md). The [development guide](docs/development.md)
+still describes the older Python pipeline and the runtime's testing switches; the build commands in this README are the
+current ones.
+
+## Testing
+
+The checks are Rust, Flutter and C++ only. The Python source-reading suite and `tests/run_all.py` were removed. Every
+check runs without the game or a dump.
+
+| Command | What it runs |
+|---|---|
+| `cargo test --workspace` in `builder/rust` | Engine unit tests and the `--stream` CLI tests. |
+| `flutter test` and `flutter analyze` in `builder/flutter` | Builder state, routing, updater, profiles and UI tests. |
+| The C and C++ fixtures under `tests/` and `gpu/vk/tests` | Game-free checks, compiled with the host compiler. The three SPIR-V fixtures under `tests/global_load_16`, `tests/native_suatom` and `tests/f2i_immediate` have their own `CMakeLists.txt`. |
+| A run in the game on your hardware | Runtime and renderer changes: what you did, what you saw, and the numbers from `hookshot_log.txt`. |
+
+CI runs `cargo test --workspace` on Linux and Windows, plus `flutter test`, `flutter analyze` and the three SPIR-V
+fixtures on Linux. Add a Rust or Flutter test for a fix where the behavior can be tested without the game. Never add
+game files or generated game data to the repository or to CI. [CONTRIBUTING.md](CONTRIBUTING.md#testing) has the wider
+rules.
 
 ## Want to help?
 
@@ -863,6 +1128,8 @@ game than anyone has yet.
 
 Bigger ways to help:
 
+- **Rust and Flutter work.** The engine and the builder app are this fork's build system;
+  [Still to come](#still-to-come) lists what is left to port.
 - **Linux testing.** The Linux build (`host/posix`) has been tested on several distributions and cards: reports from
   others still help.
 - **Fixes in your own fork.** Fork the project, fix what you find and send the change back. Keep game files, keys and
