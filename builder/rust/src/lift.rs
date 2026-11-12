@@ -124,6 +124,17 @@ impl<'a, C: Code> Lifter<'a, C> {
                 self.plt.insert(entry, target);
             }
         }
+        let missing: Vec<(u64, u8)> = self
+            .jt_missing
+            .iter()
+            .map(|(pc, reg)| (*pc, *reg))
+            .collect();
+        for (pc, reg) in missing {
+            if let Some(targets) = self.jump_table(pc, reg) {
+                self.jt.insert(pc, targets);
+                self.jt_missing.remove(&pc);
+            }
+        }
         self.stats.insert("jump_tables", self.jt.len());
         self.stats.insert("jt_missing", self.jt_missing.len());
         self.stats.insert("plt_stubs", self.plt.len());
@@ -473,6 +484,10 @@ impl<'a, C: Code> Lifter<'a, C> {
             let n = ((word >> 5) & 31) as u8;
             let m = ((word >> 16) & 31) as u8;
             let value = match word {
+                w if w & 0x9F000000 == 0x10000000 => {
+                    let imm = ((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3);
+                    Some(V::Const(pc.wrapping_add(a64::sx(imm, 21) as u64)))
+                }
                 w if w & 0x9F000000 == 0x90000000 => {
                     let imm = ((w >> 3) & 0x1FFFFC) | ((w >> 29) & 3);
                     Some(V::Const(
@@ -498,7 +513,7 @@ impl<'a, C: Code> Lifter<'a, C> {
                     }
                 }
                 w if w & 0x3B200C00 == 0x38200800 && (w >> 26) & 1 == 0 => {
-                    let size = (w >> 30) as u8;
+                    let size = 1u8 << (w >> 30);
                     let opc = (w >> 22) & 3;
                     let base = values.get(&n).cloned().unwrap_or(V::Reg(n));
                     if opc != 0 {
@@ -839,6 +854,7 @@ pub fn tables_json(exefs: &str) -> Result<serde_json::Value, String> {
         "functions": lift.funcs.len(),
         "jump_tables": lift.jt.len(),
         "plt_stubs": lift.plt.len(),
+        "missing": lift.jt_missing.keys().take(20).map(|pc| format!("{pc:x}")).collect::<Vec<_>>(),
         "jt_missing": lift.jt_missing.len(),
         "targets": lift.jt.values().map(Vec::len).sum::<usize>(),
         "stats": lift.stats,
