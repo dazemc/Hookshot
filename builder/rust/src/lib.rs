@@ -39,6 +39,7 @@ mod poll;
 mod prepare;
 mod profiles;
 mod rtgen;
+mod saves;
 mod shader;
 mod split_hot;
 mod stage;
@@ -116,6 +117,8 @@ pub fn dispatch(text: &str) -> String {
             string(&request, "id").as_deref().unwrap_or(""),
             string(&request, "parent").as_deref().unwrap_or(""),
         ),
+        "saves.list" => saves::list_json(string(&request, "folder").as_deref()),
+        "saves.import" => saves::import_json(&request),
         "policy.pinned" => {
             version_policy::pinned_json(&string(&request, "folder").unwrap_or_default())
         }
@@ -489,5 +492,24 @@ mod tests {
     fn unknown_command_is_json_error() {
         let value: Value = serde_json::from_str(&dispatch("{\"command\":\"nope\"}")).unwrap();
         assert_eq!(value["error"], "unknown command: nope");
+    }
+
+    #[test]
+    fn saves_list_rejects_a_folder_without_saves() {
+        let folder = std::env::temp_dir().join(format!(
+            "hookshot-rust-saves-dispatch-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let request = json!({"command": "saves.list", "folder": folder.to_string_lossy()});
+        let value: Value = serde_json::from_str(&dispatch(&request.to_string())).unwrap();
+        assert!(
+            value["error"]
+                .as_str()
+                .unwrap()
+                .contains("no Ocarina of Time save under")
+        );
+        let _ = std::fs::remove_dir_all(folder);
     }
 }
