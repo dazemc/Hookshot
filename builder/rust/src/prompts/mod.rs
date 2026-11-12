@@ -191,7 +191,7 @@ fn generate(romfs: &Path, out: &Path) -> Result<Written, String> {
         }
         None => {}
     }
-    let textures = textures::build(romfs, out, &dictionary, &kenney)?;
+    let textures = textures::build(romfs, out, &dictionary, &kenney, &otf)?;
     let size_table = match restbl::size_table(romfs, &dictionary, game_font.len(), wrapped.len())? {
         Some(table) => {
             let path = out.join("rsizetable.zs");

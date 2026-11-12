@@ -1,6 +1,8 @@
 //! The faces: the controllers whose button prompts the build draws, with
 //! the Kenney glyph each pad input uses, and where each control is in the
-//! pause menu's picture (`nx2/prompt_faces.py`).
+//! pause menu's picture (`nx2/prompt_faces.py`). The picture's drawing data
+//! (the body glyph or the Steam Deck's own shape, and each control) is here
+//! too; `textures.rs` draws it.
 
 use std::collections::BTreeMap;
 
@@ -106,7 +108,409 @@ pub struct Face {
     /// Each pad input's glyph name after the prefix; `/name` is the whole
     /// name. An input left out keeps the game's icon.
     pub icons: &'static [(&'static str, &'static str)],
+    /// The pause menu's controller picture (`nx2/prompt_faces.py`'s
+    /// `drawing`): None for the Switch, whose picture is the game's.
+    pub drawing: Option<&'static Drawing>,
 }
+
+/// A control of a drawn controller body: its kind, centre in the body's box
+/// (0..1), size (a fraction of the body's width, or (width, height) for a
+/// touchpad or a screen) and the pad input whose label it shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ControlKind {
+    Stick,
+    Dpad,
+    Face,
+    Small,
+    Pad,
+    Screen,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Size {
+    One(f64),
+    Two(f64, f64),
+}
+
+impl Size {
+    pub fn width(self) -> f64 {
+        match self {
+            Size::One(value) => value,
+            Size::Two(width, _) => width,
+        }
+    }
+
+    pub fn height(self) -> f64 {
+        match self {
+            Size::One(value) => value,
+            Size::Two(_, height) => height,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Control {
+    pub kind: ControlKind,
+    pub cx: f64,
+    pub cy: f64,
+    pub size: Size,
+    pub what: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drawing {
+    /// The Kenney font and glyph of the body; None is the Steam Deck's own
+    /// shape (`nx2/prompt_draw.py`'s `deck`).
+    pub font: Option<&'static str>,
+    pub glyph: Option<&'static str>,
+    pub controls: &'static [Control],
+}
+
+const fn control(
+    kind: ControlKind,
+    cx: f64,
+    cy: f64,
+    size: Size,
+    what: Option<&'static str>,
+) -> Control {
+    Control {
+        kind,
+        cx,
+        cy,
+        size,
+        what,
+    }
+}
+
+const XBOX_CONTROLS: [Control; 11] = [
+    control(
+        ControlKind::Stick,
+        0.215,
+        0.262,
+        Size::One(0.158),
+        Some("lstick"),
+    ),
+    control(ControlKind::Dpad, 0.345, 0.530, Size::One(0.160), None),
+    control(
+        ControlKind::Stick,
+        0.640,
+        0.495,
+        Size::One(0.158),
+        Some("rstick"),
+    ),
+    control(
+        ControlKind::Face,
+        0.700,
+        0.275,
+        Size::One(0.080),
+        Some("west"),
+    ),
+    control(
+        ControlKind::Face,
+        0.775,
+        0.375,
+        Size::One(0.080),
+        Some("south"),
+    ),
+    control(
+        ControlKind::Face,
+        0.775,
+        0.175,
+        Size::One(0.080),
+        Some("north"),
+    ),
+    control(
+        ControlKind::Face,
+        0.850,
+        0.275,
+        Size::One(0.080),
+        Some("east"),
+    ),
+    control(
+        ControlKind::Small,
+        0.498,
+        0.120,
+        Size::One(0.090),
+        Some("guide"),
+    ),
+    control(
+        ControlKind::Small,
+        0.420,
+        0.275,
+        Size::One(0.052),
+        Some("back"),
+    ),
+    control(
+        ControlKind::Small,
+        0.576,
+        0.275,
+        Size::One(0.052),
+        Some("start"),
+    ),
+    control(ControlKind::Small, 0.498, 0.355, Size::One(0.044), None),
+];
+
+const PS4_CONTROLS: [Control; 11] = [
+    control(ControlKind::Dpad, 0.195, 0.290, Size::One(0.180), None),
+    control(
+        ControlKind::Stick,
+        0.340,
+        0.520,
+        Size::One(0.150),
+        Some("lstick"),
+    ),
+    control(
+        ControlKind::Stick,
+        0.660,
+        0.520,
+        Size::One(0.150),
+        Some("rstick"),
+    ),
+    control(
+        ControlKind::Pad,
+        0.499,
+        0.200,
+        Size::Two(0.320, 0.280),
+        None,
+    ),
+    control(
+        ControlKind::Face,
+        0.742,
+        0.285,
+        Size::One(0.072),
+        Some("west"),
+    ),
+    control(
+        ControlKind::Face,
+        0.814,
+        0.175,
+        Size::One(0.072),
+        Some("north"),
+    ),
+    control(
+        ControlKind::Face,
+        0.814,
+        0.395,
+        Size::One(0.072),
+        Some("south"),
+    ),
+    control(
+        ControlKind::Face,
+        0.886,
+        0.285,
+        Size::One(0.072),
+        Some("east"),
+    ),
+    control(
+        ControlKind::Small,
+        0.298,
+        0.130,
+        Size::One(0.036),
+        Some("back"),
+    ),
+    control(
+        ControlKind::Small,
+        0.702,
+        0.130,
+        Size::One(0.036),
+        Some("start"),
+    ),
+    control(
+        ControlKind::Small,
+        0.500,
+        0.510,
+        Size::One(0.046),
+        Some("guide"),
+    ),
+];
+
+const PS5_CONTROLS: [Control; 12] = [
+    control(ControlKind::Dpad, 0.170, 0.265, Size::One(0.190), None),
+    control(
+        ControlKind::Stick,
+        0.320,
+        0.490,
+        Size::One(0.145),
+        Some("lstick"),
+    ),
+    control(
+        ControlKind::Stick,
+        0.680,
+        0.490,
+        Size::One(0.145),
+        Some("rstick"),
+    ),
+    control(
+        ControlKind::Pad,
+        0.498,
+        0.175,
+        Size::Two(0.400, 0.300),
+        None,
+    ),
+    control(
+        ControlKind::Face,
+        0.765,
+        0.265,
+        Size::One(0.078),
+        Some("west"),
+    ),
+    control(
+        ControlKind::Face,
+        0.840,
+        0.150,
+        Size::One(0.078),
+        Some("north"),
+    ),
+    control(
+        ControlKind::Face,
+        0.840,
+        0.380,
+        Size::One(0.078),
+        Some("south"),
+    ),
+    control(
+        ControlKind::Face,
+        0.915,
+        0.265,
+        Size::One(0.078),
+        Some("east"),
+    ),
+    control(
+        ControlKind::Small,
+        0.248,
+        0.080,
+        Size::One(0.036),
+        Some("back"),
+    ),
+    control(
+        ControlKind::Small,
+        0.750,
+        0.080,
+        Size::One(0.036),
+        Some("start"),
+    ),
+    control(
+        ControlKind::Small,
+        0.496,
+        0.480,
+        Size::One(0.046),
+        Some("guide"),
+    ),
+    control(ControlKind::Small, 0.496, 0.575, Size::One(0.030), None),
+];
+
+const STEAMDECK_CONTROLS: [Control; 14] = [
+    control(
+        ControlKind::Screen,
+        0.500,
+        0.465,
+        Size::Two(0.580, 0.860),
+        None,
+    ),
+    control(ControlKind::Dpad, 0.072, 0.200, Size::One(0.078), None),
+    control(
+        ControlKind::Stick,
+        0.158,
+        0.220,
+        Size::One(0.085),
+        Some("lstick"),
+    ),
+    control(
+        ControlKind::Stick,
+        0.842,
+        0.220,
+        Size::One(0.085),
+        Some("rstick"),
+    ),
+    control(
+        ControlKind::Pad,
+        0.140,
+        0.510,
+        Size::Two(0.112, 0.270),
+        None,
+    ),
+    control(
+        ControlKind::Pad,
+        0.860,
+        0.510,
+        Size::Two(0.112, 0.270),
+        None,
+    ),
+    control(
+        ControlKind::Face,
+        0.935,
+        0.090,
+        Size::One(0.036),
+        Some("north"),
+    ),
+    control(
+        ControlKind::Face,
+        0.935,
+        0.270,
+        Size::One(0.036),
+        Some("south"),
+    ),
+    control(
+        ControlKind::Face,
+        0.900,
+        0.180,
+        Size::One(0.036),
+        Some("west"),
+    ),
+    control(
+        ControlKind::Face,
+        0.970,
+        0.180,
+        Size::One(0.036),
+        Some("east"),
+    ),
+    control(
+        ControlKind::Small,
+        0.125,
+        0.075,
+        Size::One(0.024),
+        Some("back"),
+    ),
+    control(
+        ControlKind::Small,
+        0.875,
+        0.075,
+        Size::One(0.024),
+        Some("start"),
+    ),
+    control(
+        ControlKind::Small,
+        0.150,
+        0.755,
+        Size::One(0.030),
+        Some("guide"),
+    ),
+    control(ControlKind::Small, 0.850, 0.755, Size::One(0.030), None),
+];
+
+const XBOX_DRAWING: Drawing = Drawing {
+    font: Some("kenney_input_xbox_series.otf"),
+    glyph: Some("controller_xboxseries"),
+    controls: &XBOX_CONTROLS,
+};
+
+const PS4_DRAWING: Drawing = Drawing {
+    font: Some("kenney_input_playstation_series.otf"),
+    glyph: Some("controller_playstation4"),
+    controls: &PS4_CONTROLS,
+};
+
+const PS5_DRAWING: Drawing = Drawing {
+    font: Some("kenney_input_playstation_series.otf"),
+    glyph: Some("controller_playstation5"),
+    controls: &PS5_CONTROLS,
+};
+
+const STEAMDECK_DRAWING: Drawing = Drawing {
+    font: None,
+    glyph: None,
+    controls: &STEAMDECK_CONTROLS,
+};
 
 /// The faces after the Switch, in HOS_PROMPT_* order.
 pub const FACES: [Face; 4] = [
@@ -132,6 +536,7 @@ pub const FACES: [Face; 4] = [
             ("left", "dpad_left_outline"),
             ("right", "dpad_right_outline"),
         ],
+        drawing: Some(&XBOX_DRAWING),
     },
     Face {
         name: "ps4",
@@ -155,6 +560,7 @@ pub const FACES: [Face; 4] = [
             ("left", "dpad_left_outline"),
             ("right", "dpad_right_outline"),
         ],
+        drawing: Some(&PS4_DRAWING),
     },
     Face {
         name: "ps5",
@@ -178,6 +584,7 @@ pub const FACES: [Face; 4] = [
             ("left", "dpad_left_outline"),
             ("right", "dpad_right_outline"),
         ],
+        drawing: Some(&PS5_DRAWING),
     },
     Face {
         name: "steamdeck",
@@ -199,6 +606,7 @@ pub const FACES: [Face; 4] = [
             ("left", "dpad_left_outline"),
             ("right", "dpad_right_outline"),
         ],
+        drawing: Some(&STEAMDECK_DRAWING),
     },
 ];
 
@@ -402,6 +810,40 @@ mod tests {
         assert!(BIND_BASE + NAMES.len() as u16 * SWITCH.len() as u16 * 17 <= PAD_BASE);
         assert!(STATIC_AT + STATIC.len() as u16 <= FACE_CODES);
         assert!((PADS.len() as u16) <= STATIC_AT);
+    }
+
+    #[test]
+    fn every_face_has_a_drawing_like_the_reference() {
+        for face in &FACES {
+            let drawing = face.drawing.expect("a controller face has a drawing");
+            assert!(!drawing.controls.is_empty());
+            for control in drawing.controls {
+                assert!(control.size.width() > 0.0 && control.size.height() > 0.0);
+                assert!((0.0..=1.0).contains(&control.cx));
+                assert!((0.0..=1.0).contains(&control.cy));
+                if let Some(what) = control.what {
+                    assert!(
+                        PADS.contains(&what),
+                        "{}: unknown pad input {what}",
+                        face.name
+                    );
+                }
+            }
+        }
+        let xbox = FACES.iter().find(|face| face.name == "xbox").unwrap();
+        let drawing = xbox.drawing.unwrap();
+        assert_eq!(drawing.font, Some("kenney_input_xbox_series.otf"));
+        assert_eq!(drawing.glyph, Some("controller_xboxseries"));
+        assert_eq!(drawing.controls.len(), 11);
+        assert_eq!(drawing.controls[0].kind, ControlKind::Stick);
+        assert_eq!(drawing.controls[0].what, Some("lstick"));
+        let deck = FACES.iter().find(|face| face.name == "steamdeck").unwrap();
+        let drawing = deck.drawing.unwrap();
+        assert_eq!(drawing.font, None);
+        assert_eq!(drawing.glyph, None);
+        assert_eq!(drawing.controls.len(), 14);
+        assert_eq!(drawing.controls[0].kind, ControlKind::Screen);
+        assert_eq!(drawing.controls[0].size, Size::Two(0.580, 0.860));
     }
 
     #[test]

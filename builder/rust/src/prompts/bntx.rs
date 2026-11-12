@@ -1,9 +1,10 @@
 //! The Switch 2 BNTX of the button icons: its texture table and the
 //! block-linear (GOB) address of a block. `Common.bntx` is the game's file
-//! decompressed; `textures.bin` writes BC4 blocks over the BC4 entries.
+//! decompressed; `textures.bin` writes BC4 blocks over the BC4 entries and
+//! ASTC blocks over the ASTC ones.
 //!
 //! Port of `nx2/prompt_assets.py`'s `bntx_textures` and `gob_offset`; the
-//! ASTC entries are metadata only here (their pictures are not drawn yet).
+//! ASTC pictures are decoded and encoded by `astc.rs`.
 
 use std::collections::BTreeMap;
 pub const TEXTURES: &str = "UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.bntx.zs";

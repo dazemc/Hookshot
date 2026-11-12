@@ -5,6 +5,9 @@ fn main() {
     build
         .cpp(true)
         .std("c++14")
+        // (the encoder is the prompt build's hot path; debug Rust builds must
+        // not turn it into an unoptimised 1160x680 ASTC encode)
+        .opt_level(2)
         .include("astcenc")
         .file("astcenc/astcenc_shim.cpp");
     for source in [

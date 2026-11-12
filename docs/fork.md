@@ -115,7 +115,7 @@ Still Python or not ported:
 |---|---|
 | Flutter build/update fallback | **Removed.** Flutter does not invoke Python; a missing engine is a typed error. |
 | Release/AppImage/Windows packaging | Linux AppImage and Windows package pipelines build Flutter + Rust; `v2.2.0-rs.1` is published with both. The AppImage needs distribution clang and Vulkan/SPIR-V/VMA headers for a game build |
-| Prompt textures (`Common.bntx`, per-face `textures.bin`) | **BC4 letters, ASTC notes and controller labels ported in Rust**: BNTX/GOB parsing, a glyph rasterizer, BC4 blocks, a vendored ASTC encoder/decoder and the HPTX run writer make `Common.bntx`, the `KeyTexFont` shapes, the `OcarinaButton` note textures and the four face labels on `Controller_Pro`/`Controller_Pro1`. The hand-drawn controller bodies and guide lines are still the game's |
+| Prompt textures (`Common.bntx`, per-face `textures.bin`) | **Button prompts ported in Rust**: BNTX/GOB parsing, a Pillow-compatible rasterizer, BC4 blocks, a vendored ASTC encoder/decoder and the HPTX run writer make `Common.bntx`, the `KeyTexFont` shapes, the `OcarinaButton` note textures, each controller face's hand-drawn body with the page's tinted copy and shadow, and the pause menu's leader lines. Hand-made PNG overrides (`nx2/prompt_faces/<face>/`) remain Python-only |
 | Legacy Tk/WPF builders | Kept for upstream release scripts, not used by the Flutter app |
 | Python source-reading tests | Deleted; tests are Rust, Flutter and C/C++ |
 
@@ -252,12 +252,18 @@ commits, not upstream ancestors. Ported recently:
 - **RADV/Navi #1965, #2215**: the AMD no-optimizer rule for task and mesh programs excludes Mesa's RADV (the unoptimized
   task program reset the GPU while the Great Deku Tree save loads), and the task+mesh fallback covers 0x73af (RX 6900
   XT XTXH) and 0x73a5 (RX 6950 XT).
-- **Prompt textures, BC4 letters, ASTC notes and controller labels**: the Rust prompt build writes `Common.bntx` and
-  each non-Switch face's `textures.bin`. ARM's astc-encoder is vendored behind a C wrapper (no bindgen/libclang); the
-  note icons are compressed as 4x4 ASTC, and the game's `Controller_Pro`/`Controller_Pro1` pictures get the face's
-  four button labels. The in-game Xbox face logged 102,568 runs and ran at 56 fps with no traps. Fixtures cover the
-  BNTX table, GOB addresses, BC4 levels, masks, the ASTC wrapper and the HPTX header; the controller bodies and guide
-  lines remain.
+- **Prompt textures, BC4 letters, ASTC notes, controller bodies and leader lines**: the Rust prompt build writes
+  `Common.bntx` and each non-Switch face's `textures.bin`. ARM's astc-encoder is vendored behind a C wrapper (no
+  bindgen/libclang); the note icons are compressed as 4x4 ASTC, each face's controller body is drawn from Kenney's
+  controller glyph (or the Steam Deck's own shape) with its sticks, d-pad, face buttons and touchpads, and the page's
+  tinted copy (a linear fit on the game's plain/tinted pair) and shadow (the picture's alpha cropped, squeezed and
+  blurred) are made from it. The leader lines are routed and drawn on the same grid as the Python reference. The
+  drawing primitives, Gaussian blur and LANCZOS/BICUBIC/BOX resampling match Pillow 13 byte for byte on synthetic
+  masks; glyph edges are scanline-rasterized rather than FreeType's, so a real body picture differs from the Python
+  reference on 0.06% (Steam Deck) to 0.46% (Xbox) of RGBA bytes, and its BC4 shadow on up to 10% of bytes because BC4
+  quantizes those edge pixels. The in-game Xbox face logged 102,568 runs and ran at 56 fps with no traps. Fixtures
+  cover the BNTX table, GOB addresses, BC4 levels, masks, the ASTC wrapper, the HPTX header, the synthetic body,
+  tint and shadow, and the leader lines.
 - **11 Vulkan fixes**: texture table, span aging, split fence wait, recorder packet, Intel storage loop, subgroup
   barrier, mesh grass hold, pipeline-cache header, 250 ms readback, RADV mesh default, Intel uniform snapshot.
 - **7 host fixes**: update downgrade guard, menu option order, Steam gyro, Aux/splitter audio, window title/class,
@@ -269,9 +275,9 @@ commits, not upstream ancestors. Ported recently:
 
 Remaining large areas are FSR 3.1's HDR colour (it still takes the chain's LDR pair; upstream lists that as a
 follow-up), Native HDR's upscalers (DLSS/FSR/TAAU still take only the B10G11R11 scene, so PsychoV35 runs the game's
-own upscale), the guide lines and hand-drawn controller bodies, 10-bit/4:4:4 AV1 conversion (OoT's movies are 8-bit
-4:2:0), aspect-ratio and translated-menu features, hardware-specific Vulkan fixes, Flutter equivalents of the Tk/WPF UI
-commits, docs and game-derived pipeline assets.
+own upscale), hand-made prompt-image overrides (`nx2/prompt_faces/<face>/`), 10-bit/4:4:4 AV1 conversion (OoT's movies
+are 8-bit 4:2:0), aspect-ratio and translated-menu features, hardware-specific Vulkan fixes, Flutter equivalents of
+the Tk/WPF UI commits, docs and game-derived pipeline assets.
 Do not port game-derived pipeline lists or generated game data.
 
 ## CI and release
