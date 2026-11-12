@@ -53,6 +53,7 @@
 #include "fallback_depth_hold.h"   // (a mesh fallback's depth-only draws held while its colour draw builds)
 #include "pcache_read.h"          // (a pipeline cache's header checked before the rest of the file is read)
 #include "driver_faults.h"
+#include "fallback_pipeline_state.h"   // (the fallback's pipeline state and the strides a bind invalidates)
 #include "fallback_size_policy.h"
 
 #include "shaders/clear_f_frag_spv.h"
@@ -2096,10 +2097,12 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
         VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE, VK_DYNAMIC_STATE_LINE_WIDTH,
         VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE};
-    if (!p.mesh) {
+    if (fallback_pipeline_state::dynamic_input_assembly(p.mesh)) {
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY);
         dyn.push_back(VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE);
-        dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
+        // (the fallback vertex stage reads records by vertex index, with no vertex buffers bound)
+        if (fallback_pipeline_state::dynamic_vertex_stride(p.mesh, p.fallback))
+            dyn.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
     }
     if (dev.eds3_blend) {
         dyn.push_back(VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT);
@@ -6713,6 +6716,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_BINDPL);
         FINE_N(FC_BIND_PIPE, 1);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pl), last_pipeline = pl;
+        // (a static-stride pipeline invalidates the dynamic strides, even with no vertex buffers bound: the next ordinary
+        // draw must bind them again. The resolved buffer references themselves stay cached)
+        fallback_pipeline_state::after_graphics_bind(p.fallback, last_vb_valid, vertex_set.on);
     }
     if (!same_desc) {
         FINE_SCOPE(FT_BINDDESC);
