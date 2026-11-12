@@ -447,13 +447,13 @@ bool row_fixed(const int* value) {
            (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8"));   // (set for the run: vk_texture.cpp reads it first)
 }
 const char* tx_output_res(int v) {
-    static char b[40];
+    static char b[64];
     v = output_choice(v);
     // (the picture this choice makes (picture_for: at the monitor's shape with Ultrawide on), "(native)"
     // when it is the screen's own size; the game's own choice (0) keeps its name)
     bool native = false;
     const Out o = picture_for(v, &native);
-    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, native ? " (native)" : v ? "" : " (game's)");
+    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, i18n::tr(native ? " (native)" : v ? "" : " (game's)"));
     return b;
 }
 /// Anisotropic filtering: the game's own, or 2x to 16x (vk_draw.cpp aniso_override)
@@ -2133,9 +2133,10 @@ const char* bug_report_cell() {
 /// Under its help once saved: where the report is and what to do with it (the game opens nothing: no browser or file manager is
 /// sure to be there, as on a Steam Deck in Game Mode)
 std::string bug_report_saved_text(const std::string& folder) {
-    return "Saved in the game folder as " + folder + ". To send it, open github.com/NotRexed/Hookshot/issues, choose New issue and "
-           "Game problem, copy report.txt's answers into the form and drag the folder's files into it: on Windows from File "
-           "Explorer, on Linux from a file manager (on a Steam Deck, in Desktop Mode).";
+    return i18n::tr("Saved in the game folder as ") + folder +
+           i18n::tr(". To send it, open github.com/NotRexed/Hookshot/issues, choose New issue and Game problem, copy report.txt's "
+                    "answers into the form and drag the folder's files into it: on Windows from File Explorer, on Linux from a file "
+                    "manager (on a Steam Deck, in Desktop Mode).");
 }
 /// Under its help once pressed: how the report goes
 const char* bug_report_hint() {
@@ -2143,7 +2144,7 @@ const char* bug_report_hint() {
     switch (bug_report::state()) {
     case bug_report::kSaving: text = "Saving: the logs are copied and the picture taken."; break;
     case bug_report::kSaved: text = bug_report_saved_text(bug_report::shown()); break;
-    case bug_report::kFailed: text = "Not saved: " + bug_report::shown() + "."; break;
+    case bug_report::kFailed: text = i18n::tr("Not saved: ") + bug_report::shown() + "."; break;
     default: return nullptr;
     }
     return text.c_str();
