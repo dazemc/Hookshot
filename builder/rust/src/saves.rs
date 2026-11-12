@@ -685,7 +685,7 @@ fn link_error(path: &Path) -> String {
 
 /// A Windows junction is a reparse point, not a symbolic link, and
 /// copytree walks into one as into a folder.
-fn is_link(path: &Path) -> bool {
+pub(crate) fn is_link(path: &Path) -> bool {
     let Ok(meta) = path.symlink_metadata() else {
         return false;
     };
@@ -971,7 +971,7 @@ fn comparison(path: &Path) -> String {
     }
 }
 
-fn inside(path: &Path, folder: &Path) -> bool {
+pub(crate) fn inside(path: &Path, folder: &Path) -> bool {
     let path = comparison(path);
     let folder = comparison(folder);
     Path::new(&path).starts_with(Path::new(&folder))
@@ -1672,6 +1672,87 @@ mod tests {
         assert!(error.contains("is a link"), "{error}");
         assert_eq!(tree(&target), before);
         assert_eq!(fs::read(&secret).unwrap(), b"not a save");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_as_a_loose_save_file_is_refused() {
+        let root = temp("loose-link");
+        let data = root.join("eden");
+        let source = eden_save(&data, PROFILE);
+        make_save(&source, "SOURCE", &["slot_00"]);
+        let secret = root.join("secret.txt");
+        fs::write(&secret, b"not a save").unwrap();
+        fs::remove_file(source.join("account.sav")).unwrap();
+        std::os::unix::fs::symlink(&secret, source.join("account.sav")).unwrap();
+        let target = root.join("hookshot/save").join(UID);
+        make_save(&target, "TARGET", &["slot_00"]);
+        let before = tree(&target);
+        let backups_dir = root.join("backups");
+        let error = import_with(&job(&data, &target, &backups_dir), &[]).unwrap_err();
+        assert!(error.contains("is a link"), "{error}");
+        assert_eq!(tree(&target), before);
+        assert_eq!(fs::read(&secret).unwrap(), b"not a save");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn slots_are_copied_in_name_order_whatever_the_directory_order() {
+        let root = temp("slot-order");
+        let data = root.join("eden");
+        let source = eden_save(&data, PROFILE);
+        make_save(&source, "SOURCE", &["slot_02"]);
+        make_save(&source, "SOURCE", &["slot_00"]);
+        make_save(&source, "SOURCE", &["slot_01"]);
+        assert_eq!(slots(&source), ["slot_00", "slot_01", "slot_02"]);
+        let target = root.join("hookshot/save").join(UID);
+        make_save(&target, "TARGET", &["slot_09"]);
+        let backups_dir = root.join("backups");
+        let answer = import_with(&job(&data, &target, &backups_dir), &[]).unwrap();
+        let text = answer["text"].as_str().unwrap();
+        assert!(
+            text.contains("slot_00, slot_01, slot_02"),
+            "the copy names the slots in order: {text}"
+        );
+        assert_eq!(tree(&target), tree(&source));
+        assert!(!target.join("slot_09").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_copied_user_folder_needs_32_hex_digits_for_a_profile() {
+        let root = temp("copied-user");
+        let data = root.join("eden");
+        // (a folder of users whose name is not the emulator's: only a folder
+        // named as a user is one, not Eden's mods folder load/<title id>)
+        let copied = data.join("save");
+        let mods = copied.join("load").join(TITLE);
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join("account.sav"), b"not a save").unwrap();
+        let real = copied.join(PROFILE).join(TITLE);
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("account.sav"), b"save").unwrap();
+        let found = find_saves(&copied);
+        assert_eq!(found.get(PROFILE), Some(&real));
+        assert!(!found.contains_key("load"), "{found:?}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_target_that_is_the_source_through_a_link_is_refused() {
+        let root = temp("same-link");
+        let data = root.join("eden");
+        let source = eden_save(&data, PROFILE);
+        make_save(&source, "SOURCE", &["slot_00"]);
+        let target = root.join("hookshot/save").join(UID);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&source, &target).unwrap();
+        let backups_dir = root.join("backups");
+        let error = import_with(&job(&data, &target, &backups_dir), &[]).unwrap_err();
+        assert!(error.contains("both the source and the target"), "{error}");
+        assert!(source.join("account.sav").is_file());
         let _ = fs::remove_dir_all(root);
     }
 }

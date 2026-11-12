@@ -365,6 +365,191 @@ int main(void) {{
 }
 
 #[test]
+fn the_linux_saves_move_follows_links_in_any_directory_order() {
+    if !cfg!(target_os = "linux") {
+        // (the fixture builds the host's Linux win32 layer: symlink, readlink and win32_posix.c)
+        return;
+    }
+    let Some(cc) = compiler() else {
+        eprintln!("skipping the Linux saves move fixture: no C compiler (CC, cc, gcc or clang)");
+        return;
+    };
+    let repo = root();
+    let source = fs::read_to_string(repo.join("host/hos_main.c")).expect("host/hos_main.c");
+    let start = source
+        .find("static int is_dir(const char *p) {")
+        .expect("the saves move has no is_dir");
+    let saves_dir = source
+        .find("static const char *saves_dir(const char *beside) {")
+        .expect("the saves move has no saves_dir");
+    let end = source[saves_dir..]
+        .find("#endif")
+        .map(|at| saves_dir + at)
+        .expect("the saves move has no end");
+    let functions = &source[start..end];
+    let fixture = format!(
+        r#"#define _GNU_SOURCE
+#include <windows.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#define SEP '/'
+#define SEP_S "/"
+static void hos_log(const char *fmt, ...) {{
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}}
+{functions}
+int main(int argc, char **argv) {{
+    if (argc != 2) return 2;
+    printf("%s\n", saves_dir(argv[1]));
+    return 0;
+}}
+"#
+    );
+    let dir = scratch("saves-move-c");
+    let path = dir.join("fixture.c");
+    fs::write(&path, fixture).expect("write the Linux saves move fixture");
+    let exe = dir.join("fixture");
+    let build = Command::new(&cc)
+        .args(["-std=gnu11", "-D_GNU_SOURCE", "-w"])
+        .arg("-I")
+        .arg(repo.join("host/posix"))
+        .arg(&path)
+        .arg(repo.join("host/posix/win32_posix.c"))
+        .arg("-o")
+        .arg(&exe)
+        .args(["-lpthread", "-ldl"])
+        .output()
+        .expect("run the C compiler");
+    assert!(
+        build.status.success(),
+        "{cc}: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let root = scratch("saves-move-tree");
+    let game = root.join("game");
+    let user = game.join("user");
+    let data = root.join("data");
+    let sync = root.join("sync");
+    let uid = "5a3c9e1f0b7d24680000000000000001";
+    fs::create_dir_all(&user).unwrap();
+    fs::create_dir_all(sync.join(uid)).unwrap();
+    fs::write(sync.join(uid).join("account.sav"), b"my save").unwrap();
+    let save = user.join("save");
+    let id = save.join(uid);
+    // (links made before and after save/: on a file system that lists in
+    // creation order some are seen after save/ has moved, as upstream's
+    // newest-first listing does; both must follow it)
+    let names: Vec<String> = "abcdefghijklmnopqrstuvwxyz0123456789"
+        .chars()
+        .map(|ch| format!("last-{ch}"))
+        .collect();
+    for name in &names[..18] {
+        std::os::unix::fs::symlink(&id, user.join(name)).unwrap();
+    }
+    fs::create_dir_all(&id).unwrap();
+    fs::write(id.join("account.sav"), b"my save").unwrap();
+    for name in &names[18..] {
+        std::os::unix::fs::symlink(&id, user.join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink(&sync, user.join("sync")).unwrap();
+    // (written from where it stands: the move names the folder in full)
+    std::os::unix::fs::symlink("../../sync", user.join("relative")).unwrap();
+    std::os::unix::fs::symlink("../../nowhere", user.join("dangling")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", user.join("outside")).unwrap();
+
+    let new = data.join("hookshot");
+    for start in 1..=2 {
+        let run = Command::new(&exe)
+            .arg(&user)
+            .env("XDG_DATA_HOME", &data)
+            .output()
+            .expect("run the saves move");
+        assert!(
+            run.status.success(),
+            "start {start}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            new.to_string_lossy(),
+            "start {start} did not use the new place"
+        );
+    }
+    assert!(!user.exists(), "user/ is still there");
+    assert!(new.join("save").join(uid).join("account.sav").is_file());
+    assert_eq!(
+        fs::read(&sync.join(uid).join("account.sav")).unwrap(),
+        b"my save"
+    );
+    assert_eq!(fs::read_link(new.join("sync")).unwrap(), sync);
+    assert_eq!(fs::read_link(new.join("relative")).unwrap(), sync);
+    assert_eq!(
+        fs::read_link(new.join("dangling")).unwrap(),
+        Path::new("../../nowhere")
+    );
+    assert_eq!(
+        fs::read_link(new.join("outside")).unwrap(),
+        Path::new("/etc/hostname")
+    );
+    for name in &names {
+        assert_eq!(
+            fs::read_link(new.join(name)).unwrap(),
+            new.join("save").join(uid),
+            "{name} does not follow save/ to the new place"
+        );
+    }
+    assert!(
+        fs::read_to_string(game.join("saves-moved.txt"))
+            .unwrap()
+            .contains(new.to_string_lossy().as_ref())
+    );
+
+    // (a user/ that is a link itself is the player's choice of place, used as it is)
+    let linked_game = root.join("linked-game");
+    let real_user = root.join("real-user");
+    fs::create_dir_all(real_user.join("save").join(uid)).unwrap();
+    fs::write(
+        real_user.join("save").join(uid).join("account.sav"),
+        b"linked",
+    )
+    .unwrap();
+    fs::create_dir_all(&linked_game).unwrap();
+    std::os::unix::fs::symlink(&real_user, linked_game.join("user")).unwrap();
+    let linked_data = root.join("linked-data");
+    let run = Command::new(&exe)
+        .arg(linked_game.join("user"))
+        .env("XDG_DATA_HOME", &linked_data)
+        .output()
+        .expect("run the saves move on a linked user folder");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim(),
+        linked_game.join("user").to_string_lossy()
+    );
+    assert!(
+        real_user
+            .join("save")
+            .join(uid)
+            .join("account.sav")
+            .is_file()
+    );
+    assert!(!linked_data.join("hookshot").exists());
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn field_of_view_scales_only_the_gameplay_camera() {
     let repo = root();
     let source = fs::read_to_string(repo.join("host/oot_fov.c")).expect("host/oot_fov.c");
