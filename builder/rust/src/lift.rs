@@ -1551,8 +1551,9 @@ pub fn write_json(
     let mut lift = Lifter::new(&image, image.entries.iter().copied());
     lift.hooks = image.hooks.clone();
     lift.entries.extend(lift.hooks.keys().copied());
-    lift.eh_starts = lift.entries.iter().copied().collect();
-    lift.eh_starts.sort_unstable();
+    // (a64_lift.Lifter: img.eh_starts, the FDE boundaries, not every entry:
+    // they bound jump-table target validation)
+    lift.eh_starts = image.eh_starts().to_vec();
     lift.names = image.names().clone();
     lift.discover();
     let out = std::path::Path::new(out);
