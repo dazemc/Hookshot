@@ -902,7 +902,8 @@ Row rows[] = {
      "How fast the right stick turns the camera, in percent of the game's own speed; the camera keys too, and the mouse "
      "with Mouse camera As the stick. The game's own camera speed setting still applies.", nullptr, false, true},
     {TAB_CONTROLS, "Stick dead zone", &opts.stick_dead_zone, 0, 5, 1, tx_stick_dead_zone,
-     "How far a stick moves before the game sees it, on each axis. Lower for a precise stick, higher for one that drifts. "
+     "How far a stick moves from center in any direction before the game sees it. "
+     "Lower for a precise stick, higher for one that drifts. "
      "The game's own dead zone still follows.", nullptr, false, true},
     {TAB_CONTROLS, "Rumble strength", &opts.rumble, 0, 150, 25, tx_rumble,
      "How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.", nullptr, false, true},
