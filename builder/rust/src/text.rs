@@ -494,6 +494,13 @@ pub fn flag_masks(text: &str) -> (u8, u8) {
             at = name_at;
             continue;
         }
+        if bytes
+            .get(name_at + 1)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        {
+            at = name_at + 1;
+            continue;
+        }
         let bit = FLAG_BITS[flag_index(&(name as char).to_string())];
         let mut cursor = name_at + 1;
         while bytes.get(cursor) == Some(&b' ') {

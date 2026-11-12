@@ -1170,11 +1170,20 @@ pub fn emit_json(exefs: &str, entry: u64) -> Result<serde_json::Value, String> {
         .collect();
     let pcs: Vec<u64> = body.keys().copied().collect();
     let dead = lift.dead_flags(entry, body, &pcs, &texts);
-    let v_ops: Vec<(String, u8)> = pcs
+    let v_ops: Vec<(String, u8, u8, u8)> = pcs
         .iter()
         .zip(texts.iter())
         .filter(|(_, text)| text.contains("c->v="))
-        .map(|(pc, _)| (format!("{pc:x}"), dead.get(pc).copied().unwrap_or(0)))
+        .map(|(pc, text)| {
+            let transformed = crate::text::op_text(text);
+            let (reads, writes) = crate::text::flag_masks(&transformed);
+            (
+                format!("{pc:x}"),
+                dead.get(pc).copied().unwrap_or(0),
+                reads,
+                writes,
+            )
+        })
         .collect();
     let branches: Vec<(String, Vec<String>)> = body
         .iter()
