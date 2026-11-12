@@ -123,13 +123,15 @@ pub fn all_json_with(
     }
     say_stage("finish", "Putting the game folder together")?;
     let work_text = work_folder.to_str().unwrap_or(work);
+    // (with no language asked for, a launcher's first build takes the system's: make_game's rule)
+    let language = crate::package::build_language(std::path::Path::new(out), language, prepare);
     let package = crate::package::package_json(
         work_text,
         out,
         romfs,
         prebuilt.as_deref().unwrap_or(""),
         assets,
-        language,
+        &language,
     )?;
     // The game's shader list, as Python's finish stage makes it: the first
     // start translates it instead of compiling each program as it meets it.

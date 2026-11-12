@@ -293,7 +293,7 @@ To be safe, copy your saves somewhere first: the `user` folder in the game folde
 |---|---|
 | Your saves (`user`, or `~/.local/share/hookshot` on Linux) | The game in `bin` and its files |
 | `hookshot_options.ini`, the in-game menu's choices and your controls | `image.bin` and the shader list |
-| `hookshot_env.txt` | `language.txt`, written again with the game's language |
+| `hookshot_env.txt`, `language.txt` | |
 | `mods` | |
 
 The game files the first build read are kept in the game folder, so an update does not need your `.nup` again. The
@@ -382,7 +382,7 @@ To go back, install the [latest release](https://github.com/NotRexed/Hookshot/re
 | "Your antivirus removed part of the build tools" | A false alarm on unsigned programs. Restore the files from Windows Security's Protection history, or add `%LOCALAPPDATA%\HookshotBuilder` to its exclusions, then press **Repair** |
 | Stutter the first time you see something | Normal for now: shaders are being prepared. It gets better when you pass through the same place again |
 | Windows, NVIDIA: stutter every start in places you have seen, after the shaders were prepared | The driver's shader cache is too small to keep them all (the first start builds about 2 GB of pipelines into it). In the NVIDIA Control Panel, Manage 3D settings, set **Shader Cache Size** to **Unlimited** (or 10 GB). On Linux the game raises the driver's limit itself |
-| The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all |
+| The game is in the wrong language | Change the code in `language.txt` in the game folder. The file lists them all, and an update keeps the one you set there |
 
 If the problem continues, [report it](https://github.com/NotRexed/Hookshot/issues/new/choose) with the version, where
 you were in the game, your graphics card, `hookshot_log.txt` and a screenshot or video. Never send game files.

@@ -27,6 +27,176 @@ const LANGUAGES: [(&str, &str); 16] = [
     ("zh-Hant", "Chinese (Traditional)"),
 ];
 
+/// The language a game folder was made in (`language.txt`'s code line), if
+/// it still has one the game knows.
+pub fn folder_language(out: &Path) -> Option<String> {
+    let text = fs::read_to_string(out.join("language.txt")).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((code, _)) = LANGUAGES.iter().find(|(code, _)| *code == line) {
+            return Some((*code).to_owned());
+        }
+    }
+    None
+}
+
+/// The game language closest to a system name ("de-DE" or "pt_BR.UTF-8"), as
+/// the Windows builder's window picks its first one: the exact one, then the
+/// same family (`es-MX` is Spanish (Latin America), `zh-TW` Chinese
+/// (Traditional)). `None` when the game has none of it.
+pub fn language_for_system_name(name: &str) -> Option<String> {
+    let name = name
+        .split(['.', '@'])
+        .next()
+        .unwrap_or("")
+        .replace('_', "-");
+    let family = name.split('-').next().unwrap_or("").to_lowercase();
+    if let Some((code, _)) = LANGUAGES
+        .iter()
+        .find(|(code, _)| code.eq_ignore_ascii_case(&name))
+    {
+        return Some((*code).to_owned());
+    }
+    if family == "zh" {
+        return Some(
+            if ["TW", "HK", "MO", "Hant"]
+                .iter()
+                .any(|tag| name.contains(tag))
+            {
+                "zh-Hant"
+            } else {
+                "zh-Hans"
+            }
+            .to_owned(),
+        );
+    }
+    if family == "es" && !name.eq_ignore_ascii_case("es") && !name.eq_ignore_ascii_case("es-es") {
+        return Some("es-419".to_owned());
+    }
+    if family == "pt" {
+        return Some("pt-BR".to_owned());
+    }
+    LANGUAGES
+        .iter()
+        .find(|(code, _)| *code == family)
+        .map(|(code, _)| (*code).to_owned())
+}
+
+/// The system's own locale name, as gettext reads it: the first of `LC_ALL`,
+/// `LC_MESSAGES` and `LANG` that is set, and `LANGUAGE`'s first entry over it
+/// unless that is C. (The names come in so the order is testable.)
+pub fn system_name_from_env(
+    language: &str,
+    lc_all: &str,
+    lc_messages: &str,
+    lang: &str,
+) -> String {
+    let mut name = [lc_all, lc_messages, lang]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or("");
+    let first = language.split(':').next().unwrap_or("");
+    let base = name.split(['.', '@']).next().unwrap_or("");
+    if !first.is_empty() && !name.is_empty() && base != "C" && base != "POSIX" {
+        name = first;
+    }
+    name.to_owned()
+}
+
+/// Windows' display language ("de-DE"): the first of the user's preferred UI
+/// languages, else the user's default UI language. Not the regional format,
+/// which is often another.
+#[cfg(windows)]
+fn windows_ui_language() -> Option<String> {
+    use std::os::windows::ffi::OsStringExt;
+    unsafe extern "system" {
+        fn GetUserPreferredUILanguages(
+            flags: u32,
+            count: *mut u32,
+            buffer: *mut u16,
+            size: *mut u32,
+        ) -> i32;
+        fn GetUserDefaultUILanguage() -> u16;
+        fn LCIDToLocaleName(lcid: u32, name: *mut u16, cch: i32, flags: u32) -> i32;
+    }
+    const MUI_LANGUAGE_NAME: u32 = 0x8;
+    let mut count = 0u32;
+    let mut size = 0u32;
+    let ok = unsafe {
+        GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, std::ptr::null_mut(), &mut size)
+    };
+    if ok != 0 && size > 0 {
+        let mut buffer = vec![0u16; size as usize];
+        let ok = unsafe {
+            GetUserPreferredUILanguages(
+                MUI_LANGUAGE_NAME,
+                &mut count,
+                buffer.as_mut_ptr(),
+                &mut size,
+            )
+        };
+        if ok != 0 {
+            let end = buffer.iter().position(|unit| *unit == 0).unwrap_or(0);
+            if end > 0 {
+                return Some(
+                    std::ffi::OsString::from_wide(&buffer[..end])
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    let mut buffer = [0u16; 85];
+    let lcid = unsafe { GetUserDefaultUILanguage() } as u32;
+    let len = unsafe { LCIDToLocaleName(lcid, buffer.as_mut_ptr(), buffer.len() as i32, 0) };
+    (len > 1).then(|| {
+        std::ffi::OsString::from_wide(&buffer[..len as usize - 1])
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+/// The game language closest to the system's own, or `None` when the game has
+/// none of it.
+pub fn system_language() -> Option<String> {
+    #[cfg(windows)]
+    {
+        language_for_system_name(&windows_ui_language().unwrap_or_default())
+    }
+    #[cfg(not(windows))]
+    {
+        let name = system_name_from_env(
+            &std::env::var("LANGUAGE").unwrap_or_default(),
+            &std::env::var("LC_ALL").unwrap_or_default(),
+            &std::env::var("LC_MESSAGES").unwrap_or_default(),
+            &std::env::var("LANG").unwrap_or_default(),
+        );
+        language_for_system_name(&name)
+    }
+}
+
+/// The language a build writes to the folder's `language.txt`: the one asked
+/// for; else the one the folder has, from the build before or the player's own
+/// change to the file; else, in a launcher's build (`prepare`: no window to
+/// choose one in), the system's own; else English (US).
+pub fn build_language(out: &Path, requested: &str, prepare: bool) -> String {
+    if !requested.is_empty() {
+        return requested.to_owned();
+    }
+    if let Some(kept) = folder_language(out) {
+        return kept;
+    }
+    if prepare {
+        if let Some(system) = system_language() {
+            return system;
+        }
+    }
+    "en-US".to_owned()
+}
+
 fn link_or_copy(src: &Path, dst: &Path) -> Result<u64, String> {
     if !src.is_file() {
         return Ok(0);
@@ -257,15 +427,18 @@ fn package_json_on(
     if !seed["copied"].as_bool().unwrap_or(false) {
         // (no seed in a development checkout: keep the one the assets brought)
     }
+    // (a build with no language keeps the folder's, or takes the system's in
+    // a launcher's first one: make_game's rule)
+    let language = build_language(out, language, false);
     let language = if LANGUAGES.iter().any(|(code, _)| *code == language) {
         language
     } else {
-        "en-US"
+        "en-US".to_owned()
     };
     let mut text = String::from(
         "# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n",
     );
-    text.push_str(language);
+    text.push_str(&language);
     text.push_str("\n\n");
     for (code, name) in LANGUAGES {
         text.push_str(&format!("# {code:<8} {name}\n"));
@@ -320,6 +493,60 @@ mod tests {
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         folder
+    }
+
+    #[test]
+    fn a_folder_keeps_the_language_it_was_built_in() {
+        let base = temp("language");
+        let out = base.join("out");
+        fs::create_dir_all(&out).unwrap();
+        assert_eq!(build_language(&out, "", false), "en-US");
+        fs::write(
+            out.join("language.txt"),
+            "# The game's language. Change the line below.\n\nru\n\n# en-US English (US)\n",
+        )
+        .unwrap();
+        assert_eq!(folder_language(&out).as_deref(), Some("ru"));
+        assert_eq!(build_language(&out, "", false), "ru");
+        assert_eq!(build_language(&out, "", true), "ru");
+        // (a language asked for is still the one built)
+        assert_eq!(build_language(&out, "de", true), "de");
+        // (a code the game does not know is no language of the folder)
+        fs::write(out.join("language.txt"), "xx-XX\n").unwrap();
+        assert_eq!(folder_language(&out), None);
+        assert_eq!(build_language(&out, "", false), "en-US");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_system_name_takes_its_family() {
+        for (name, want) in [
+            ("de_DE.UTF-8", Some("de")),
+            ("pt_PT", Some("pt-BR")),
+            ("pt_BR.UTF-8", Some("pt-BR")),
+            ("es_MX", Some("es-419")),
+            ("es-ES", Some("es")),
+            ("es", Some("es")),
+            ("zh_TW", Some("zh-Hant")),
+            ("zh-Hant-HK", Some("zh-Hant")),
+            ("zh_CN", Some("zh-Hans")),
+            ("en_US", Some("en-US")),
+            ("fr_CA.UTF-8", Some("fr-CA")),
+            ("C", None),
+        ] {
+            assert_eq!(language_for_system_name(name).as_deref(), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_locale_environment_is_read_as_gettext_does() {
+        assert_eq!(system_name_from_env("", "de_DE.UTF-8", "", "en_US"), "de_DE.UTF-8");
+        assert_eq!(system_name_from_env("", "", "fr_FR", "en_US"), "fr_FR");
+        assert_eq!(system_name_from_env("", "", "", "en_US"), "en_US");
+        // (LANGUAGE's first entry over the locale, unless that is C)
+        assert_eq!(system_name_from_env("pt_BR:fr_FR", "en_US.UTF-8", "", "C"), "pt_BR");
+        assert_eq!(system_name_from_env("pt_BR:fr_FR", "C.UTF-8", "", "C"), "C.UTF-8");
+        assert_eq!(system_name_from_env("pt_BR", "", "", ""), "");
     }
 
     #[test]
@@ -456,6 +683,32 @@ mod tests {
             fs::read(out.join("bin/hookshot_vk.so")).unwrap(),
             b"vk".to_vec()
         );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_package_with_no_language_keeps_the_folders() {
+        let base = temp("linux-language");
+        let work = base.join("work");
+        let out = base.join("out");
+        fs::create_dir_all(work.join("sa/image")).unwrap();
+        fs::write(work.join("sa/image/image.bin"), b"image").unwrap();
+        fs::create_dir_all(out.join("bin")).unwrap();
+        fs::write(out.join("bin/hookshot"), b"exe").unwrap();
+        fs::write(out.join("language.txt"), "# the game's language\n\nru\n").unwrap();
+        let answer = package_json_on(
+            Platform::Linux,
+            work.to_str().unwrap(),
+            out.to_str().unwrap(),
+            "",
+            "",
+            "",
+            "",
+        )
+        .unwrap();
+        assert_eq!(answer["language"], "ru");
+        let text = fs::read_to_string(out.join("language.txt")).unwrap();
+        assert!(text.lines().any(|line| line == "ru"), "{text}");
         let _ = fs::remove_dir_all(base);
     }
 
