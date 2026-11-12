@@ -14,6 +14,7 @@ mod gamescope;
 mod host;
 mod image;
 mod kit;
+mod lift;
 mod lifted_c;
 mod linker;
 mod logo_rgba;

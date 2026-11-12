@@ -231,7 +231,7 @@ impl Image {
         Ok(())
     }
 
-    fn in_code(&self, address: u64) -> bool {
+    pub fn in_code(&self, address: u64) -> bool {
         address & 3 == 0
             && self
                 .code
@@ -244,6 +244,11 @@ impl Image {
         self.mem
             .get(at..at + 8)
             .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    #[allow(dead_code)]
+    pub fn word(&self, address: u64) -> Option<u32> {
+        self.read_u32(address)
     }
 
     #[allow(dead_code)]
