@@ -492,37 +492,21 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     final s = state;
     if (s is! BuilderForm) return;
     emit(s.copyWith(checkText: 'Checking the game version...'));
-    final args = s.kind == 'nup' ? ['--nup', s.nup] : ['--exefs', s.exefs];
     final engine = RustEngine.open();
-    if (engine != null) {
-      try {
-        final answer = engine.call({
-          'command': 'build.check',
-          'nup': s.kind == 'nup' ? s.nup : '',
-          'exefs': s.kind == 'nup' ? '' : s.exefs,
-          'work': '${cfg.toolsRoot()}/work',
-        });
-        add(_CheckReceived(answer['message'] as String? ?? 'The version could not be read.'));
-        return;
-      } catch (_) {
-        // Older engine builds have no build.check: use the Python tool.
-      }
+    if (engine == null) {
+      add(const _CheckReceived('The version could not be read (the Rust engine is missing).'));
+      return;
     }
     try {
-      final r = await Process.run(cfg.builderPython(), ['-I', '${cfg.nxRoot()}/make_game.py', '--check', ...args],
-          workingDirectory: cfg.toolsRoot());
-      String? said;
-      for (final l in (r.stdout as String).split('\n')) {
-        final t = reported(l);
-        if (t != null) said = t;
-      }
-      var tail = '';
-      for (final l in (r.stderr as String).split('\n')) {
-        if (l.trim().isNotEmpty) tail = l;
-      }
-      add(_CheckReceived(said ?? (tail.isNotEmpty ? tail : 'The version could not be read.')));
-    } catch (_) {
-      add(const _CheckReceived('The version could not be read.'));
+      final answer = engine.call({
+        'command': 'build.check',
+        'nup': s.kind == 'nup' ? s.nup : '',
+        'exefs': s.kind == 'nup' ? '' : s.exefs,
+        'work': '${cfg.toolsRoot()}/work',
+      });
+      add(_CheckReceived(answer['message'] as String? ?? 'The version could not be read.'));
+    } catch (error) {
+      add(_CheckReceived('The version could not be read: $error'));
     }
   }
 

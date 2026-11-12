@@ -67,30 +67,28 @@ class Profiles {
       );
 }
 
-/// Runs nx2/profiles.py (the engine the Tk launcher used too) and reads its one JSON object.
+/// The Rust engine's profiles (injected runners are for tests only).
 class ProfilesService {
-  final Future<ProcessResult> Function(List<String> args) run;
+  final Future<ProcessResult> Function(List<String> args)? run;
   final RustEngine? rust;
 
   ProfilesService({Future<ProcessResult> Function(List<String> args)? run, RustEngine? engine})
-      : run = run ?? _runPython,
+      : run = run,
         rust = run == null ? (engine ?? RustEngine.open()) : null;
 
+  /// The save importer is still scripts/oot_saves.py's (not ported yet).
   static Future<ProcessResult> _runPython(List<String> args) {
-    final script = p.join(cfg.nxRoot(), 'profiles.py');
+    final script = p.join(cfg.nxRoot(), 'oot_saves.py');
     if (!File(script).existsSync()) {
-      throw ProfileException('The profile helper is missing: $script');
+      throw ProfileException('The save importer is missing: $script');
     }
-    return Process.run(cfg.builderPython(), args,
+    return Process.run(cfg.builderPython(), ['-I', '-B', script, ...args],
         workingDirectory: cfg.toolsRoot(), stdoutEncoding: utf8, stderrEncoding: utf8);
   }
 
   Future<Map<String, dynamic>> _call(List<String> args) async {
-    final script = p.join(cfg.nxRoot(), 'profiles.py');
-    if (!File(script).existsSync()) {
-      throw ProfileException('The profile helper is missing: $script');
-    }
-    final result = await run(['-I', '-B', script, ...args]);
+    if (run == null) throw const ProfileException('The Rust engine is missing.');
+    final result = await run!(['-I', '-B', 'profiles.py', ...args]);
     final text = (result.stdout as String).trim();
     Map<String, dynamic> json;
     try {
@@ -129,9 +127,7 @@ class ProfilesService {
 
   /// The saves in a folder, one per emulator user (scripts/oot_saves.py saves).
   Future<List<SaveEntry>> saves(String source) async {
-    final script = p.join(cfg.toolsRoot(), 'scripts', 'oot_saves.py');
-    if (!File(script).existsSync()) throw ProfileException('The save importer is missing: $script');
-    final result = await run(['-I', '-B', script, 'saves', '--from', source]);
+    final result = await (run ?? _runPython)(['saves', '--from', source]);
     final text = (result.stdout as String).trim();
     if (result.exitCode != 0) {
       final error = (result.stderr as String).trim();
@@ -153,13 +149,8 @@ class ProfilesService {
   /// with --hookshot the chosen profile's save folder (a new profile's is made).
   Future<String> importSave(String folder, Profiles profiles, String id, String source, {String? sourceProfile}) async {
     final save = p.join(profiles.user, 'save', id);
-    final script = p.join(cfg.toolsRoot(), 'scripts', 'oot_saves.py');
-    if (!File(script).existsSync()) throw ProfileException('The save importer is missing: $script');
     final backups = p.join(cfg.builderHome(), 'oot-save-backups');
-    final result = await run([
-      '-I',
-      '-B',
-      script,
+    final result = await (run ?? _runPython)([
       'import',
       '--from',
       source,
