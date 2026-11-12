@@ -202,6 +202,56 @@ fn physical_memory() -> Option<u64> {
     Some(line.split_whitespace().nth(1)?.parse::<u64>().ok()? * 1024)
 }
 
+/// The memory a new compile can take without swapping (MemAvailable on Linux,
+/// the physical memory available on Windows), in MB; None where it is not
+/// known. The job count of the lifted code is worked out from it
+/// (compile::parallel_for): a 25 MB chunk takes ~1.4 GB, a 6 MB compile unit
+/// ~0.45 GB, so the count that fits differs by the units the build makes.
+pub fn available_mb() -> Option<u64> {
+    if cfg!(windows) {
+        return windows_memory_available().map(|bytes| bytes >> 20);
+    }
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = text.lines().find(|line| line.starts_with("MemAvailable:"))?;
+    Some(line.split_whitespace().nth(1)?.parse::<u64>().ok()? >> 10)
+}
+
+#[cfg(windows)]
+fn windows_memory_available() -> Option<u64> {
+    #[repr(C)]
+    struct Status {
+        length: u32,
+        load: u32,
+        total: u64,
+        available: u64,
+        page: u64,
+        avail_page: u64,
+        virt: u64,
+        avail_virt: u64,
+        avail_ext: u64,
+    }
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut Status) -> i32;
+    }
+    let mut status = Status {
+        length: std::mem::size_of::<Status>() as u32,
+        load: 0,
+        total: 0,
+        available: 0,
+        page: 0,
+        avail_page: 0,
+        virt: 0,
+        avail_virt: 0,
+        avail_ext: 0,
+    };
+    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.available)
+}
+
+#[cfg(not(windows))]
+fn windows_memory_available() -> Option<u64> {
+    None
+}
+
 #[cfg(windows)]
 fn windows_memory() -> Option<u64> {
     #[repr(C)]

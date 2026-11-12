@@ -94,6 +94,83 @@ pub fn settle_failure(work: &Path, failed: &[Value]) -> bool {
     keep
 }
 
+/// The game code's compile jobs: every numbered chunk as the compile units
+/// `chunks::write_units` cut it into (the chunks themselves are not compiled),
+/// and a hot chunk (split_hot's pieces) as it is. `obj_dir` gets no job: it is
+/// read only to drop the objects of units an earlier build made.
+#[allow(clippy::too_many_arguments)]
+fn game_code_jobs(
+    game_gen: &Path,
+    units: &Path,
+    obj_dir: &Path,
+    cache: &Path,
+    cc: &str,
+    flags: &[String],
+    deps_file: &Path,
+    budget: u64,
+) -> Result<(Vec<Value>, usize), String> {
+    let (unit_sources, _costs) = crate::chunks::write_units(game_gen, units, budget)?;
+    let count = unit_sources.len();
+    let mut jobs = Vec::with_capacity(count);
+    for src in &unit_sources {
+        let obj = obj_dir.join(format!("{}.o", src.file_name().unwrap().to_string_lossy()));
+        jobs.push(json!({
+            "cc": cc,
+            "src": src.to_string_lossy(),
+            "obj": obj.to_string_lossy(),
+            "cache": cache.to_string_lossy(),
+            "flags": flags,
+            "deps_file": deps_file,
+        }));
+    }
+    if let Ok(entries) = fs::read_dir(game_gen) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("code_") || !name.ends_with(".c") {
+                continue;
+            }
+            if crate::chunks::is_compile_unit_source(&name) {
+                continue;   // (compiled as its units above)
+            }
+            let src = entry.path();
+            let obj = obj_dir.join(format!("{name}.o"));
+            jobs.push(json!({
+                "cc": cc,
+                "src": src.to_string_lossy(),
+                "obj": obj.to_string_lossy(),
+                "cache": cache.to_string_lossy(),
+                "flags": flags,
+                "deps_file": deps_file,
+            }));
+        }
+    }
+    Ok((jobs, count))
+}
+
+/// Forget the objects of lifted sources this build does not compile: a game
+/// update leaves fewer chunks, and a chunk whose cuts moved leaves pieces that
+/// are not in the link list. The link takes every object in the folder
+/// (`fs::read_dir(work/obj)` below), so a stale one would be linked in.
+fn forget_stale_objects(obj_dir: &Path, jobs: &[Value]) {
+    let keep: std::collections::HashSet<&str> = jobs
+        .iter()
+        .filter_map(|job| job["obj"].as_str())
+        .filter_map(|obj| Path::new(obj).file_name())
+        .filter_map(|name| name.to_str())
+        .collect();
+    let Ok(entries) = fs::read_dir(obj_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("code_") || !name.ends_with(".o") || keep.contains(name.as_str()) {
+            continue;
+        }
+        let _ = fs::remove_file(entry.path());
+        let _ = fs::remove_file(entry.path().with_extension("o.sha1"));
+    }
+}
+
 fn suyu_c() -> Result<String, String> {
     let rc = crate::emitter::runtime_text(1)?;
     let aes_start = rc
@@ -286,6 +363,8 @@ pub fn plan_json_with(
     let mut stage = if chunks == 0 { "lift" } else { "compile" };
     let mut compiled = Value::Null;
     let mut lift_kept = Value::Null;
+    let mut unit_count = 0usize;
+    let mut parallel = 0usize;
     if compile && chunks > 0 {
         say_stage("compile", "Compiling")?;
         let cc = crate::toolchain::find("clang", false);
@@ -349,31 +428,20 @@ pub fn plan_json_with(
             ]);
             flags
         };
-        let mut jobs: Vec<Value> = fs::read_dir(&game_gen)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|entry| {
-                        entry.file_name().to_string_lossy().starts_with("code_")
-                            && entry.file_name().to_string_lossy().ends_with(".c")
-                    })
-                    .map(|entry| {
-                        let src = entry.path();
-                        let obj = work
-                            .join("obj")
-                            .join(format!("{}.o", entry.file_name().to_string_lossy()));
-                        json!({
-                            "cc": cc.to_string_lossy(),
-                            "src": src.to_string_lossy(),
-                            "obj": obj.to_string_lossy(),
-                            "cache": work.join("objcache").to_string_lossy(),
-                            "flags": code_flags,
-                            "deps_file": game_deps,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let (mut jobs, units) = game_code_jobs(
+            &game_gen,
+            &work.join("units"),
+            &work.join("obj"),
+            &work.join("objcache"),
+            &cc.to_string_lossy(),
+            &code_flags,
+            &game_deps,
+            crate::chunks::UNIT_BYTES,
+        )?;
+        unit_count = units;
+        // (an earlier build's whole-chunk or unit objects are not in this
+        // list: the link takes every object in work/obj, so they go)
+        forget_stale_objects(&work.join("obj"), &jobs);
         let mut runtime_files = vec!["a64_suyu.c", "a64_rt.c", "a64_table.c", "a64_hooks.c"];
         if standalone {
             runtime_files.extend(["a64_stubs.c", "hos_image.c", "nvn2_exports.c"]);
@@ -397,8 +465,30 @@ pub fn plan_json_with(
                 "deps_file": game_deps,
             }));
         }
+        // (the whole list: the runtime's files (a64_table.c is 16 MB of tables
+        // and peaks at ~0.5 GB) count too)
+        let needs: Vec<u64> = jobs
+            .iter()
+            .filter_map(|job| job["src"].as_str())
+            .map(|src| crate::compile::compile_need_mb(Path::new(src)))
+            .collect();
+        // (RX_JOBS still overrides; else the memory available, not the total,
+        // decides how many of these fit: 6 MB units take ~0.45 GB each)
+        parallel = match std::env::var("RX_JOBS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            Some(jobs) => jobs.max(1),
+            None => crate::compile::parallel_for(
+                &needs,
+                crate::toolchain::available_mb(),
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1),
+            ),
+        };
         compiled = crate::compile::many_json(
-            &json!({"jobs": jobs, "cache": work.join("objcache").to_string_lossy()}),
+            &json!({"jobs": jobs, "cache": work.join("objcache").to_string_lossy(), "parallel": parallel}),
             &root,
         )?;
         let failed = compiled["failed"].as_array().cloned().unwrap_or_default();
@@ -458,6 +548,8 @@ pub fn plan_json_with(
         "work": work.to_string_lossy(),
         "rt64": rt64.to_string_lossy(),
         "chunks": chunks,
+        "units": unit_count,
+        "parallel": parallel,
         "standalone": standalone,
         "standalone_info": standalone_info,
         "lift_kept": lift_kept,
@@ -660,6 +752,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again["stage"], "lift");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_game_code_is_compiled_as_compile_units() {
+        let base = base("units");
+        let game_gen = base.join("gen");
+        let units = base.join("units");
+        let obj = base.join("obj");
+        let cache = base.join("objcache");
+        fs::create_dir_all(&game_gen).unwrap();
+        fs::create_dir_all(&obj).unwrap();
+        let mut chunk = String::from("#include \"a64.h\"\n");
+        let padding = format!("    /* {} */\n", "x".repeat(900));
+        for i in 0..400u32 {
+            chunk.push_str(&format!(
+                "void f_{:08x}(Ctx *__restrict A64_NOESC c) {{\n    c->x0 += {};\n{}}}\n",
+                0x80000000 + i * 16, i, padding
+            ));
+        }
+        fs::write(game_gen.join("code_000.c"), &chunk).unwrap();
+        fs::write(game_gen.join("code_hot_0.c"), "/* split_hot's */\n").unwrap();
+        let flags = ["-O1".to_owned()];
+        let (jobs, count) = game_code_jobs(
+            &game_gen, &units, &obj, &cache, "clang", &flags, Path::new(""), 200_000,
+        )
+        .unwrap();
+        assert!(count > 1, "{count} compile units of a chunk of 400 functions");
+        assert_eq!(jobs.len(), count + 1, "the hot chunk is no unit of the split");
+        // (one object each, named after its piece, and nothing collides)
+        let objects: std::collections::HashSet<String> = jobs
+            .iter()
+            .map(|job| job["obj"].as_str().unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(objects.len(), jobs.len());
+        // (the chunk itself is as the lift wrote it)
+        assert_eq!(fs::read_to_string(game_gen.join("code_000.c")).unwrap(), chunk);
         let _ = fs::remove_dir_all(base);
     }
 
