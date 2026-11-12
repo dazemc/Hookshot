@@ -8,6 +8,25 @@ use std::collections::{BTreeMap, HashSet};
 use crate::a64::{self, Kind};
 use crate::image::Image;
 
+const COND: [&str; 16] = [
+    "(c->z)",
+    "(!c->z)",
+    "(c->c)",
+    "(!c->c)",
+    "(c->n)",
+    "(!c->n)",
+    "(c->v)",
+    "(!c->v)",
+    "(c->c && !c->z)",
+    "(!(c->c && !c->z))",
+    "(c->n == c->v)",
+    "(c->n != c->v)",
+    "((c->n == c->v) && !c->z)",
+    "(!((c->n == c->v) && !c->z))",
+    "(1)",
+    "(1)",
+];
+
 pub trait Code {
     fn in_code(&self, address: u64) -> bool;
     fn word(&self, address: u64) -> Option<u32>;
@@ -93,6 +112,120 @@ impl<'a, C: Code> Lifter<'a, C> {
         (body, labels)
     }
 
+    /// C for one discovered function. This is the plain control-flow emission;
+    /// the flag, frame and local-register transforms follow separately.
+    pub fn emit_function(&self, entry: u64, texts: &[String]) -> String {
+        let Some(body) = self.funcs.get(&entry) else {
+            return String::new();
+        };
+        let labels = &self.labels[&entry];
+        let mut out = vec![format!(
+            "void f_{entry:08x}(Ctx *__restrict A64_NOESC c) {{"
+        )];
+        let pcs: Vec<u64> = body.keys().copied().collect();
+        for (index, pc) in pcs.iter().copied().enumerate() {
+            let kind = body[&pc];
+            let word = self.code.word(pc).unwrap_or(0);
+            if labels.contains(&pc) || (pc == entry && labels.contains(&entry)) {
+                out.push(format!("L_{pc:08x}:;"));
+            }
+            let mut falls = true;
+            match kind {
+                Kind::Op => {
+                    let text = texts.get(index).map(String::as_str).unwrap_or("");
+                    if text.is_empty() {
+                        out.push(format!("a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"));
+                        falls = false;
+                    } else {
+                        out.push(text.trim_end_matches('\n').to_owned());
+                    }
+                }
+                Kind::B(target) => {
+                    out.push(self.transfer(pc, target, body));
+                    falls = false;
+                }
+                Kind::BCond(target, cond) => {
+                    out.push(format!(
+                        "if {} {{ {} }}",
+                        COND[cond as usize],
+                        self.transfer(pc, target, body)
+                    ));
+                }
+                Kind::Cbz(target, reg, sf, nz) => {
+                    let value = if reg == 31 {
+                        "0".to_owned()
+                    } else if sf != 0 {
+                        format!("c->x[{reg}]")
+                    } else {
+                        format!("(uint32_t)c->x[{reg}]")
+                    };
+                    out.push(format!(
+                        "if ({value} {} 0) {{ {} }}",
+                        if nz != 0 { "!=" } else { "==" },
+                        self.transfer(pc, target, body)
+                    ));
+                }
+                Kind::Tbz(target, reg, bit, nz) => {
+                    let value = if reg == 31 {
+                        "0".to_owned()
+                    } else {
+                        format!("((c->x[{reg}] >> {bit}) & 1)")
+                    };
+                    out.push(format!(
+                        "if {}{value} {{ {} }}",
+                        if nz != 0 { "" } else { "!" },
+                        self.transfer(pc, target, body)
+                    ));
+                }
+                Kind::Bl(target) => {
+                    let next = pc + 4;
+                    if self.entries.contains(&target) {
+                        out.push(format!("c->x[30] = 0x{next:x}ULL; f_{target:08x}(c);"));
+                    } else {
+                        out.push(format!("a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"));
+                        falls = false;
+                    }
+                }
+                Kind::Blr(reg) => {
+                    out.push(format!(
+                        "{{ uint64_t _t = c->x[{reg}]; c->x[30] = 0x{:x}ULL; A64_ICALL(c, _t); }}",
+                        pc + 4
+                    ));
+                }
+                Kind::Ret(_) => {
+                    out.push("return;".to_owned());
+                    falls = false;
+                }
+                Kind::Br(reg) => {
+                    out.push(format!("A64_IJUMP(c, c->x[{reg}]); return;"));
+                    falls = false;
+                }
+                Kind::Svc(imm) => out.push(format!("a64_svc(c, {imm}u);")),
+                Kind::Trap => {
+                    out.push(format!("a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"));
+                    falls = false;
+                }
+                Kind::Isb => out.push("recomp_barrier();".to_owned()),
+                Kind::Ic => out.push("/* ic ivau: no self-modifying code */".to_owned()),
+            }
+            if falls && (index + 1 == pcs.len() || pcs[index + 1] != pc + 4) {
+                out.push(self.transfer(pc, pc + 4, body));
+            }
+        }
+        out.push("}".to_owned());
+        out.join("\n") + "\n"
+    }
+
+    fn transfer(&self, pc: u64, target: u64, body: &BTreeMap<u64, Kind>) -> String {
+        if body.contains_key(&target) && (!self.entries.contains(&target) || target == pc) {
+            format!("goto L_{target:08x};")
+        } else if self.entries.contains(&target) {
+            format!("TAILCALL(f_{target:08x});")
+        } else {
+            format!("a64_trap(c, 0x{target:x}ULL, 0); return;")
+        }
+    }
+
     pub fn json(&self) -> serde_json::Value {
         let instructions: usize = self.funcs.values().map(|body| body.len()).sum();
         serde_json::json!({
@@ -116,6 +249,26 @@ mod tests {
         fn word(&self, address: u64) -> Option<u32> {
             self.0.get((address / 4) as usize).copied()
         }
+    }
+
+    #[test]
+    fn emits_a_simple_function() {
+        let words = vec![0xD503_201F, 0x9100_0000, 0xD65F_03C0];
+        let mock = Mock(words);
+        let mut lifter = Lifter::new(&mock, [0]);
+        lifter.discover();
+        let items: Vec<(u64, u32)> = lifter.funcs[&0]
+            .iter()
+            .map(|(pc, _)| (*pc, mock.word(*pc).unwrap()))
+            .collect();
+        let Ok((texts, _)) = crate::emitter::translate(&items) else {
+            return;
+        };
+        let text = lifter.emit_function(0, &texts);
+        assert!(text.starts_with("void f_00000000(Ctx"));
+        assert!(text.contains("/* nop/hint */"));
+        assert!(text.contains("return;"));
+        assert!(text.ends_with("}\n"));
     }
 
     #[test]
