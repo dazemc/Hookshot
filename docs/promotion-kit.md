@@ -1,21 +1,24 @@
 # Promotion kit
 
-Ready-to-paste posts for the Rust/Flutter builder. The GitHub announcement and the upstream reference PR are already
-live:
+Ready-to-paste posts for the Rust/Flutter builder. The GitHub announcement is live and the upstream reference PR is
+open:
 
 - Announcement: https://github.com/dazemc/Hookshot-rs/discussions/8
 - Upstream reference PR: https://github.com/NotRexed/Hookshot/pull/2951
 - Benchmark: https://github.com/dazemc/Hookshot-rs/blob/main/docs/build-performance-report.md
 - Good first issues: https://github.com/dazemc/Hookshot-rs/blob/main/docs/good-first-issues.md
+- Current release: [v2.2.0-rs.10](https://github.com/dazemc/Hookshot-rs/releases/tag/v2.2.0-rs.10) (pre-release,
+  2026-11-12)
 
 **Rules for every post:** no game files, keys, ROM links or download instructions; say "bring your own supported
 dump"; do not claim Nintendo affiliation; do not mention DLSS 5. Static recompilation is not emulation, but some
-communities treat both as piracy-adjacent, so read each community's rules before posting.
+communities treat both as piracy-adjacent, so read each community's rules before posting. If you post after a newer
+tag, replace `v2.2.0-rs.10` with it.
 
 ## One-line pitch
 
-> Hookshot-rs is a Rust + Flutter builder for the Ocarina of Time (Switch 2) static recompilation: every build stage
-> is Rust, the app never invokes Python, and a first build is 15–30 minutes instead of 45–60.
+> Hookshot-rs is a Rust + Flutter builder for the Ocarina of Time (Switch 2) static recompilation: every stage the
+> app runs is Rust, the app never invokes Python, and a first build is 15–30 minutes instead of 45–60.
 
 ## r/rust
 
@@ -29,8 +32,8 @@ builder is Python. This fork replaces every stage the app runs with Rust: NUP ex
 chunking and patches, compile planning, host and Vulkan links, packaging, button-prompt generation, shader census and
 prepare.
 
-The Flutter desktop app calls only the Rust engine. The remaining Python is release tooling, the legacy nx2/ builder
-and the pipeline-state asset merge; none is on the app's path.
+The Flutter desktop app calls only the Rust engine. The remaining Python is release tooling, the legacy `nx2/` and
+`builder/py` builders and the pipeline-state asset merge; none is on the app's path.
 
 Build-time numbers on the reference PC (Ryzen 9 5950X, 32 threads, 15.5 GiB, f2fs RAID 0):
 - first build: 15-30 min typical, 12-16 min on this PC (Python path: 36:17 measured, 45-60 min reported)

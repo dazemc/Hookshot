@@ -1,7 +1,8 @@
 # Good first issues
 
-These are small, game-free tasks that make the Rust/Flutter builder better without needing a game dump. Pick one, claim it on the GitHub issue, branch from `main`, and open a PR with the checklist in
-[`.github/PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md).
+These are small, game-free tasks that make the Rust/Flutter builder better without needing a game dump. Pick one,
+claim it on the GitHub issue, branch from `main` of [dazemc/Hookshot-rs](https://github.com/dazemc/Hookshot-rs), and
+open a PR with the checklist in [`.github/PULL_REQUEST_TEMPLATE.md`](../.github/PULL_REQUEST_TEMPLATE.md).
 
 If you want a task not listed here, look at the open issues labelled `good first issue` and `help wanted`, or the
 [workflow](workflow.md) for the priority rules. Never attach game files, keys or generated game data.
@@ -18,13 +19,14 @@ repository's policy requires it.
 **Acceptance:** the workflow is actionlint-clean, a warm run restores the cache, a lockfile change misses it, and
 the Linux and Windows jobs still pass.
 
-## 2. Check that every `RX_`/`HOS_` switch is documented
+## 2. Check that every `RX_`/`HOS_`/`HOOKSHOT_` switch is documented
 
-**Files:** new test under `builder/rust/tests/` (or `tests/`), `docs/development.md`
+**Files:** new test under `builder/rust/tests/` (or `tests/`), `docs/development.md`, `CONTRIBUTING.md`
 
-The renderer and runtime read switches with `getenv("RX_...")` and `getenv("HOS_...")` in `gpu/vk/` and `host/`.
-Add a game-free source check that scans those calls and fails when a switch is missing from the switch table in
-`docs/development.md`. Keep a small allowlist for internal/test-only names and explain each entry.
+The renderer and runtime read switches with `getenv("RX_...")` and `getenv("HOS_...")` in `gpu/vk/` and `host/`;
+the builder and engine read `std::env::var("HOOKSHOT_...")` in `builder/rust/`. Add a game-free source check that
+scans those calls and fails when a switch is missing from the switch tables in `docs/development.md` and
+`CONTRIBUTING.md`. Keep a small allowlist for internal/test-only names and explain each entry.
 
 **Acceptance:** the test fails on a deliberately undocumented switch, passes on the current tree, and runs in
 `cargo test --workspace`.
@@ -41,15 +43,17 @@ activation.
 **Acceptance:** `flutter test` and `flutter analyze` pass; the tests cover the home, files, options and ready
 screens; no mouse is needed to start a build.
 
-## 4. Add a link checker for the README and docs
+## 4. Check Markdown anchors, not just file targets
 
-**Files:** new test under `builder/rust/tests/` or a small script under `tests/`, `.github/workflows/`
+**Files:** `builder/rust/tests/docs.rs`, `readme.md`, `docs/`
 
-Relative links in `readme.md`, `CONTRIBUTING.md` and `docs/` break when files move. Add a game-free check that
-resolves every relative Markdown link and fails on a missing target, with an allowlist for external URLs and
-anchors that are generated at runtime.
+`docs.rs` now resolves every relative Markdown link's file target, so a moved file fails `cargo test --workspace`.
+It does not check the `#fragment`, and several links to the README still name sections that no longer exist. Add
+fragment checking with a GitHub-style slugger and an allowlist for headings generated at runtime, then fix the links
+it finds.
 
-**Acceptance:** the check passes on `main`, fails on a deliberately broken link, and is wired into CI.
+**Acceptance:** the check fails on a deliberately broken anchor, passes on the current tree, and runs in the docs
+workflow (`.github/workflows/docs.yml`).
 
 ## 5. Cover version-policy edge cases in Rust
 

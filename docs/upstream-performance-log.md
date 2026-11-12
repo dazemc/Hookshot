@@ -2,7 +2,8 @@
 
 Every non-merge commit on `NotRexed/Hookshot` whose subject starts with `perf`, newest first, grouped by area. The change is the commit subject; the effect is the first measured number or outcome stated in its description. The hash links to the full change.
 
-**76 performance commits.**
+**76 performance commits as of 2026-11-12.** This is upstream's ledger; this fork's parity commits have their own
+hashes and are not in it.
 
 ## Build, lift, NUP and preparation (11)
 
