@@ -949,6 +949,10 @@ fn build_at_for(
     options: &Options,
     toolchain: Option<Result<crate::host_build::MingwToolchain, String>>,
 ) -> Result<Value, VkBuildError> {
+    // (clang on Windows opens a \\?\C:\... source but does not resolve its
+    // quoted includes beside it; the build uses the plain path)
+    let root = &crate::kit::plain(root.to_path_buf());
+    let work = &crate::kit::plain(work.to_path_buf());
     // (a Windows cross build must not put this PC's /usr/include in front of
     // llvm-mingw's headers: Linux's stdio.h and stdint.h do not belong in a
     // PE compile. Environment names and the CPM cache still supply them)

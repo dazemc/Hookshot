@@ -149,6 +149,8 @@ create_zip() { # out folder
     out=$(posix_path "$1")
     folder=$(posix_path "$2")
     mkdir -p "$(dirname "$out")"
+    # (zip runs after cd, so a relative dist/ path must become absolute)
+    out=$(cd "$(dirname "$out")" && pwd)/$(basename "$out")
     rm -f "$out"
     if command -v zip >/dev/null 2>&1; then
         (cd "$folder" && zip -qr "$out" .)

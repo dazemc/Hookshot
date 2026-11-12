@@ -6,6 +6,22 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+/// A plain path for a compiler: `fs::canonicalize` returns a Windows
+/// `\\?\C:\...` verbatim path, and clang reads such a source file but
+/// does not look beside it for `#include "..."` (nor does tar read it as a
+/// base folder). The path is the same file without the prefix; a verbatim
+/// UNC path becomes an ordinary `\\server\share` path.
+pub fn plain(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path
+}
+
 /// The folder the build reads its sources from: `HOOKSHOT_TOOLS` when the
 /// packaged builder sets it, else the folder beside the executable that holds
 /// `third_party/a64-kit` (the app bundle has its sources in `tools/`), else
@@ -13,7 +29,7 @@ use serde_json::{Value, json};
 pub fn root() -> PathBuf {
     if let Some(folder) = std::env::var_os("HOOKSHOT_TOOLS").filter(|value| !value.is_empty()) {
         let folder = PathBuf::from(folder);
-        return folder.canonicalize().unwrap_or(folder);
+        return plain(folder.canonicalize().unwrap_or(folder));
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(folder) = exe.parent()
@@ -25,7 +41,7 @@ pub fn root() -> PathBuf {
         }
     }
     let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    checkout.canonicalize().unwrap_or(checkout)
+    plain(checkout.canonicalize().unwrap_or(checkout))
 }
 
 pub fn kit() -> PathBuf {
@@ -131,5 +147,21 @@ mod tests {
         }
         assert_eq!(game_modules(&folder), vec!["main", "subsdk2", "sdk"]);
         let _ = fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn verbatim_windows_paths_lose_their_prefix() {
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\C:\Games\Hookshot")),
+            PathBuf::from(r"C:\Games\Hookshot")
+        );
+        assert_eq!(
+            plain(PathBuf::from(r"\\?\UNC\server\share\build")),
+            PathBuf::from(r"\\server\share\build")
+        );
+        assert_eq!(
+            plain(PathBuf::from("/home/daze/Hookshot")),
+            PathBuf::from("/home/daze/Hookshot")
+        );
     }
 }
