@@ -196,6 +196,9 @@ pub fn dispatch(text: &str) -> String {
                 json!({"reads": read, "writes": written, "dropped": text::drop_flag_stores(&text, dead)}),
             )
         }
+        "lift.vset" => {
+            Ok(json!({"text": text::widen_vstores(&string(&request, "text").unwrap_or_default())}))
+        }
         "lift.reg_writes" => {
             Ok(json!({"mask": text::reg_writes(&string(&request, "text").unwrap_or_default())}))
         }

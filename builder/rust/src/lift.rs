@@ -837,10 +837,11 @@ impl<'a, C: Code> Lifter<'a, C> {
                         ));
                         falls = false;
                     } else {
+                        let text = crate::text::widen_vstores(text);
                         let text = dead
                             .get(&pc)
-                            .map(|mask| crate::text::drop_flag_stores(text, *mask))
-                            .unwrap_or_else(|| text.to_owned());
+                            .map(|mask| crate::text::drop_flag_stores(&text, *mask))
+                            .unwrap_or(text);
                         let text = crate::text::stack_stores(&text);
                         out.push(text.trim_end_matches('\n').to_owned());
                     }

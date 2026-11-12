@@ -67,6 +67,46 @@ pub fn stack_stores(text: &str) -> String {
 }
 
 /// Guest registers an instruction's C may write (bit n for x[n]).
+pub fn widen_vstores(text: &str) -> String {
+    if !text.contains("c->vreg[") || std::env::var_os("A64_NO_VSET").is_some() {
+        return text.to_owned();
+    }
+    let low = Regex::new(r"c->vreg\[(\d+)\]\[0\]=0; ?c->vreg\[(\d+)\]\[1\]=0; ?memcpy\(c->vreg\[(\d+)\],(&?\w+),([48])\);").unwrap();
+    let text = low
+        .replace_all(text, |c: &regex::Captures| {
+            if c[1] != c[2] || c[1] != c[3] {
+                return c[0].to_owned();
+            }
+            format!("a64_vset_lo(c->vreg[{}],{},{});", &c[1], &c[4], &c[5])
+        })
+        .into_owned();
+    let pair =
+        Regex::new(r"c->vreg\[(\d+)\]\[0\] ?= ?([^;]+); ?c->vreg\[(\d+)\]\[1\] ?= ?([^;]+);")
+            .unwrap();
+    let text = pair
+        .replace_all(&text, |c: &regex::Captures| {
+            if c[1] != c[3] {
+                return c[0].to_owned();
+            }
+            let d = &c[1];
+            let lo = &c[2];
+            let hi = &c[4];
+            if hi.trim() == "0" {
+                return format!("a64_vset64(c->vreg[{d}],{lo});");
+            }
+            if hi.contains(&format!("c->vreg[{d}][0]")) || lo.contains('(') || hi.contains('(') {
+                return c[0].to_owned();
+            }
+            format!("a64_vset128(c->vreg[{d}],{lo},{hi});")
+        })
+        .into_owned();
+    let full = Regex::new(r"memcpy\(c->vreg\[(\d+)\],(\w+),16\);").unwrap();
+    full.replace_all(&text, |c: &regex::Captures| {
+        format!("a64_vst16(c->vreg[{}],{});", &c[1], &c[2])
+    })
+    .into_owned()
+}
+
 pub fn reg_writes(text: &str) -> u32 {
     let bytes = text.as_bytes();
     let mut mask = 0u32;
@@ -259,6 +299,26 @@ mod tests {
     fn sync_markers_are_removed() {
         assert_eq!(strip_sync("a\x01C3\x01b\x01L3\x01c"), "abc");
         assert_eq!(strip_sync("plain"), "plain");
+    }
+
+    #[test]
+    fn vector_stores_are_widened() {
+        assert_eq!(
+            widen_vstores("c->vreg[8][0]=0; c->vreg[8][1]=0; memcpy(c->vreg[8],&x,4);"),
+            "a64_vset_lo(c->vreg[8],&x,4);"
+        );
+        assert_eq!(
+            widen_vstores("c->vreg[8][0]=1; c->vreg[8][1]=0;"),
+            "a64_vset64(c->vreg[8],1);"
+        );
+        assert_eq!(
+            widen_vstores("c->vreg[8][0]=1; c->vreg[8][1]=2;"),
+            "a64_vset128(c->vreg[8],1,2);"
+        );
+        assert_eq!(
+            widen_vstores("memcpy(c->vreg[3],x,16);"),
+            "a64_vst16(c->vreg[3],x);"
+        );
     }
 
     #[test]
