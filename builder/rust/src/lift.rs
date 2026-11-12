@@ -514,6 +514,23 @@ impl<'a, C: Code> Lifter<'a, C> {
         targets
     }
 
+    /// Where a hoisted table register is resolved: at the BR, unless the
+    /// window writes the register again after the table load (a reused
+    /// register, nx2/lift_fixes.py's table_load) -- then at the load, where
+    /// the register still holds the table.
+    fn table_lookup_pc(&self, load_pc: u64, br_pc: u64, reg: u8) -> u64 {
+        let mut pc = load_pc.wrapping_add(4);
+        while pc < br_pc {
+            if let Some(word) = self.code.word(pc) {
+                if Self::writes(word, reg) {
+                    return load_pc;
+                }
+            }
+            pc += 4;
+        }
+        br_pc
+    }
+
     /// A direct bounded jump table: recognise `adrp/add` table setups and
     /// `ldr/ldrsw` entries in the window before the BR. Table addresses that
     /// are only known through the CFG are left to jt_missing.
@@ -527,6 +544,7 @@ impl<'a, C: Code> Lifter<'a, C> {
                 index: u8,
                 size: u8,
                 signed: bool,
+                pc: u64,
             },
             Add {
                 left: Box<V>,
@@ -608,6 +626,7 @@ impl<'a, C: Code> Lifter<'a, C> {
                             index: m,
                             size,
                             signed: opc >= 2,
+                            pc,
                         })
                     } else {
                         None
@@ -681,6 +700,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             index,
             size,
             signed,
+            pc: load_pc,
         } = load
         else {
             self.stats.insert(
@@ -689,18 +709,21 @@ impl<'a, C: Code> Lifter<'a, C> {
             );
             return self.adr_targets(br_pc, reg);
         };
+        let mut at_load = false;
         let tables: Vec<u64> = match *table {
             V::Const(table) => vec![table],
-            V::Reg(reg) => {
+            V::Reg(treg) => {
+                let at = self.table_lookup_pc(load_pc, br_pc, treg);
+                at_load = at != br_pc;
                 let mut tables: Vec<u64> = self
-                    .reaching(br_pc, Loc::Reg(reg), 50000, 0)
+                    .reaching(at, Loc::Reg(treg), 50000, 0)
                     .into_iter()
                     .collect();
                 if tables.is_empty() {
-                    tables.extend(self.function_constants(br_pc, reg));
+                    tables.extend(self.function_constants(at, treg));
                 }
                 if tables.is_empty() {
-                    if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
+                    if let Some(hoisted) = self.hoisted_constant(at, treg, 1024) {
                         tables.push(hoisted);
                     }
                 }
@@ -709,16 +732,18 @@ impl<'a, C: Code> Lifter<'a, C> {
                 tables
             }
             V::Add { left, right, .. } => match (*left, *right) {
-                (V::Reg(reg), V::Const(offset)) => {
+                (V::Reg(treg), V::Const(offset)) => {
+                    let at = self.table_lookup_pc(load_pc, br_pc, treg);
+                    at_load = at != br_pc;
                     let mut tables: Vec<u64> = self
-                        .reaching(br_pc, Loc::Reg(reg), 50000, 0)
+                        .reaching(at, Loc::Reg(treg), 50000, 0)
                         .into_iter()
                         .collect();
                     if tables.is_empty() {
-                        tables.extend(self.function_constants(br_pc, reg));
+                        tables.extend(self.function_constants(at, treg));
                     }
                     if tables.is_empty() {
-                        if let Some(hoisted) = self.hoisted_constant(br_pc, reg, 1024) {
+                        if let Some(hoisted) = self.hoisted_constant(at, treg, 1024) {
                             tables.push(hoisted);
                         }
                     }
@@ -771,6 +796,12 @@ impl<'a, C: Code> Lifter<'a, C> {
         };
         self.stats
             .insert(key, self.stats.get(key).unwrap_or(&0) + 1);
+        if at_load {
+            self.stats.insert(
+                "jt_table_reg_reused",
+                self.stats.get("jt_table_reg_reused").unwrap_or(&0) + 1,
+            );
+        }
         Some(targets)
     }
 
@@ -1719,6 +1750,129 @@ mod tests {
                 unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast::<u8>().add(at), size) };
             Some(bytes)
         }
+    }
+
+    fn nops(bytes: usize) -> Vec<u32> {
+        vec![0xD503_201F; bytes / 4]
+    }
+
+    fn put(words: &mut [u32], address: u64, word: u32) {
+        words[(address / 4) as usize] = word;
+    }
+
+    #[test]
+    fn table_base_rewritten_after_the_load_resolves_at_the_load() {
+        // adrp/add x10 = table; b dispatch; ...; adr x8 = targets;
+        // ldrh w9, [x10, x0, lsl #1]; add x8 = x8 + w9 * 4;
+        // adrp/add x10 = a string (a second constant assigned to x10); br x8.
+        let mut words = nops(0x400);
+        put(&mut words, 0x00, 0x9000_000A); // adrp x10, page 0
+        put(&mut words, 0x04, 0x9108_014A); // add  x10, x10, #0x200
+        put(&mut words, 0x08, 0x1400_001E); // b    0x80
+        put(&mut words, 0xD8, 0x1000_0168); // adr  x8, 0x104
+        put(&mut words, 0xE0, 0x7860_7949); // ldrh w9, [x10, x0, lsl #1]
+        put(&mut words, 0xE4, 0x8B09_0908); // add  x8, x8, x9, lsl #2
+        put(&mut words, 0xE8, 0xB000_000A); // adrp x10, page 1
+        put(&mut words, 0xEC, 0x9100_414A); // add  x10, x10, #0x10
+        put(&mut words, 0x100, 0xD61F_0100); // br   x8
+        put(&mut words, 0x104, 0xD65F_03C0); // ret
+        put(&mut words, 0x114, 0xD65F_03C0);
+        put(&mut words, 0x124, 0xD65F_03C0);
+        put(&mut words, 0x134, 0xD65F_03C0);
+        words[0x200 / 4] = 0x0004_0000; // u16 entries 0, 4
+        words[0x204 / 4] = 0x000C_0008; // u16 entries 8, 12
+        let mock = Mock(words);
+        let mut lift = Lifter::new(&mock, [0]);
+        lift.eh_starts = vec![0, 0x300];
+        let targets = lift.jump_table(0x100, 8).expect("table");
+        assert_eq!(targets, vec![0x104, 0x114, 0x124, 0x134]);
+    }
+
+    #[test]
+    fn table_base_set_in_the_window_survives_a_reuse_after_the_load() {
+        // The shape of the seven tables nx2/lift_fixes.py's table_load sees in
+        // this game: the base is set in the window, so the symbolic load keeps
+        // the address even though the register is reused before the BR.
+        let mut words = nops(0x400);
+        put(&mut words, 0x80, 0x9000_000A); // adrp x10, page 0
+        put(&mut words, 0x84, 0x9108_014A); // add  x10, x10, #0x200
+        put(&mut words, 0xD8, 0x1000_0168); // adr  x8, 0x104
+        put(&mut words, 0xE0, 0x7860_7949); // ldrh w9, [x10, x0, lsl #1]
+        put(&mut words, 0xE4, 0x8B09_0908); // add  x8, x8, x9, lsl #2
+        put(&mut words, 0xE8, 0xB000_000A); // adrp x10, page 1
+        put(&mut words, 0xEC, 0x9100_414A); // add  x10, x10, #0x10
+        put(&mut words, 0x100, 0xD61F_0100); // br   x8
+        put(&mut words, 0x104, 0xD65F_03C0);
+        put(&mut words, 0x114, 0xD65F_03C0);
+        put(&mut words, 0x124, 0xD65F_03C0);
+        put(&mut words, 0x134, 0xD65F_03C0);
+        words[0x200 / 4] = 0x0004_0000;
+        words[0x204 / 4] = 0x000C_0008;
+        let mock = Mock(words);
+        let mut lift = Lifter::new(&mock, [0]);
+        lift.eh_starts = vec![0, 0x300];
+        assert_eq!(
+            lift.jump_table(0x100, 8),
+            Some(vec![0x104, 0x114, 0x124, 0x134])
+        );
+        assert_eq!(lift.stats.get("jt_table_reg_reused"), None);
+    }
+
+    #[test]
+    fn an_adr_hoisted_table_is_found_by_the_function_scan() {
+        // rtld+0x8a0: adr x25, table before the loop; ldrb; adr x9, targets;
+        // add; br x9. The setup is outside the 32-instruction window.
+        let mut words = nops(0x400);
+        put(&mut words, 0x00, 0x1000_1019); // adr  x25, 0x200
+        put(&mut words, 0xE0, 0x3868_6B2A); // ldrb w10, [x25, x8]
+        put(&mut words, 0xE4, 0x1000_0109); // adr  x9, 0x104
+        put(&mut words, 0xE8, 0x8B0A_0929); // add  x9, x9, x10, lsl #2
+        put(&mut words, 0x100, 0xD61F_0120); // br   x9
+        put(&mut words, 0x104, 0xD65F_03C0);
+        put(&mut words, 0x114, 0xD65F_03C0);
+        put(&mut words, 0x124, 0xD65F_03C0);
+        put(&mut words, 0x134, 0xD65F_03C0);
+        words[0x200 / 4] = 0x0C08_0400; // u8 entries 0, 4, 8, 12
+        words[0x204 / 4] = 0x0000_FFFF; // then out of range
+        let mock = Mock(words);
+        let mut lift = Lifter::new(&mock, [0]);
+        lift.eh_starts = vec![0, 0x300];
+        assert_eq!(
+            lift.jump_table(0x100, 9),
+            Some(vec![0x104, 0x114, 0x124, 0x134])
+        );
+    }
+
+    #[test]
+    fn an_authenticated_return_ends_the_symbolic_window() {
+        // main+0x22b9b84: the table base is set before a retab, with a
+        // different adrp/add pair after the branch away from it. Without the
+        // window cut the later pair is the table and no target is in range.
+        let mut words = nops(0x400);
+        put(&mut words, 0x00, 0x9000_0000); // adrp x0, page 0
+        put(&mut words, 0x04, 0x9108_0000); // add  x0, x0, #0x200
+        put(&mut words, 0x08, 0x1400_000E); // b    0x40
+        put(&mut words, 0x0C, 0xB000_0000); // adrp x0, page 1
+        put(&mut words, 0x10, 0x9100_4000); // add  x0, x0, #0x10
+        put(&mut words, 0x14, 0xD65F_0FFF); // retab
+        put(&mut words, 0x40, 0x1000_0628); // adr  x8, 0x104
+        put(&mut words, 0x60, 0x7861_7809); // ldrh w9, [x0, x1, lsl #1]
+        put(&mut words, 0x64, 0x8B09_0908); // add  x8, x8, x9, lsl #2
+        put(&mut words, 0x68, 0xD61F_0100); // br   x8
+        put(&mut words, 0x104, 0xD65F_03C0);
+        put(&mut words, 0x114, 0xD65F_03C0);
+        put(&mut words, 0x124, 0xD65F_03C0);
+        put(&mut words, 0x134, 0xD65F_03C0);
+        words[0x200 / 4] = 0x0004_0000; // u16 entries 0, 4
+        words[0x204 / 4] = 0x000C_0008; // u16 entries 8, 12
+        words[0x208 / 4] = 0x0000_FFFF; // then out of range
+        let mock = Mock(words);
+        let mut lift = Lifter::new(&mock, [0]);
+        lift.eh_starts = vec![0, 0x300];
+        assert_eq!(
+            lift.jump_table(0x68, 8),
+            Some(vec![0x104, 0x114, 0x124, 0x134])
+        );
     }
 
     #[test]
