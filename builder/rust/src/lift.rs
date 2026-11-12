@@ -1218,7 +1218,11 @@ pub fn write_json(
         .copied()
         .take(if limit == 0 { usize::MAX } else { limit })
         .collect();
-    let declarations: String = entries
+    let mut declared = entries.clone();
+    declared.extend(lift.hooks.keys().copied());
+    declared.sort_unstable();
+    declared.dedup();
+    let declarations: String = declared
         .iter()
         .map(|entry| format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"))
         .collect();
