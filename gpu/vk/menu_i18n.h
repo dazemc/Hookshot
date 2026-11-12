@@ -1,7 +1,7 @@
-// The Insert menu's translations (vk_menu_i18n.cpp): each English text of vk_menu.cpp and its text in each language.
-// A text with printf conversions (%s, %d ...) also matches the texts made from it. Place and item names stay English.
-// A language's name is its own. Machine-made translations, to be checked by speakers of each language: corrections are
-// one line each here.
+// The Insert menu's translations (vk_menu_i18n.cpp): each English text of vk_menu.cpp, the start-up screen and FPS counter
+// it draws (vk_progress.h, fps_stats.h) and the pieces vk_menu_i18n.cpp puts together, in each language. A text with printf
+// conversions (%s, %d ...) also matches the texts made from it. Place and item names stay English. A language's name is its
+// own. Machine-made translations, to be checked by speakers of each language: corrections are one line each here.
 #pragma once
 
 namespace mkwvk::menu_i18n {

@@ -1,6 +1,7 @@
 // (hookshot) The Insert menu's languages (vk_menu_i18n.h).
 //
-// menu_i18n.h holds one table a language: each English text of vk_menu.cpp and its translation. A text is looked up whole;
+// menu_i18n.h holds one table a language: each English text of vk_menu.cpp, the start-up screen and FPS counter it draws, and
+// the pieces below, with its translation. A text is looked up whole;
 // a text the menu made with snprintf is matched against the table's texts that hold printf conversions ("%d of %d") and
 // put together from the translated format, its %s parts looked up in turn. Place and item names are not in the tables (the
 // official translated names are not checked yet): they stay English. The table's pointers live for the process; a text
