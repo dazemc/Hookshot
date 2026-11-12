@@ -1154,15 +1154,22 @@ pub fn write_json(
     lift.discover();
     let out = std::path::Path::new(out);
     std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let mut chunk = String::from("#include \"a64.h\"\n");
+    let entries: Vec<u64> = lift
+        .funcs
+        .keys()
+        .copied()
+        .take(if limit == 0 { usize::MAX } else { limit })
+        .collect();
+    let declarations: String = entries
+        .iter()
+        .map(|entry| format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"))
+        .collect();
+    let mut chunk = format!("#include \"a64.h\"\n{declarations}");
     let mut size = 0usize;
     let mut file = 0usize;
     let mut files = Vec::new();
     let mut written = 0usize;
-    for entry in lift.funcs.keys().copied() {
-        if limit != 0 && written >= limit {
-            break;
-        }
+    for entry in entries {
         let body = &lift.funcs[&entry];
         let items: Vec<(u64, u32)> = body
             .keys()
@@ -1176,9 +1183,6 @@ pub fn write_json(
             .map(|pc| by_pc.get(pc).cloned().unwrap_or_default())
             .collect();
         let text = lift.emit_function(entry, &texts);
-        if !chunk.contains(&format!("void f_{entry:08x}(Ctx")) {
-            chunk.push_str(&format!("void f_{entry:08x}(Ctx *A64_NOESC);\n"));
-        }
         chunk.push_str(&text);
         size += text.len();
         written += 1;
@@ -1187,7 +1191,7 @@ pub fn write_json(
             std::fs::write(&path, &chunk).map_err(|e| format!("{}: {e}", path.display()))?;
             files.push(path.to_string_lossy().into_owned());
             file += 1;
-            chunk = String::from("#include \"a64.h\"\n");
+            chunk = format!("#include \"a64.h\"\n{declarations}");
             size = 0;
         }
     }

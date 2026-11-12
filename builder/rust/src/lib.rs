@@ -281,6 +281,10 @@ pub fn dispatch(text: &str) -> String {
                 .get("lift_limit")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize,
+            request
+                .get("compile")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         ),
         "build.check" => stage::check_json(
             string(&request, "nup").as_deref(),
