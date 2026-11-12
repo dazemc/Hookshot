@@ -74,20 +74,17 @@ String configPath() {
 String toolsRoot() {
   final tools = Platform.environment['HOOKSHOT_TOOLS'];
   if (tools != null && tools.isNotEmpty) return tools;
-  // Walk up from the running binary until nx2/make_game.py is found
+  // Walk up from the running binary until the Rust builder is found
   // (debug bundle, test runner and packaged layouts all differ).
   var dir = Directory(File(Platform.script.toFilePath()).parent.path);
   for (var i = 0; i < 10; i++) {
-    if (File('${dir.path}/nx2/make_game.py').existsSync()) return dir.path;
+    if (File('${dir.path}/builder/rust/Cargo.toml').existsSync()) return dir.path;
     final parent = dir.parent;
     if (parent.path == dir.path) break;
     dir = parent;
   }
   return Directory.current.path;
 }
-
-/// nx2/make_game.py and friends live here.
-String nxRoot() => '${toolsRoot()}/nx2';
 
 final _repositoryPattern = RegExp(r'^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$');
 
@@ -104,36 +101,6 @@ String repository({String? override, String? root}) {
     } catch (_) {}
   }
   return defaultRepository;
-}
-
-/// The Python running make_game.py: the packaged one when present, else the checkout's deps one, else PATH.
-String builderPython() {
-  if (Platform.isWindows) {
-    final local = Platform.environment['LOCALAPPDATA'] ?? '';
-    for (final path in [
-      '${toolsRoot()}/python/python.exe', // (the packaged builder's own Python)
-      '${toolsRoot()}/tools/python/python.exe',
-      if (local.isNotEmpty) '$local/Programs/Python/Python313/python.exe',
-      if (local.isNotEmpty) '$local/Programs/Python/Python312/python.exe',
-      if (local.isNotEmpty) '$local/Programs/Python/Python311/python.exe',
-      if (local.isNotEmpty) '$local/Programs/Python/Python310/python.exe',
-    ]) {
-      if (File(path).existsSync()) return path;
-    }
-    // (the launcher may point at the right Python when python.exe is only
-    // Windows' Store alias)
-    try {
-      final py = Process.runSync('py', ['-3', '-c', 'import sys; print(sys.executable)']);
-      final found = (py.stdout as String).trim();
-      if (py.exitCode == 0 && found.isNotEmpty && File(found).existsSync()) return found;
-    } catch (_) {}
-    return 'python.exe';
-  }
-  final packaged = '${toolsRoot()}/usr/python/bin/python3';
-  if (File(packaged).existsSync()) return packaged;
-  final deps = '${toolsRoot()}/build-linux/deps/python/bin/python3';
-  if (File(deps).existsSync()) return deps;
-  return 'python3';
 }
 
 Map<String, String> loadConfig() {

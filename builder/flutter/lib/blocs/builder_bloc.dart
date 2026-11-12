@@ -542,16 +542,6 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     if (ns is BuilderForm) emit(_refreshedForm(ns));
   }
 
-  String? _jobsFlag() {
-    final hookshotJobs = Platform.environment['HOOKSHOT_JOBS'];
-    if (hookshotJobs != null) {
-      final n = int.tryParse(hookshotJobs);
-      if (n == null || n < 1) return null; // validated by UI with an error dialog
-      return '$n';
-    }
-    return null;
-  }
-
   Future<void> _onBuild(BuildRequested e, Emitter<BuilderState> emit) async {
     final s = state;
     if (s is! BuilderForm) return;
@@ -563,13 +553,10 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     }
     // update-game / update-builder modes are handled by UpdateBloc via the UI.
     final out = _expand(s.out);
-    late final List<String> src;
     if (s.kind == 'nup') {
       if (!File(s.nup).existsSync()) return;
-      src = ['--nup', s.nup];
     } else {
       if (!Directory(s.romfs).existsSync() || !Directory(s.exefs).existsSync()) return;
-      src = ['--romfs', s.romfs, '--exefs', s.exefs];
     }
     if (out.isEmpty) return;
     final free = cfg.freeGb(out);
@@ -581,7 +568,6 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       return;
     }
     final code = cfg.languages.firstWhere((l) => l.$2 == s.language, orElse: () => cfg.languages.first).$1;
-    final jobs = _jobsFlag();
     _cfg.updateAll((k, v) => v);
     _cfg['kind'] = s.kind;
     _cfg['nup'] = s.nup;
@@ -659,21 +645,12 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       );
       return;
     }
-    if (s.dlss) {
-      // The Python path has no DLSS route here anymore: stop with the typed
-      // error rather than building a folder without the DLSS the player asked
-      // for, or falling back to make_game.py.
-      const missing = RustEngineMissing(
-        'The Rust engine is missing: NVIDIA DLSS builds need it, and the builder no longer falls '
-        'back to make_game.py for them. Install Hookshot Builder again.',
-      );
-      emit(BuildFailed(missing.toString()));
-      return;
-    }
-    final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', ...src, '--out', out, '--language', code];
-    if (jobs != null) cmd.addAll(['--jobs', jobs]);
-    if (!s.prepare) cmd.add('--no-prepare-shaders');
-    _startProcess(emit, cmd, title: 'Building your game');
+    // No Python fallback: the Rust engine is the builder.
+    const missing = RustEngineMissing(
+      'The Rust engine is missing: builds need it, and the builder no longer falls back to make_game.py. '
+      'Install Hookshot Builder again.',
+    );
+    emit(BuildFailed(missing.toString()));
   }
 
   Future<void> _onMakeUpdate(MakeUpdateRequested e, Emitter<BuilderState> emit) async {
@@ -711,17 +688,12 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       );
       return;
     }
-    if (dlss) {
-      const missing = RustEngineMissing(
-        'The Rust engine is missing: updating a folder built with NVIDIA DLSS needs it, and the builder no '
-        'longer falls back to make_game.py for it. Install Hookshot Builder again.',
-      );
-      emit(BuildFailed(missing.toString()));
-      return;
-    }
-    final cmd = [cfg.builderPython(), '-I', '${cfg.nxRoot()}/make_game.py', '--update', e.folder];
-    if (!prepare) cmd.add('--no-prepare-shaders');
-    _startProcess(emit, cmd, title: 'Updating your game');
+    // No Python fallback: the Rust engine is the updater.
+    const missing = RustEngineMissing(
+      'The Rust engine is missing: updates need it, and the builder no longer falls back to make_game.py. '
+      'Install Hookshot Builder again.',
+    );
+    emit(BuildFailed(missing.toString()));
   }
 
   void _emitRunning(Emitter<BuilderState> emit, String title, String stageText) {
