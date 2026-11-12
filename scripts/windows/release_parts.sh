@@ -433,6 +433,10 @@ package() {
         cp -f "$a64" "$app/a64emit.dll"
     fi
     [ -f "$app/a64emit.dll" ] || say "warning: no a64emit.dll: the engine cannot translate a game"
+    # (the setup's builder_ready contract: a bundle missing one of these is not packaged as a working Builder)
+    for name in flutter_windows.dll data/icudtl.dat data/app.so hookshot_engine.exe hookshot_engine.dll; do
+        [ -f "$app/$name" ] || die "the Builder package has no $name (builder/setup/setup.c's builder_ready)"
+    done
     if [ -n "$setup" ]; then
         cp -f "$setup" "$app/HookshotBuilder-Setup.exe"
     fi

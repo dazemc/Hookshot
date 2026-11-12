@@ -98,6 +98,14 @@ fn an_incomplete_builder_is_repaired_instead_of_reused_or_launched() {
             && ready.contains("hookshot_engine.dll"),
         "the readiness contract must cover the Flutter runtime, its data folder and the Rust engine"
     );
+    let package = fs::read_to_string(repo.join("scripts/windows/release_parts.sh"))
+        .expect("scripts/windows/release_parts.sh");
+    assert!(
+        package.contains(
+            "for name in flutter_windows.dll data/icudtl.dat data/app.so hookshot_engine.exe hookshot_engine.dll"
+        ),
+        "packaging must refuse a bundle the setup's builder_ready would reject"
+    );
 
     let Some(cc) = compiler() else {
         eprintln!("skipping the setup readiness fixture: no C compiler (CC, cc, gcc or clang)");
