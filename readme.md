@@ -132,7 +132,7 @@ gains; those numbers are not in this table until it merges.
 | Builder services | `profiles.*`, `diagnostics`, `gamescope.command`, `build.cpu`, `build.toolchain`, `build.jobs`, `build.check`, `version.describe` | profiles list/add/rename/remove/export; diagnostics; gamescope; CPU, jobs and toolchain checks |
 | Saves | `saves.list`, `saves.import` | the app's save scan and import: emulator layouts, profile ids, backup to `oot-save-backups`, running-game and NX2navi guards, rollback |
 | Updates | `build.all` from `.hookshot_exefs` and `romfs` | a built folder keeps the game files an update needs |
-| DLSS | `build.all` with `dlss`, `build.ngx_fetch`, `build.ngx_install` | the SDK's headers, library and runtime, each checked against its SHA-256; the Linux backend is compiled and linked with NGX and DLSS's runtime is packaged in `<game folder>/ngx`. Frame Generation's runtime and the Windows DLL are in progress; DLSS 5 is not in the public SDK |
+| DLSS | `build.all` with `dlss`, `build.ngx_fetch`, `build.ngx_install` | the SDK's headers, library and runtime, each checked against its SHA-256; the Linux backend is compiled and linked with NGX and DLSS's runtime is packaged in `<game folder>/ngx`. Frame Generation's runtime and the Windows DLL are in progress |
 
 The prompt font is semantically identical to Python's, not byte-identical: the glyphs, outlines, cmap and hmtx match,
 while the CFF layout differs (37,360 bytes against Python's 33,452). `Common.blarc`, `ring.bin` and all five `hint.bin`
@@ -147,8 +147,9 @@ are byte-identical; `rsizetable.zs` has the same content with a different compre
 | Windows Vulkan DLL | The Rust engine links the Windows host, but `build.vk` still links only the Linux `hookshot_vk.so`; the Windows `hookshot_vk.dll` is still `nx2/build.py`'s. | in progress |
 | Prompt textures | The package writes the font, layouts, ring, hints and size table; `Common.bntx` and `prompts/<face>/textures.bin` are not generated, so the game keeps its own button textures. | not ported |
 | Release and AppImage packaging | `scripts/linux/appimage.sh`, `scripts/release_parts.py`, `scripts/make_setup_parts.py`; the AppImage still launches the Tk builder and the Windows package is still the .NET builder's. | not ported |
-| Flutter fallback | Default builds use Rust. If the Rust engine CLI is missing, a non-DLSS folder or update build still falls back to `make_game.py`; DLSS builds stop with a typed error. | fallback only |
-| DLSS 5 | Not available: NVIDIA has not published the DLSS 5 SDK; the public SDK is 310.9.16 (DLSS 4.5). | unavailable |
+
+Flutter itself calls no Python. A build or update with no Rust engine stops with a typed
+`RustEngineMissing` error instead of falling back to `make_game.py`.
 
 ### Still to come
 
@@ -162,8 +163,8 @@ are byte-identical; `rsizetable.zs` has the same content with a different compre
   branch the cached full lift measured 50.8 → 15.05 s, `.nup` read 94 → 46 s and shader census 4.02 → 3.08 s, with
   byte-identical output; it is not merged, so the table above is the verified baseline.
 
-Until the Windows Vulkan DLL and packaging stages land, those paths still use Python. Everything else in a Linux
-Flutter game build is Rust, DLSS included; the prompt textures are the one asset it does not write.
+The release/AppImage packaging still uses Python. Everything in a Linux Flutter game build is Rust, DLSS included,
+and Flutter does not invoke Python; the prompt textures are the one asset it does not write.
 
 ## Project status
 
