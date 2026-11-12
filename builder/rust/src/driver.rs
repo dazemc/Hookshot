@@ -20,6 +20,32 @@ fn take_function(source: &str, signature: &str) -> Option<String> {
     Some(source[a..b].to_owned())
 }
 
+fn stamp_one(text: &mut String, path: &Path) {
+    let modified = fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|age| age.as_nanos())
+        .unwrap_or(0);
+    let len = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    text.push_str(&format!("{} {} {modified}\n", path.display(), len));
+}
+
+/// What a link was made from: its objects and the compiler, by path, size and
+/// modification time. A cached build whose objects did not change can keep
+/// the 400 MB library instead of linking it again.
+fn link_stamp(objects: &[String], cc: &Path, lib: &Path) -> String {
+    let mut text = format!("hookshot-link-v1 {}\n", env!("CARGO_PKG_VERSION"));
+    stamp_one(&mut text, cc);
+    let mut objects = objects.to_vec();
+    objects.sort();
+    for object in &objects {
+        stamp_one(&mut text, Path::new(object));
+    }
+    text.push_str(&lib.to_string_lossy());
+    text
+}
+
 /// The names the lift and the build write into the work folder: the files a
 /// compile failure can blame on the translation, not on a repository source.
 pub fn generated_names(work: &Path) -> Vec<String> {
@@ -164,8 +190,10 @@ pub fn plan_json_with(
         Path::new(work).to_path_buf()
     };
     let root = kit::root();
+    let read = crate::timing::Stage::new("driver.read");
     let modules = nso::check_modules(exefs)?;
     let build = nso::build_id(&exefs.join("main"))?;
+    read.done();
     if !build.starts_with(nso::SUPPORTED_BUILD) {
         return Err(format!(
             "This is build {}. Hookshot supports build {}.",
@@ -174,6 +202,7 @@ pub fn plan_json_with(
         ));
     }
     say_stage("read", "Reading your game files")?;
+    let assets = crate::timing::Stage::new("driver.assets");
     let rt64 = work.join("rt64");
     rtgen::write(&rt64, &kit::kit())?;
     let gen_dir = work.join("build").join("gen");
@@ -184,6 +213,7 @@ pub fn plan_json_with(
         &root.join("assets/hookshot.png"),
     )?;
     win_manifest::write(&gen_dir.join("hookshot_manifest.res"))?;
+    assets.done();
     let game_gen = work.join("sa").join("gen");
     let mut lift_needed = (lift_all || lift_limit > 0) && !game_gen.join("code_000.c").is_file();
     if standalone && game_gen.join("code_000.c").is_file() {
@@ -213,6 +243,7 @@ pub fn plan_json_with(
     }
     let mut standalone_info = Value::Null;
     if standalone {
+        let standalone_stage = crate::timing::Stage::new("driver.standalone");
         fs::create_dir_all(&game_gen).map_err(|e| format!("{}: {e}", game_gen.display()))?;
         crate::standalone::write_json(
             exefs.to_str().unwrap_or_default(),
@@ -225,6 +256,7 @@ pub fn plan_json_with(
             image_dir.to_str().unwrap_or_default(),
             "",
         )?;
+        standalone_stage.done();
     }
     if game_gen.is_dir() {
         let mut suyu_h = crate::emitter::runtime_text(0)?;
@@ -287,6 +319,7 @@ pub fn plan_json_with(
     let mut compiled = Value::Null;
     let mut lift_kept = Value::Null;
     if compile && chunks > 0 {
+        let compile_stage = crate::timing::Stage::new("driver.compile");
         say_stage("compile", "Compiling")?;
         let cc = crate::toolchain::find("clang", false);
         // (diagnostic: reuse the old empty-deps keys while validating a
@@ -413,12 +446,29 @@ pub fn plan_json_with(
                 })
                 .unwrap_or_default();
             let lib = work.join("build").join("hookshot_game.so");
-            let link = crate::linker::link_json(&json!({
-                "cc": crate::toolchain::find("clang", false).to_string_lossy(),
-                "out": lib.to_string_lossy(),
-                "objects": objects,
-                "args": ["-shared", "-fPIC", "-o", lib.to_string_lossy()],
-            }))?;
+            let link_stage = crate::timing::Stage::new("driver.link");
+            let cc = crate::toolchain::find("clang", false);
+            let stamp_path = lib.with_extension("link");
+            let stamp = link_stamp(&objects, &cc, &lib);
+            let cached = lib.is_file()
+                && fs::read_to_string(&stamp_path)
+                    .map(|old| old == stamp)
+                    .unwrap_or(false);
+            let link = if cached {
+                json!({"ok": true, "out": lib.to_string_lossy(), "output": "", "undefined": [], "cached": true})
+            } else {
+                crate::linker::link_json(&json!({
+                    "cc": cc.to_string_lossy(),
+                    "out": lib.to_string_lossy(),
+                    "objects": objects,
+                    "args": ["-shared", "-fPIC", "-o", lib.to_string_lossy()],
+                }))?
+            };
+            if link["ok"].as_bool().unwrap_or(false) && !cached {
+                let _ = fs::write(&stamp_path, &stamp);
+            }
+            link_stage.done();
+            let copy_stage = crate::timing::Stage::new("driver.copy");
             if link["ok"].as_bool().unwrap_or(false) {
                 let package = out.join("bin");
                 fs::create_dir_all(&package).map_err(|e| e.to_string())?;
@@ -441,12 +491,14 @@ pub fn plan_json_with(
                 forget_lift(&game_gen);
                 lift_kept = json!(false);
             }
+            copy_stage.done();
             compiled["link"] = link;
         } else {
             // (a host/ source that did not compile is no reason to translate
             // the game again; a lifted code_* that did is: #2675)
             lift_kept = json!(settle_failure(&work, &failed));
         }
+        compile_stage.done();
     }
     Ok(json!({
         "stage": stage,
