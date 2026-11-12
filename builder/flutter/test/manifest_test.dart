@@ -77,7 +77,20 @@ void main() {
       expect(chooseMode(null, 'v2.1.0', 'v2.1.0', false, false), 'build');
       expect(chooseMode('v2.1.0', 'v2.1.0', null, false, true), 'up-to-date');
     });
-    test('a newer game is not offered an older rebuild', () {
+    test('chooseMode never offers a known older target', () {
+      // (upstream NotRexed/Hookshot bd699925: a builder older than the game
+      // folder must not rebuild it backwards, online or offline)
+      expect(chooseMode('v2.1.0', 'v2.0.5', 'v2.0.5', false, true), 'up-to-date');
+      expect(chooseMode('v2.1.0', 'v2.0.5', null, false, true), 'up-to-date');
+      expect(chooseMode('v2.1.0', 'v2.0.5', 'v2.0.5', false, true, switchTrack: true), 'update-game');
+      // (an older game is still updated forward)
+      expect(chooseMode('v2.0.5', 'v2.1.0', 'v2.1.0', false, true), 'update-game');
+      expect(olderVersion('v2.0.5', 'v2.1.0'), isTrue);
+      expect(olderVersion('v2.1.0', 'v2.0.5'), isFalse);
+      expect(olderVersion('v2.1.0-rc.2', 'v2.1.0-rc.1'), isFalse);
+      expect(olderVersion('v2.1.0-rc.1', 'v2.1.0-rc.2'), isTrue);
+      expect(olderVersion(null, 'v2.1.0'), isFalse);
+      expect(olderVersion('dev', 'v2.1.0'), isFalse);
       // (the launcher's latest release list can lag behind a game built from
       // a nightly or a newer release: Play, not a downgrade)
       expect(chooseMode('v2.2.0', 'v2.2.0', 'v2.1.0', false, true), 'up-to-date');
@@ -88,8 +101,6 @@ void main() {
       expect(olderVersion('v2.2.0', 'v2.1.0'), isFalse);
       expect(olderVersion('v2.2.0-rc.1', 'v2.2.0'), isTrue);
       expect(olderVersion('v2.2.0', 'v2.2.0-rc.1'), isFalse);
-      expect(olderVersion('dev', 'v2.2.0'), isFalse);
-      expect(olderVersion('v2.2.0', 'dev'), isFalse);
     });
   });
 }

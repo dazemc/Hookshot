@@ -165,11 +165,11 @@ class UpdateBloc extends Bloc<UpdateEvent, UpdateState> {
     final target = e.tag ?? upd.updateTarget(e.latest, e.toolsTag, switchTrack: e.switching);
     final fetched = e.fetched || (e.folder.isNotEmpty && e.toolsTag.isNotEmpty && target == e.toolsTag);
     try {
-      // (the handoff carries a downloaded release: these tools must already be
-      // the target, or the rebuild would use the older ones it started from)
-      if (fetched && target != null && e.toolsTag != target) {
+      // (a --fetched start is the builder the update just installed: it must be the version asked for, or the folder
+      // would be rebuilt by another one. Upstream NotRexed/Hookshot bd699925)
+      if (fetched && target != null && e.toolsTag.isNotEmpty && e.toolsTag != target) {
         throw StateError(
-            'This Builder is ${e.toolsTag.isEmpty ? 'unversioned' : e.toolsTag}, not the requested $target. Start that version\'s Builder to update.');
+            'This Builder is ${e.toolsTag}, not the requested $target. Start that version\'s Builder to update.');
       }
       if (!fetched) {
         final root = _runningRoot != null ? _runningRoot!() : upd.runningRoot();
@@ -180,8 +180,8 @@ class UpdateBloc extends Bloc<UpdateEvent, UpdateState> {
         final named = (target != null && (e.switching || upd.trackOf(target) != 'release')) ? target : null;
         Future<List<int>> get(String url) => _fetcher(url, stop: _stop);
         final manifest = await inst.startupManifest(root, get, tag: named, stop: _stop);
-        // (GitHub's API and its download list can disagree right after a
-        // release: never rebuild with another version than the one asked for)
+        // (the API and its download list can disagree right after a release. Check even when the list names the
+        // running tools: otherwise a newer target silently rebuilds with those older tools. Upstream bd699925)
         if (target != null && manifest.tag != target) {
           throw StateError(
               'GitHub offered ${manifest.tag}, not $target: its download links can lag right after a release. Try Update again in a few minutes.');

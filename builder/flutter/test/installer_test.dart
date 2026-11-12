@@ -125,7 +125,7 @@ void main() {
         await request.response.close();
       });
       final stop = StopFlag();
-      final future = fetchBytes('http://127.0.0.1:${server.port}/part.zip', stop: stop);
+      final future = fetchBytes('http://127.0.0.1:${server.port}/part.zip', stop: stop, allowHttp: true);
       await Future<void>.delayed(const Duration(milliseconds: 350));
       stop.set();
       await expectLater(future, throwsA(isA<Cancelled>()));
@@ -155,6 +155,95 @@ void main() {
       } finally {
         await tmp.delete(recursive: true);
       }
+    });
+  });
+
+  group('retries and offline', () {
+    Future<HttpServer> serve(Future<void> Function(HttpRequest) handler) async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) {
+        handler(request).catchError((Object _) {});
+      });
+      addTearDown(() => server.close(force: true));
+      return server;
+    }
+
+    Future<void> noWait(Duration _) async {}
+
+    test('a 5xx answer is tried again', () async {
+      var requests = 0;
+      final server = await serve((request) async {
+        requests++;
+        if (requests == 1) {
+          request.response.statusCode = 500;
+          await request.response.close();
+          return;
+        }
+        request.response.add(utf8.encode('ok'));
+        await request.response.close();
+      });
+      final bytes =
+          await fetchBytes('http://127.0.0.1:${server.port}/part', attempts: 2, pause: noWait, allowHttp: true);
+      expect(utf8.decode(bytes), 'ok');
+      expect(requests, 2);
+    });
+
+    test('429 is tried again, a 404 is not', () async {
+      var retries = 0;
+      final retrying = await serve((request) async {
+        retries++;
+        if (retries == 1) {
+          request.response.statusCode = 429;
+        } else {
+          request.response.add(utf8.encode('ok'));
+        }
+        await request.response.close();
+      });
+      expect(
+          utf8.decode(
+              await fetchBytes('http://127.0.0.1:${retrying.port}/part', attempts: 2, pause: noWait, allowHttp: true)),
+          'ok');
+      expect(retries, 2);
+
+      var missing = 0;
+      final notFound = await serve((request) async {
+        missing++;
+        request.response.statusCode = 404;
+        await request.response.close();
+      });
+      await expectLater(
+          fetchBytes('http://127.0.0.1:${notFound.port}/part', attempts: 4, pause: noWait, allowHttp: true),
+          throwsA(isA<StateError>()));
+      expect(missing, 1);
+    });
+
+    test('a stalled answer times out and is tried again', () async {
+      var requests = 0;
+      final server = await serve((request) async {
+        requests++;
+        await Future<void>.delayed(const Duration(seconds: 5));
+        request.response.add(utf8.encode('late'));
+        await request.response.close();
+      });
+      await expectLater(
+          fetchBytes('http://127.0.0.1:${server.port}/part',
+              timeoutSeconds: 1, attempts: 2, pause: noWait, allowHttp: true),
+          throwsA(isA<StateError>()));
+      expect(requests, 2);
+    });
+
+    test('offline gives up after the attempts without waiting in the test', () async {
+      final closed = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = closed.port;
+      await closed.close();
+      await expectLater(fetchBytes('http://127.0.0.1:$port/part', attempts: 2, pause: noWait, allowHttp: true),
+          throwsA(isA<StateError>()));
+      expect(await latestTag((url) async => throw const SocketException('offline')), isNull);
+    });
+
+    test('the retry delay doubles and stops at 20 s', () {
+      expect([for (var i = 0; i < 6; i++) retryDelaySeconds(i)], [2, 4, 8, 16, 20, 20]);
+      expect(updateCheckTimeoutSeconds, 8);
     });
   });
 }

@@ -181,16 +181,19 @@ String? updateTarget(String? latest, String? tools, {bool switchTrack = false}) 
   return _compareReleaseKey(out, have) > 0 ? latest : tools;
 }
 
-/// A known older release target. Arbitrary hashes and differing nightlies
-/// cannot establish commit ancestry, so only versions with release keys count.
+/// Whether [target] is a known older version than [have]. Port of older_version():
+/// arbitrary hashes and differing nightlies cannot establish commit ancestry.
 bool olderVersion(String? target, String? have) {
   final old = releaseKey(have);
-  final next = releaseKey(target);
-  if (old == null || next == null) return false;
-  return _compareReleaseKey(next, old) < 0;
+  final out = releaseKey(target);
+  if (old == null || out == null) return false;
+  return _compareReleaseKey(out, old) < 0;
 }
 
-/// What the builder's button does. Port of choose_mode().
+/// What the builder's button does. Port of choose_mode(): an older game that
+/// still has its files is updated, a game at or beyond the newest known release
+/// is played unless its track is explicitly switched, and an older builder
+/// updates itself before a new build.
 String chooseMode(String? game, String? tools, String? latest, bool sourcePicked, bool kept,
     {bool switchTrack = false}) {
   final target = updateTarget(latest, tools, switchTrack: switchTrack);

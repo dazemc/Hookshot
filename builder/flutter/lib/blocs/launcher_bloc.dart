@@ -6,7 +6,7 @@ import 'package:equatable/equatable.dart';
 
 import '../config.dart' as cfg;
 import '../profiles.dart';
-import '../updater/installer.dart' show latestTag, releaseTags, fetchBytes;
+import '../updater/installer.dart' show latestTag, releaseTags, fetchCheck;
 import '../updater/manifest.dart' as upd;
 import '../updater/version_policy.dart' as policy;
 
@@ -172,13 +172,13 @@ class LauncherBloc extends Bloc<LauncherEvent, LauncherState> {
       latest = forced;
     } else {
       try {
-        latest = await latestTag(fetchBytes);
+        latest = await latestTag(fetchCheck);
       } catch (_) {
         latest = null;
       }
     }
     try {
-      versions.addAll(await releaseTags(fetchBytes));
+      versions.addAll(await releaseTags(fetchCheck));
     } catch (_) {
       // Keep the installed/latest tags available when GitHub's release list is offline.
     }

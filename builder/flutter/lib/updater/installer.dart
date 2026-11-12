@@ -65,21 +65,49 @@ String dataRoot() {
   return cfg.builderHome();
 }
 
-String _https(String url) {
-  if (!url.startsWith('https://')) throw ArgumentError('not an https link: $url');
+String _https(String url, {bool allowHttp = false}) {
+  if (!url.startsWith('https://') && !(allowHttp && url.startsWith('http://'))) {
+    throw ArgumentError('not an https link: $url');
+  }
   return url;
 }
 
+/// The release check's timeout: the Tk updater's `fetch_bytes(url, 8)`. A
+/// check is best-effort, so a stalled answer must not hold the window open.
+const updateCheckTimeoutSeconds = 8;
+
+/// A release or version check with the short timeout the updater has always
+/// used for it. Downloads keep the longer default in [fetchBytes].
+Future<List<int>> fetchCheck(String url, {StopFlag? stop}) =>
+    fetchBytes(url, timeoutSeconds: updateCheckTimeoutSeconds, stop: stop);
+
+/// The wait before a retry: 2 s, 4 s, 8 s, 16 s, then 20 s (port of
+/// linux_update.fetch_bytes's `delay = min(delay * 2, 20)`).
+int retryDelaySeconds(int attempt) => (2 << attempt).clamp(2, 20);
+
+typedef Pause = Future<void> Function(Duration);
+
 /// GET bytes. Follows redirects only to other https links, retries 5xx/429.
-Future<List<int>> fetchBytes(String url, {int timeoutSeconds = 60, StopFlag? stop}) async {
-  var delay = 2;
+/// [attempts], [pause] and [allowHttp] are for tests: a check or download
+/// uses the defaults (a plain-http link is never followed).
+Future<List<int>> fetchBytes(String url,
+    {int timeoutSeconds = 60, StopFlag? stop, int attempts = 4, Pause? pause, bool allowHttp = false}) async {
+  var delay = retryDelaySeconds(0);
   Object? last;
   final client = HttpClient();
+  final wait = pause ??
+      (Duration d) async {
+        if (stop == null) {
+          await Future<void>.delayed(d);
+        } else {
+          await stop.wait(d);
+        }
+      };
   try {
-    for (var attempt = 0; attempt < 4; attempt++) {
+    for (var attempt = 0; attempt < attempts; attempt++) {
       try {
         _stopped(stop);
-        return await _get(client, _https(url), timeoutSeconds, stop);
+        return await _get(client, _https(url, allowHttp: allowHttp), timeoutSeconds, stop, allowHttp);
       } on Cancelled {
         rethrow;
       } on HttpException catch (e) {
@@ -89,13 +117,10 @@ Future<List<int>> fetchBytes(String url, {int timeoutSeconds = 60, StopFlag? sto
         if (stop?.isSet == true) throw const Cancelled();
         last = e;
       }
-      if (attempt < 3) {
-        if (stop == null) {
-          await Future<void>.delayed(Duration(seconds: delay));
-        } else {
-          await stop.wait(Duration(seconds: delay));
-        }
-        delay = (delay * 2).clamp(2, 20);
+      if (attempt < attempts - 1) {
+        await wait(Duration(seconds: delay));
+        _stopped(stop);
+        delay = retryDelaySeconds(attempt + 1);
       }
     }
     final got = await _apiDownload(client, url, stop).catchError((Object e) {
@@ -109,7 +134,8 @@ Future<List<int>> fetchBytes(String url, {int timeoutSeconds = 60, StopFlag? sto
   throw StateError(last?.toString() ?? 'the download failed');
 }
 
-Future<List<int>> _get(HttpClient client, String url, int timeoutSeconds, [StopFlag? stop]) async {
+Future<List<int>> _get(HttpClient client, String url, int timeoutSeconds,
+    [StopFlag? stop, bool allowHttp = false]) async {
   var current = url;
   for (var hops = 0; hops < 10; hops++) {
     _stopped(stop);
@@ -125,7 +151,7 @@ Future<List<int>> _get(HttpClient client, String url, int timeoutSeconds, [StopF
         final next = response.headers.value('location');
         await response.drain<void>();
         if (next == null) throw HttpException('${response.statusCode}');
-        current = _https(Uri.parse(current).resolve(next).toString());
+        current = _https(Uri.parse(current).resolve(next).toString(), allowHttp: allowHttp);
         continue;
       }
       if (response.statusCode >= 500 || response.statusCode == 429) {
