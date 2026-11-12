@@ -11,6 +11,10 @@ on:
   push:
     branches: [main]
     tags: ['*']
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.release-please-manifest.json'
   # (not for a pull request that changes only documentation or the release manifest: nothing of them is compiled or
   # packaged but readme.md, which is only copied in. A push to main builds every time)
   pull_request:
@@ -37,7 +41,7 @@ env:
 concurrency:
   group: linux-appimage-${{ inputs.tag || github.ref }}
   # (a pull request's older run is cancelled; a push's or a tag's never is)
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type != 'tag') }}
 
 jobs:
   appimage:
