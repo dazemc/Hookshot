@@ -444,7 +444,9 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     try {
       final hasRuntime = Directory('$folder/ngx').listSync().any((e) {
         final name = e.path.split(RegExp(r'[/\\]')).last;
-        return name.startsWith('libnvidia-ngx-dlss.so') || name == 'nvngx_dlss.dll';
+        return name.startsWith('libnvidia-ngx-dlss') ||
+            name == 'nvngx_dlss.dll' ||
+            name == 'nvngx_dlssg.dll';
       });
       final sdk = '${dlssSdkDir()}/LICENSE.txt';
       return hasRuntime && File(sdk).existsSync();
@@ -545,12 +547,6 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
   Future<void> _onBuild(BuildRequested e, Emitter<BuilderState> emit) async {
     final s = state;
     if (s is! BuilderForm) return;
-    try {
-      requireDlssSupported(dlss: s.dlss);
-    } on DlssBuildUnsupported catch (error) {
-      emit(BuildFailed(error.toString()));
-      return;
-    }
     // update-game / update-builder modes are handled by UpdateBloc via the UI.
     final out = _expand(s.out);
     if (s.kind == 'nup') {
@@ -658,12 +654,6 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     final s = state;
     final prepare = s is BuilderForm ? s.prepare : true;
     final dlss = s is BuilderForm ? s.dlss : _folderHasDlss(e.folder);
-    try {
-      requireDlssSupported(dlss: dlss);
-    } on DlssBuildUnsupported catch (error) {
-      emit(BuildFailed(error.toString()));
-      return;
-    }
     final rust = rustEngineCli();
     if (rust != null) {
       if (!rustUpdateReady(e.folder)) {

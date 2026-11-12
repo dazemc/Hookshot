@@ -38,28 +38,6 @@ String requireRustEngineCli({String? override, String? root, String? exeDir}) {
 /// NUP builds are read by the engine; folder builds keep their own route.
 bool rustNupApplies({required String kind}) => kind == 'nup';
 
-/// A DLSS build the Rust engine cannot make yet. The Windows Vulkan DLL's
-/// NGX link is still Python's, and this builder no longer falls back to it,
-/// so the build stops with this typed error instead.
-class DlssBuildUnsupported implements Exception {
-  final String message;
-  const DlssBuildUnsupported([
-    this.message = 'NVIDIA DLSS builds on Windows are not in the Rust engine yet: the Windows Vulkan '
-        'backend link is still Python\'s, and the builder no longer falls back to it. Build '
-        'without NVIDIA DLSS, or build with the Python path from a source checkout.',
-  ]);
-  @override
-  String toString() => message;
-}
-
-/// Throws [DlssBuildUnsupported] for a DLSS build on Windows. `windows`
-/// overrides the platform in tests.
-void requireDlssSupported({required bool dlss, bool? windows}) {
-  if (dlss && (windows ?? Platform.isWindows)) {
-    throw const DlssBuildUnsupported();
-  }
-}
-
 /// Where the builder keeps NVIDIA's DLSS SDK between builds: the same folder
 /// the Python path used (`%LOCALAPPDATA%\HookshotBuilder\ngx-sdk` on Windows,
 /// `$XDG_DATA_HOME/hookshot/builder/ngx-sdk` on Linux).
