@@ -132,6 +132,234 @@ pub fn vectorize_fcmp(text: &str) -> String {
         .into_owned()
 }
 
+/// Share one page mark among a straight-line group of stores through the
+/// same base register. Ported from a64_lift.mark_groups/mark_groups_lines.
+#[allow(clippy::needless_range_loop)]
+pub fn mark_groups(text: &str) -> String {
+    if std::env::var_os("A64_MARK_EACH").is_some() {
+        return text.to_owned();
+    }
+    let head = Regex::new(r"\nvoid f_[0-9a-f]+\(").unwrap();
+    let mut starts: Vec<usize> = vec![0];
+    starts.extend(head.find_iter(text).map(|m| m.start() + 1));
+    starts.push(text.len());
+    let mut out = String::new();
+    for pair in starts.windows(2) {
+        let part = &text[pair[0]..pair[1]];
+        if part.matches("recomp_st").count() < 2
+            || store_re().find_iter(part).count() < 2
+            || (part.contains("_ = c->x[") && local_re().is_match(part))
+        {
+            out.push_str(part);
+        } else {
+            let lines: Vec<&str> = part.split('\n').collect();
+            out.push_str(&mark_lines(&lines).join("\n"));
+        }
+    }
+    out
+}
+
+fn store_re() -> Regex {
+    Regex::new(r"recomp_(store8|store16|store32|store64|stp32|stp64)\(c,").unwrap()
+}
+fn local_re() -> Regex {
+    Regex::new(r"\bx\d+_ = c->x\[").unwrap()
+}
+fn own_mark() -> Regex {
+    Regex::new(r"    A64_MARK\(\(c->x\[\d+\] \+ \(uint64_t\)\(int64_t\)\(-?\d+\)\), \d+\);\Z")
+        .unwrap()
+}
+fn bdef() -> Regex {
+    Regex::new(r"uint64_t _b=c->x\[(\d+)\]; int64_t _o=(-?\d+);").unwrap()
+}
+fn adef() -> Regex {
+    Regex::new(r"uint64_t _a=c->x\[(\d+)\];").unwrap()
+}
+
+fn sizes(kind: &str) -> u64 {
+    match kind {
+        "store8" => 1,
+        "store16" => 2,
+        "store32" => 4,
+        "store64" => 8,
+        "stp32" => 8,
+        _ => 16,
+    }
+}
+
+fn parse_store(line: &str, m: &regex::Match) -> Option<(u8, i64, u64)> {
+    let rest = &line[m.end()..];
+    let kind = &line[m.start()..m.end()];
+    let size = sizes(&kind[7..kind.len() - 3]);
+    let x = Regex::new(r"c->x\[(\d+)\] \+ (-?\d+),").unwrap();
+    let xu = Regex::new(r"\(c->x\[(\d+)\]\+(\d+)ULL\),").unwrap();
+    if let Some(c) = x.captures(rest) {
+        return Some((c[1].parse().ok()?, c[2].parse().ok()?, size));
+    }
+    if let Some(c) = xu.captures(rest) {
+        return Some((c[1].parse().ok()?, c[2].parse().ok()?, size));
+    }
+    let forms = [
+        (r"\(_b\+_o\)\+(\d+),", "bo+"),
+        (r"\(_b\+_o\),", "bo"),
+        (r"_b,", "b"),
+        (r"_a\+(\d+),", "a+"),
+        (r"_a,", "a"),
+    ];
+    for (pat, kind) in forms {
+        let Ok(rx) = Regex::new(pat) else { continue };
+        let Some(c) = rx.captures(rest) else { continue };
+        let before = &line[..m.start()];
+        if kind.starts_with('b') || kind == "bo" || kind == "bo+" {
+            let Some(d) = bdef().captures_iter(before).last() else {
+                return None;
+            };
+            let base: u8 = d[1].parse().ok()?;
+            let off = if kind == "b" {
+                0
+            } else {
+                d[2].parse::<i64>().ok()?
+                    + c.get(1).and_then(|v| v.as_str().parse().ok()).unwrap_or(0)
+            };
+            return Some((base, off, size));
+        }
+        let Some(d) = adef().captures_iter(before).last() else {
+            return None;
+        };
+        let off = c.get(1).and_then(|v| v.as_str().parse().ok()).unwrap_or(0);
+        return Some((d[1].parse().ok()?, off, size));
+    }
+    None
+}
+
+fn balanced(line: &str) -> bool {
+    let mut depth = 0i32;
+    for ch in line.chars() {
+        if ch == '{' {
+            depth += 1;
+        } else if ch == '}' {
+            depth -= 1;
+            if depth < 0 {
+                return false;
+            }
+        }
+    }
+    depth == 0
+}
+
+fn ends_run(line: &str) -> bool {
+    if (line.contains('{') || line.contains('}')) && !balanced(line) {
+        return true;
+    }
+    let call = Regex::new(r"\b([A-Za-z_]\w*)\s*\(").unwrap();
+    let plain = Regex::new(r"^(?:if|for|while|sizeof|memcpy|memset|UINT64_C|INT64_C|fabsf|fabs|__builtin_add_overflow|recomp_(?:load|ldp|store|stp)(?:8|16|32|64)(?:_sp)?|recomp_(?:fixed_to_fp|fp_to_fixed|fp_to_int|fp_estimate|umulh|smulh|aes_sbox)|a64_(?:vset64|vset128|vset_lo|vst16|fcmp32|fcmp64|vfcmp)|a64_v?fpx_\w+)$").unwrap();
+    for c in call.captures_iter(line) {
+        if !plain.is_match(&c[1]) {
+            return true;
+        }
+    }
+    if line.contains("goto")
+        || line.contains("return")
+        || line.contains("L_")
+        || line.contains("(c,c->x[")
+    {
+        let end = Regex::new(r"^\s*L_[0-9a-f]+:|\bgoto\b|\breturn\b|recomp_(?:store|stp)\d+\(c,c->x\[\d+\],|recomp_load\d+\(c,c->x\[\d+\]\)").unwrap();
+        return end.is_match(line);
+    }
+    false
+}
+
+fn mark_lines(lines: &[&str]) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+    let mut inserts: HashMap<usize, Vec<String>> = HashMap::new();
+    let mut unmark: HashMap<usize, HashSet<usize>> = HashMap::new();
+    let mut groups: HashMap<u8, Vec<(usize, usize, i64, u64)>> = HashMap::new();
+    let flush = |groups: &mut HashMap<u8, Vec<(usize, usize, i64, u64)>>,
+                 inserts: &mut HashMap<usize, Vec<String>>,
+                 unmark: &mut HashMap<usize, HashSet<usize>>,
+                 reg: u8,
+                 at: usize| {
+        let Some(g) = groups.remove(&reg) else { return };
+        let lo = g.iter().map(|x| x.2).min().unwrap_or(0);
+        let hi = g.iter().map(|x| x.2 + x.3 as i64).max().unwrap_or(0);
+        if g.len() < 2 || hi - lo > 4096 {
+            return;
+        }
+        for (li, ms, _, _) in &g {
+            unmark.entry(*li).or_default().insert(*ms);
+        }
+        inserts.entry(at).or_default().push(format!(
+            "    A64_MARK((c->x[{reg}] + (uint64_t)(int64_t)({lo})), {});",
+            hi - lo
+        ));
+    };
+    for (i, line) in lines.iter().enumerate() {
+        if groups.is_empty() && !line.contains("recomp_st") {
+            continue;
+        }
+        if line.starts_with("    A64_MARK((") && own_mark().is_match(line) {
+            continue;
+        }
+        if ends_run(line) {
+            for r in groups.keys().copied().collect::<Vec<_>>() {
+                flush(&mut groups, &mut inserts, &mut unmark, r, i);
+            }
+            continue;
+        }
+        let writes = reg_writes(line);
+        let stores: Vec<_> = store_re().find_iter(line).collect();
+        if !stores.is_empty()
+            && writes == 0
+            && !["if", "?", "for", "while", "switch", "case"]
+                .iter()
+                .any(|w| line.contains(w))
+        {
+            for m in stores {
+                if let Some((base, off, size)) = parse_store(line, &m) {
+                    if base != 31 {
+                        groups
+                            .entry(base)
+                            .or_default()
+                            .push((i, m.start(), off, size));
+                    }
+                }
+            }
+            continue;
+        }
+        for r in 0..32u8 {
+            if writes >> r & 1 != 0 {
+                flush(&mut groups, &mut inserts, &mut unmark, r, i);
+            }
+        }
+    }
+    for r in groups.keys().copied().collect::<Vec<_>>() {
+        flush(&mut groups, &mut inserts, &mut unmark, r, lines.len());
+    }
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(ins) = inserts.get(&i) {
+            out.extend(ins.iter().cloned());
+        }
+        if let Some(set) = unmark.get(&i) {
+            let mut l = line.to_string();
+            for ms in set.iter().copied().collect::<Vec<_>>().into_iter().rev() {
+                let store = store_re().find_at(&l, ms).unwrap();
+                let kind = &l[store.start()..store.end()];
+                l.replace_range(
+                    store.start()..store.end(),
+                    &format!("recomp_{}_sp(c,", &kind[7..kind.len() - 3]),
+                );
+            }
+            out.push(l);
+        } else {
+            out.push((*line).to_owned());
+        }
+    }
+    if let Some(ins) = inserts.get(&lines.len()) {
+        out.extend(ins.iter().cloned());
+    }
+    out
+}
 /// The full op-text pipeline used before emission and liveness.
 pub fn op_text(text: &str) -> String {
     stack_stores(&widen_vstores(&vectorize_fcmp(&outline_fpx(text))))
