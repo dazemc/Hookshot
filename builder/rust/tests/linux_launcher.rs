@@ -85,7 +85,10 @@ fn the_builder_that_made_the_game_wins_over_an_installed_one() {
     fs::write(home.join("hookshot/builder/current"), "v9\n").unwrap();
     fs::write(
         folder.join("hookshot_version.txt"),
-        format!("profiles=1\nversion=v2.2.0\nbuilder={}\n", recorded.display()),
+        format!(
+            "profiles=1\nversion=v2.2.0\nbuilder={}\n",
+            recorded.display()
+        ),
     )
     .unwrap();
 

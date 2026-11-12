@@ -158,8 +158,7 @@ class PlayLauncher {
         clock = clock ?? DateTime.now,
         sleep = sleep ?? ((duration) => Future<void>.delayed(duration));
 
-  static Future<ProcessResult> _run(
-      List<String> command, Map<String, String>? env, Duration timeout) async {
+  static Future<ProcessResult> _run(List<String> command, Map<String, String>? env, Duration timeout) async {
     final process = await Process.start(command.first, command.sublist(1), environment: env);
     final code = await process.exitCode.timeout(timeout, onTimeout: () {
       process.kill();
@@ -168,8 +167,7 @@ class PlayLauncher {
     return ProcessResult(process.pid, code, '', '');
   }
 
-  static Future<ScopedProcess> _start(
-      List<String> command, String cwd, Map<String, String> env) async {
+  static Future<ScopedProcess> _start(List<String> command, String cwd, Map<String, String> env) async {
     // (setsid makes the runner its own process group, so a timed-out hand-off
     // can be stopped without touching the builder)
     final process = await Process.start('setsid', command, workingDirectory: cwd, environment: env);

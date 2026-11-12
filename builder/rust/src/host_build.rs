@@ -94,7 +94,10 @@ where
             libs.push(dav1d.to_string_lossy().into_owned());
         }
         libs.extend(["-lm".into(), "-lpthread".into()]);
-        return (vec![format!("-I{}", prefix.join("include").display())], libs);
+        return (
+            vec![format!("-I{}", prefix.join("include").display())],
+            libs,
+        );
     }
     pkg()
 }
@@ -1435,7 +1438,14 @@ mod tests {
             panic!("a complete static prefix must not ask pkg-config")
         });
         assert_eq!(flags, [format!("-I{}", prefix.join("include").display())]);
-        assert!(libs.contains(&prefix.join("lib/libavcodec.a").to_string_lossy().into_owned()));
+        assert!(
+            libs.contains(
+                &prefix
+                    .join("lib/libavcodec.a")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
         assert!(libs.contains(&prefix.join("lib/libdav1d.a").to_string_lossy().into_owned()));
         assert!(libs.iter().any(|lib| lib == "-lm"));
         assert!(!libs.iter().any(|lib| lib == "-lavcodec"));

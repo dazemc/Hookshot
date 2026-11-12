@@ -135,7 +135,9 @@ void main() {
     test('a child that left the service opens the gate', () async {
       final process = FakeScopedProcess();
       final play = launcher(
-        read: (path) => path.endsWith('/self/cgroup') ? _service : '${_service.split('/app.slice/').first}/app.slice/run-4242.scope',
+        read: (path) => path.endsWith('/self/cgroup')
+            ? _service
+            : '${_service.split('/app.slice/').first}/app.slice/run-4242.scope',
       );
       expect(await play.handOff(process), isTrue);
       expect(process.allowed, isTrue);
@@ -166,11 +168,12 @@ void main() {
     test('no scope starts the command directly once', () async {
       var direct = 0;
       var started = 0;
-      final ok = await launcher(linux: false, start: (command, cwd, env) async {
-        started++;
-        return FakeScopedProcess();
-      }).launch(['/games/hookshot'],
-          cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
+      final ok = await launcher(
+          linux: false,
+          start: (command, cwd, env) async {
+            started++;
+            return FakeScopedProcess();
+          }).launch(['/games/hookshot'], cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
       expect(ok, isFalse);
       expect(direct, 1);
       expect(started, 0);
@@ -187,9 +190,10 @@ void main() {
           started = FakeScopedProcess();
           return started!;
         },
-        read: (path) => path.endsWith('/self/cgroup') ? _service : '${_service.split('/app.slice/').first}/app.slice/run-4242.scope',
-      ).launch(['/games/hookshot'],
-          cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
+        read: (path) => path.endsWith('/self/cgroup')
+            ? _service
+            : '${_service.split('/app.slice/').first}/app.slice/run-4242.scope',
+      ).launch(['/games/hookshot'], cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
       expect(ok, isTrue);
       expect(direct, 0);
       expect(started!.allowed, isTrue);
@@ -207,8 +211,7 @@ void main() {
         sleep: (duration) async => now = now.add(duration),
         timeout: const Duration(milliseconds: 20),
         poll: const Duration(milliseconds: 10),
-      ).launch(['/games/hookshot'],
-          cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
+      ).launch(['/games/hookshot'], cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
       expect(ok, isFalse);
       expect(direct, 1);
       expect(process.allowed, isFalse);
@@ -219,8 +222,7 @@ void main() {
     test('a failed start falls back directly once', () async {
       var direct = 0;
       final ok = await launcher(start: (command, cwd, env) async => throw const OSError('exec'))
-          .launch(['/games/hookshot'],
-              cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
+          .launch(['/games/hookshot'], cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
       expect(ok, isFalse);
       expect(direct, 1);
     });
@@ -229,8 +231,7 @@ void main() {
       var direct = 0;
       final ok = await launcher(
         run: (command, env, timeout) async => ProcessResult(1, 1, '', ''),
-      ).launch(['/games/hookshot'],
-          cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
+      ).launch(['/games/hookshot'], cwd: '/games', env: {'PATH': '/usr/bin'}, direct: () async => direct++);
       expect(ok, isFalse);
       expect(direct, 1);
     });
