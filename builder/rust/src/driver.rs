@@ -14,7 +14,13 @@ use crate::rtgen;
 use crate::ui_fonts;
 use crate::win_manifest;
 
-pub fn plan_json(exefs: &str, romfs: &str, out: &str, work: &str) -> Result<Value, String> {
+pub fn plan_json(
+    exefs: &str,
+    romfs: &str,
+    out: &str,
+    work: &str,
+    lift_limit: usize,
+) -> Result<Value, String> {
     let exefs = Path::new(exefs);
     let romfs = Path::new(romfs);
     let out = Path::new(out);
@@ -44,6 +50,14 @@ pub fn plan_json(exefs: &str, romfs: &str, out: &str, work: &str) -> Result<Valu
     )?;
     win_manifest::write(&gen_dir.join("hookshot_manifest.res"))?;
     let game_gen = work.join("sa").join("gen");
+    if lift_limit > 0 && !game_gen.join("code_000.c").is_file() {
+        crate::lift::write_json(
+            exefs.to_str().unwrap_or_default(),
+            game_gen.to_str().unwrap_or_default(),
+            lift_limit,
+            24 << 20,
+        )?;
+    }
     let chunks = fs::read_dir(&game_gen)
         .map(|entries| {
             entries
@@ -96,6 +110,7 @@ mod tests {
             romfs.to_str().unwrap(),
             base.join("out").to_str().unwrap(),
             base.join("work").to_str().unwrap(),
+            0,
         )
         .unwrap();
         assert_eq!(answer["stage"], "lift");

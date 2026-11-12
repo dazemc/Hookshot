@@ -277,6 +277,10 @@ pub fn dispatch(text: &str) -> String {
             &string(&request, "romfs").unwrap_or_default(),
             &string(&request, "out").unwrap_or_default(),
             &string(&request, "work").unwrap_or_default(),
+            request
+                .get("lift_limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize,
         ),
         "build.check" => stage::check_json(
             string(&request, "nup").as_deref(),
