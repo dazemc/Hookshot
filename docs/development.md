@@ -272,9 +272,10 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
-A build keeps the button prompts when their source, fonts, game assets, button tables and generation options still
-match, and every generated file still has its recorded size and content hash. The inputs are checked before and after
-generation; changed or unreadable inputs leave no reusable stamp. The build log says `button prompts: unchanged, kept`, or
+A build keeps the button prompts when their source, fonts, game assets, button tables, hand-made images
+(`nx2/prompt_faces/`) and generation options still match, and every generated file still has its recorded size and
+content hash. The inputs are checked before and after generation; changed or unreadable inputs leave no reusable stamp.
+The build log says `button prompts: unchanged, kept`, or
 `regenerated` and why. Generation uses a fresh directory and publishes only a complete set. A failed generation still removes the
 prompts, so the game shows its own icons, as before. An interrupted builder can leave the old set without a stamp; the
 next build regenerates it. The files the game derives at run time are still cleared by every build, including a kept

@@ -16,6 +16,7 @@ pub mod font;
 pub mod guide;
 pub mod keys;
 pub mod layout;
+pub mod overrides;
 pub mod raster;
 pub mod restbl;
 pub mod textures;
@@ -239,6 +240,11 @@ mod tests {
         assert_ne!(key, 0);
         let table = restbl::size_table(&romfs, &dictionary, font.len(), font.len() + 4096).unwrap();
         assert!(table.is_some());
+        // (a hand-made image changes what the build draws, so it is an input)
+        let kenney = crate::kit::root().join("third_party/kenney_input");
+        let keyboard = crate::kit::root().join("third_party/kenney_input_keyboard");
+        let inputs = cache::inputs(&romfs, &kenney, &keyboard).unwrap();
+        assert!(inputs.contains_key("prompt_faces"));
         if let Some(out) = std::env::var_os("HOOKSHOT_TEST_PROMPTS_OUT") {
             let written = build(&romfs, Path::new(&out)).unwrap();
             assert!(written.size_table);
@@ -248,6 +254,11 @@ mod tests {
             );
             assert!(Path::new(&out).join("External.bfotf").is_file());
             assert!(Path::new(&out).join("rsizetable.zs").is_file());
+            // (the Switch face's own notes and letters, not only its lines)
+            let switch = std::fs::read(Path::new(&out).join("switch/textures.bin")).unwrap();
+            assert_eq!(&switch[..4], b"HPTX");
+            let count = u32::from_le_bytes(switch[4..8].try_into().unwrap());
+            assert!(count > 200, "the Switch face's layers: {count}");
         }
     }
 }

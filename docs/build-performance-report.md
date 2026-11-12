@@ -78,7 +78,7 @@ Python.** The maintained Rust path is at parity with the Python pipeline for:
 | Host link | `host_build.rs` | parity |
 | Vulkan build | `vk_build.rs` | parity |
 | Package and saves | `package.rs`, `saves.rs`, `profiles.rs` | parity |
-| Button prompts | `prompts/` | parity (BC4, ASTC, keyboard, guide lines, labels) |
+| Button prompts | `prompts/` | parity (BC4, ASTC, keyboard, guide lines, labels, hand-made overrides) |
 | Shader census and prepare | `shader.rs`, `prepare.rs` | parity |
 
 The remaining Python is not on the app's path:
