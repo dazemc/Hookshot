@@ -1675,22 +1675,50 @@ fn emit_entry<C: Code>(
     Ok(lift.emit_function_unmarked(entry, &processed))
 }
 
-fn mark_chunk_files(dir: &std::path::Path) -> Result<(), String> {
-    let pattern = regex::Regex::new(r"^code_\d{3}\.c$").expect("chunk name regex");
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !pattern.is_match(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        let text = std::fs::read_to_string(entry.path())
-            .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        let marked = crate::text::mark_groups(&text);
-        if marked != text {
-            std::fs::write(entry.path(), marked)
-                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
-        }
+fn mark_one(path: &std::path::Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let marked = crate::text::mark_groups(&text);
+    if marked != text {
+        std::fs::write(path, marked).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+fn mark_chunk_files(dir: &std::path::Path) -> Result<(), String> {
+    let pattern = regex::Regex::new(r"^code_\d{3}\.c$").expect("chunk name regex");
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if pattern.is_match(&entry.file_name().to_string_lossy()) {
+            paths.push(entry.path());
+        }
+    }
+    paths.sort();
+    let workers = std::env::var("HOOKSHOT_LIFT_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16)
+        .max(1)
+        .min(paths.len().max(1));
+    if workers <= 1 {
+        for path in &paths {
+            mark_one(path)?;
+        }
+        return Ok(());
+    }
+    let per = paths.len().div_ceil(workers);
+    std::thread::scope(|scope| -> Result<(), String> {
+        let handles: Vec<_> = paths
+            .chunks(per)
+            .map(|chunk| scope.spawn(move || chunk.iter().try_for_each(|path| mark_one(path))))
+            .collect();
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| "a mark worker stopped".to_string())??;
+        }
+        Ok(())
+    })
 }
 
 pub fn write_json(
