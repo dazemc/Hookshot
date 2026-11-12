@@ -1773,6 +1773,23 @@ mod tests {
     }
 
     #[test]
+    fn gpu_written_mirrors_are_not_given_back_empty() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mem = fs::read_to_string(root.join("gpu/vk/vk_memory.cpp")).unwrap();
+        assert!(mem.contains("bool gpu_only = false;"));
+        assert!(mem.contains("bool gpu_written = false;"));
+        assert!(
+            mem.contains(
+                "p.gpu_only |= o->second.gpu_only, p.gpu_written |= o->second.gpu_written"
+            )
+        );
+        assert!(mem.contains("if (it->second.hi > guest) it->second.gpu_only = true;"));
+        assert!(mem.contains("p->gpu_written = true;"));
+        assert!(mem.contains("if (p.gpu_only || p.gpu_written) kept_bytes"));
+        assert!(mem.contains("inherit_lost"));
+    }
+
+    #[test]
     fn background_workers_use_more_of_a_16_thread_cpu() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let jobs = fs::read_to_string(root.join("gpu/vk/vk_jobs.cpp")).unwrap();
