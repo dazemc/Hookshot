@@ -10,6 +10,7 @@ mod chunks;
 mod compile;
 mod diagnostics;
 mod disk;
+mod emitter;
 mod gamescope;
 mod host;
 mod image;
@@ -160,6 +161,7 @@ pub fn dispatch(text: &str) -> String {
             )
         }
         "build.plan" => compile::plan_json(&request, &kit::root()),
+        "lift.translate" => emitter::translate_json(&request),
         "build.eta" => {
             let pending: Vec<f64> = request
                 .get("pending")
