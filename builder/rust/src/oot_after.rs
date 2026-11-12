@@ -69,6 +69,19 @@ fn occlusion() -> String {
         .to_owned()
 }
 
+// --- field of view ---------------------------------------------------------
+
+const FOV_SITE: u64 = 0x4c52f8;
+/// The angle load, half-angle multiply and projection angle store at FOV_SITE.
+/// Checking all three keeps another build's nearby code out, as oot_fov.py did
+/// (the engine supports one build, nso::SUPPORTED_BUILD, as the Python patch checked).
+const FOV_WORDS: [u32; 3] = [0xbd413e60, 0x1e210808, 0xbd00a280];
+
+fn fov() -> String {
+    r#"{ extern void hos_oot_fov(Ctx *c, uint64_t camera); hos_oot_fov(c, c->x[19]); }   /* (nx2/oot_fov.py: gameplay field of view) */"#
+        .to_owned()
+}
+
 fn wide_sites() -> Vec<(u64, u32, String)> {
     vec![
         (0x1202ee4, 0xf2c0b408, size("hos_wide_out")),
@@ -127,6 +140,14 @@ fn install<C: Code>(code: &C) -> BTreeMap<u64, String> {
                 after.insert(pc, text);
             }
         }
+    }
+    let fov_pc = MAIN + FOV_SITE;
+    if FOV_WORDS
+        .iter()
+        .enumerate()
+        .all(|(i, word)| code.word(fov_pc + 4 * i as u64) == Some(*word))
+    {
+        after.insert(fov_pc, fov());
     }
     after
 }
@@ -188,13 +209,19 @@ mod tests {
             .chain(jitter_sites())
             .chain(occlusion_sites())
             .map(|(off, word, _)| (MAIN + off, word))
+            .chain(
+                FOV_WORDS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, word)| (MAIN + FOV_SITE + 4 * i as u64, *word)),
+            )
             .collect()
     }
 
     #[test]
     fn installs_every_site_of_the_supported_words() {
         let sites = sites_from(&words_with_sites());
-        assert_eq!(sites.len(), 20);
+        assert_eq!(sites.len(), 21);
         assert_eq!(
             sites[&(MAIN + 0x1202ee4)],
             "{ extern volatile uint64_t hos_wide_out; const uint64_t _s = hos_wide_out; if (_s) c->x[8] = _s; }   /* (nx2/oot_wide.py: hos_wide_out) */"
@@ -210,14 +237,31 @@ mod tests {
         let mut words = words_with_sites();
         words.insert(MAIN + 0x1202ee4, 0);
         let sites = sites_from(&words);
-        assert_eq!(sites.len(), 19);
+        assert_eq!(sites.len(), 20);
         assert!(!sites.contains_key(&(MAIN + 0x1202ee4)));
     }
 
     #[test]
     fn stacks_snippets_at_one_address() {
         let sites = sites_from(&words_with_sites());
-        assert_eq!(sites.len(), 20);
+        assert_eq!(sites.len(), 21);
         assert!(sites.values().all(|text| !text.is_empty()));
+    }
+
+    #[test]
+    fn installs_the_field_of_view_hook_only_when_all_three_words_match() {
+        let words = words_with_sites();
+        let pc = MAIN + FOV_SITE;
+        let sites = sites_from(&words);
+        assert!(sites[&pc].contains("hos_oot_fov(c, c->x[19])"));
+        assert!(sites[&pc].contains("nx2/oot_fov.py: gameplay field of view"));
+        for i in 0..FOV_WORDS.len() {
+            let mut changed = words.clone();
+            changed.insert(pc + 4 * i as u64, FOV_WORDS[i] ^ 1);
+            assert!(
+                !sites_from(&changed).contains_key(&pc),
+                "the hook stayed with word {i} changed"
+            );
+        }
     }
 }

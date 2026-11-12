@@ -100,9 +100,9 @@ The engine also takes one JSON command on stdin; `hookshot_engine --help` and th
 ## In-game menu
 
 Press **Insert**, **F1** or **Esc** to open the Insert menu. It has Graphics, Audio, Controls, Debug/cheats and
-developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, camera speed, text speed and the debug teleport are
-there. The in-game controls and the full option list are in the [technical reference](docs/fork.md) and in the
-builder's own help.
+developer rows; HDR, DLSS/FSR, frame generation, the FPS counter, field of view, camera speed, text speed and the debug
+teleport are there. The in-game controls and the full option list are in the [technical reference](docs/fork.md) and in
+the builder's own help.
 
 ## Benchmarks
 
