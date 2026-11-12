@@ -641,22 +641,72 @@ fn write_whole(path: &Path, text: &str) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-pub fn apply_folder(
-    folder: &str,
-    protect_hearts: bool,
-    required: bool,
-) -> Result<Vec<String>, String> {
-    let folder = Path::new(folder);
-    if let Some(dump) = std::env::var_os("HOOKSHOT_PATCHES_DUMP") {
-        let dump = std::path::PathBuf::from(dump);
-        std::fs::create_dir_all(&dump).map_err(|e| format!("{}: {e}", dump.display()))?;
-        for path in code_files(folder)? {
-            let name = path.file_name().unwrap_or_default();
-            std::fs::copy(&path, dump.join(name))
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-        }
+fn workers(files: usize) -> usize {
+    std::env::var("HOOKSHOT_LIFT_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(16)
+        .max(1)
+        .min(files.max(1))
+}
+
+/// Run `body` over the chunk files, several files at once when the machine
+/// allows it. Results come back in file order, so logs and counters keep the
+/// serial order they were written in.
+fn map_files<T, F>(folder: &Path, body: F) -> Result<Vec<T>, String>
+where
+    T: Send,
+    F: Fn(&Path) -> Result<T, String> + Sync,
+{
+    let files = code_files(folder)?;
+    if files.is_empty() {
+        return Ok(Vec::new());
     }
-    let mut log = Vec::new();
+    let count = workers(files.len());
+    if count == 1 {
+        let mut out = Vec::with_capacity(files.len());
+        for path in &files {
+            out.push(body(path)?);
+        }
+        return Ok(out);
+    }
+    let per = files.len().div_ceil(count);
+    let all = std::thread::scope(|scope| -> Result<Vec<(usize, Result<T, String>)>, String> {
+        let handles: Vec<_> = files
+            .chunks(per)
+            .enumerate()
+            .map(|(part, chunk)| {
+                let body = &body;
+                let base = part * per;
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .enumerate()
+                        .map(|(index, path)| (base + index, body(path)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut all = Vec::with_capacity(files.len());
+        for handle in handles {
+            all.extend(
+                handle
+                    .join()
+                    .map_err(|_| "a patch worker stopped".to_string())?,
+            );
+        }
+        Ok(all)
+    })?;
+    let mut all = all;
+    all.sort_by_key(|(index, _)| *index);
+    let mut out = Vec::with_capacity(all.len());
+    for (_, result) in all {
+        out.push(result?);
+    }
+    Ok(out)
+}
+
+fn fresh_done(protect_hearts: bool) -> BTreeMap<&'static str, u32> {
     let mut done: BTreeMap<&'static str, u32> = [
         ("dynamic resolution branch", 0),
         ("text speed block", 0),
@@ -682,6 +732,230 @@ pub fn apply_folder(
             done.insert(what, 0);
         }
     }
+    done
+}
+
+struct FilePatch {
+    path: PathBuf,
+    log: Vec<String>,
+    output_log: Vec<String>,
+    done: BTreeMap<&'static str, u32>,
+    speed_hooks: u32,
+    camera_speed: u32,
+    step_sites: u32,
+    whole_sites: u32,
+    sound_jobs: u32,
+    solver_sites: u32,
+    heap_sites: [u32; 2],
+    output_found: [usize; OUT_EDITS.len()],
+}
+
+fn patch_one(path: &Path, protect_hearts: bool) -> Result<FilePatch, String> {
+    let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let base = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let mut log = Vec::new();
+    let mut done = fresh_done(protect_hearts);
+    let mut speed_hooks = 0u32;
+    let mut camera_speed = 0u32;
+    let mut out = s.clone();
+    if let Some(t) = patch_dynres(&out) {
+        out = t;
+        *done.get_mut("dynamic resolution branch").unwrap() += 1;
+        log.push(format!("oot_patches: dynamic resolution switch in {base}"));
+    }
+    if let Some((t, changed)) = patch_text_speed(&out) {
+        if changed {
+            out = t;
+            *done.get_mut("text speed block").unwrap() += 1;
+            log.push(format!(
+                "oot_patches: text speed scale and text size in {base}"
+            ));
+        }
+    }
+    if protect_hearts {
+        if let Some(t) = hook_head(&out, MENU_FOCUS_HEAD, MENU_FOCUS_CALL, MENU_FOCUS_DECL) {
+            out = t;
+            *done.get_mut("menu focus hook").unwrap() += 1;
+            log.push(format!("oot_patches: the menus' focus hook in {base}"));
+        }
+        if let Some(t) = hook_head(&out, MENU_TICK_HEAD, MENU_TICK_CALL, MENU_TICK_DECL) {
+            out = t;
+            *done.get_mut("menu tick hook").unwrap() += 1;
+            log.push(format!("oot_patches: the menus' update hook in {base}"));
+        }
+        if let Some(t) = hook_head(&out, TEXT_DRAW_HEAD, TEXT_DRAW_CALL, TEXT_DRAW_DECL) {
+            out = t;
+            *done.get_mut("text draw hook").unwrap() += 1;
+            log.push(format!("oot_patches: the text boxes' draw hook in {base}"));
+        }
+        if let Some(t) = hook_head(&out, GLYPH_HEAD, GLYPH_CALL, GLYPH_DECL) {
+            out = t;
+            *done.get_mut("glyph hook").unwrap() += 1;
+            log.push(format!("oot_patches: the glyphs' hook in {base}"));
+        }
+        if let Some(t) = hook_head(&out, TEXT_LAYOUT_HEAD, TEXT_LAYOUT_CALL, TEXT_LAYOUT_DECL) {
+            out = t;
+            *done.get_mut("text layout hook").unwrap() += 1;
+            log.push(format!(
+                "oot_patches: the text boxes' layout hook in {base}"
+            ));
+        }
+    }
+    if let Some((t, changed)) = patch_movie_frames(&out) {
+        if t.contains(MOVIE_NEW) {
+            *done.get_mut("movie's frame count").unwrap() += 1;
+        }
+        if changed {
+            log.push(format!(
+                "oot_patches: the movie's frame count by the frames' time in {base}"
+            ));
+        }
+        out = t;
+    }
+    let (t, n) = fixed_scale(&out);
+    out = t;
+    if n > 0 {
+        *done.get_mut("fixed path's scale").unwrap() += 1;
+        log.push(format!("oot_patches: the fixed path's scale in {base}"));
+    }
+    if protect_hearts {
+        if let Some(t) = patch_life(&out) {
+            out = t;
+            *done.get_mut("player heart protection").unwrap() += 1;
+            log.push(format!("oot_patches: player heart protection in {base}"));
+        }
+        if let Some(t) = patch_movement(&out) {
+            out = t;
+            *done.get_mut("player flight").unwrap() += 1;
+            log.push(format!("oot_patches: player flight in {base}"));
+        }
+        if let Some(t) = patch_flight_rotation(&out) {
+            out = t;
+            *done.get_mut("player flight rotation").unwrap() += 1;
+            log.push(format!("oot_patches: player flight rotation in {base}"));
+        }
+        if let Some(t) = patch_mouse_camera(&out) {
+            out = t;
+            *done.get_mut("mouse camera").unwrap() += 1;
+            log.push(format!("oot_patches: native mouse camera in {base}"));
+        }
+        if let Some(t) = patch_camera_centering(&out) {
+            out = t;
+            *done.get_mut("disable camera centering").unwrap() += 1;
+            log.push(format!(
+                "oot_patches: disable camera centering switch in {base}"
+            ));
+        }
+        if let Some((t, n)) = patch_cct_speed(&out) {
+            if t != out {
+                log.push(format!("oot_patches: movement speed in {base}"));
+            }
+            speed_hooks = n;
+            out = t;
+        }
+        if let Some(t) = patch_view(&out) {
+            out = t;
+            *done.get_mut("free camera").unwrap() += 1;
+            log.push(format!("oot_patches: free camera in {base}"));
+        }
+        let (t, n) = patch_camera_speed(&out);
+        if t != out {
+            log.push(format!(
+                "oot_patches: camera speed at {n} function(s) in {base}"
+            ));
+        }
+        camera_speed = n;
+        out = t;
+    }
+    let (t, n) = patch_frame_seconds(&out);
+    out = t;
+    let step_sites = if out.contains(STEP_MARK) {
+        out.matches(STEP_MARK).count() as u32
+    } else {
+        0
+    };
+    if n > 0 {
+        log.push(format!(
+            "oot_patches: the frame's time at {n} step divide(s) in {base}"
+        ));
+    }
+    let (t, found) = if protect_hearts {
+        patch_heap_retry(&out)
+    } else {
+        (out.clone(), [0, 0])
+    };
+    out = t;
+    let heap_sites = found;
+    if out != s && found != [0, 0] {
+        log.push(format!(
+            "oot_patches: heap-full retries of the OptimizeChangeBank allocations in {base}"
+        ));
+    }
+    let (t, whole) = patch_whole_frames(&out);
+    out = t;
+    let whole_sites = out.matches(WHOLE_MARK).count() as u32;
+    if whole > 0 {
+        log.push(format!(
+            "oot_patches: {whole} frame counter(s) with the step's whole frames in {base}"
+        ));
+    }
+    let (t, sound) = patch_sound_job(&out);
+    out = t;
+    let sound_jobs = sound;
+    if sound > 0 {
+        log.push(format!(
+            "oot_patches: the sound job at 60 Hz above 60 fps in {base}"
+        ));
+    }
+    let (t, solver) = patch_solver_steps(&out);
+    out = t;
+    let solver_sites = solver;
+    if solver > 0 {
+        log.push(format!(
+            "oot_patches: the solver steps rounded up above 60 fps in {base}"
+        ));
+    }
+    let (output_log, output_found) = output_size_patch(&mut out, &base);
+    if out != s {
+        write_whole(path, &out)?;
+    }
+    Ok(FilePatch {
+        path: path.to_path_buf(),
+        log,
+        output_log,
+        done,
+        speed_hooks,
+        camera_speed,
+        step_sites,
+        whole_sites,
+        sound_jobs,
+        solver_sites,
+        heap_sites,
+        output_found,
+    })
+}
+
+pub fn apply_folder(
+    folder: &str,
+    protect_hearts: bool,
+    required: bool,
+) -> Result<Vec<String>, String> {
+    let folder = Path::new(folder);
+    if let Some(dump) = std::env::var_os("HOOKSHOT_PATCHES_DUMP") {
+        let dump = std::path::PathBuf::from(dump);
+        std::fs::create_dir_all(&dump).map_err(|e| format!("{}: {e}", dump.display()))?;
+        for path in code_files(folder)? {
+            let name = path.file_name().unwrap_or_default();
+            std::fs::copy(&path, dump.join(name))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+    }
+    let mut log = Vec::new();
+    let mut done = fresh_done(protect_hearts);
     let mut speed_hooks = 0u32;
     let mut camera_speed = 0u32;
     let mut step_sites = 0u32;
@@ -690,174 +964,31 @@ pub fn apply_folder(
     let mut sound_jobs = 0u32;
     let mut solver_sites = 0u32;
     let mut heap_sites = [0u32, 0u32];
+    let mut output_found = [0usize; OUT_EDITS.len()];
 
-    for path in code_files(folder)? {
-        let s = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let base = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        let mut out = s.clone();
-        if let Some(t) = patch_dynres(&out) {
-            out = t;
-            *done.get_mut("dynamic resolution branch").unwrap() += 1;
-            log.push(format!("oot_patches: dynamic resolution switch in {base}"));
+    let edits = crate::timing::Stage::new("patch.edits");
+    let files = map_files(folder, |path| patch_one(path, protect_hearts))?;
+    edits.done();
+    let mut output_log = Vec::new();
+    for file in files {
+        log.extend(file.log);
+        for (what, n) in file.done {
+            *done.get_mut(what).unwrap() += n;
         }
-        if let Some((t, changed)) = patch_text_speed(&out) {
-            if changed {
-                out = t;
-                *done.get_mut("text speed block").unwrap() += 1;
-                log.push(format!(
-                    "oot_patches: text speed scale and text size in {base}"
-                ));
-            }
+        speed_hooks += file.speed_hooks;
+        camera_speed += file.camera_speed;
+        step_sites += file.step_sites;
+        if file.step_sites > 0 {
+            step_files.push(file.path);
         }
-        if protect_hearts {
-            if let Some(t) = hook_head(&out, MENU_FOCUS_HEAD, MENU_FOCUS_CALL, MENU_FOCUS_DECL) {
-                out = t;
-                *done.get_mut("menu focus hook").unwrap() += 1;
-                log.push(format!("oot_patches: the menus' focus hook in {base}"));
-            }
-            if let Some(t) = hook_head(&out, MENU_TICK_HEAD, MENU_TICK_CALL, MENU_TICK_DECL) {
-                out = t;
-                *done.get_mut("menu tick hook").unwrap() += 1;
-                log.push(format!("oot_patches: the menus' update hook in {base}"));
-            }
-            if let Some(t) = hook_head(&out, TEXT_DRAW_HEAD, TEXT_DRAW_CALL, TEXT_DRAW_DECL) {
-                out = t;
-                *done.get_mut("text draw hook").unwrap() += 1;
-                log.push(format!("oot_patches: the text boxes' draw hook in {base}"));
-            }
-            if let Some(t) = hook_head(&out, GLYPH_HEAD, GLYPH_CALL, GLYPH_DECL) {
-                out = t;
-                *done.get_mut("glyph hook").unwrap() += 1;
-                log.push(format!("oot_patches: the glyphs' hook in {base}"));
-            }
-            if let Some(t) = hook_head(&out, TEXT_LAYOUT_HEAD, TEXT_LAYOUT_CALL, TEXT_LAYOUT_DECL) {
-                out = t;
-                *done.get_mut("text layout hook").unwrap() += 1;
-                log.push(format!(
-                    "oot_patches: the text boxes' layout hook in {base}"
-                ));
-            }
-        }
-        if let Some((t, changed)) = patch_movie_frames(&out) {
-            if t.contains(MOVIE_NEW) {
-                *done.get_mut("movie's frame count").unwrap() += 1;
-            }
-            if changed {
-                log.push(format!(
-                    "oot_patches: the movie's frame count by the frames' time in {base}"
-                ));
-            }
-            out = t;
-        }
-        let (t, n) = fixed_scale(&out);
-        out = t;
-        if n > 0 {
-            *done.get_mut("fixed path's scale").unwrap() += 1;
-            log.push(format!("oot_patches: the fixed path's scale in {base}"));
-        }
-        if protect_hearts {
-            if let Some(t) = patch_life(&out) {
-                out = t;
-                *done.get_mut("player heart protection").unwrap() += 1;
-                log.push(format!("oot_patches: player heart protection in {base}"));
-            }
-            if let Some(t) = patch_movement(&out) {
-                out = t;
-                *done.get_mut("player flight").unwrap() += 1;
-                log.push(format!("oot_patches: player flight in {base}"));
-            }
-            if let Some(t) = patch_flight_rotation(&out) {
-                out = t;
-                *done.get_mut("player flight rotation").unwrap() += 1;
-                log.push(format!("oot_patches: player flight rotation in {base}"));
-            }
-            if let Some(t) = patch_mouse_camera(&out) {
-                out = t;
-                *done.get_mut("mouse camera").unwrap() += 1;
-                log.push(format!("oot_patches: native mouse camera in {base}"));
-            }
-            if let Some(t) = patch_camera_centering(&out) {
-                out = t;
-                *done.get_mut("disable camera centering").unwrap() += 1;
-                log.push(format!(
-                    "oot_patches: disable camera centering switch in {base}"
-                ));
-            }
-            if let Some((t, n)) = patch_cct_speed(&out) {
-                if t != out {
-                    log.push(format!("oot_patches: movement speed in {base}"));
-                }
-                speed_hooks += n;
-                out = t;
-            }
-            if let Some(t) = patch_view(&out) {
-                out = t;
-                *done.get_mut("free camera").unwrap() += 1;
-                log.push(format!("oot_patches: free camera in {base}"));
-            }
-            let (t, n) = patch_camera_speed(&out);
-            if t != out {
-                log.push(format!(
-                    "oot_patches: camera speed at {n} function(s) in {base}"
-                ));
-            }
-            camera_speed += n;
-            out = t;
-        }
-        let (t, n) = patch_frame_seconds(&out);
-        out = t;
-        if out.contains(STEP_MARK) {
-            step_sites += out.matches(STEP_MARK).count() as u32;
-            step_files.push(path.clone());
-        }
-        if n > 0 {
-            log.push(format!(
-                "oot_patches: the frame's time at {n} step divide(s) in {base}"
-            ));
-        }
-        let (t, found) = if protect_hearts {
-            patch_heap_retry(&out)
-        } else {
-            (out.clone(), [0, 0])
-        };
-        out = t;
-        heap_sites[0] += found[0];
-        heap_sites[1] += found[1];
-        if out != s && found != [0, 0] {
-            log.push(format!(
-                "oot_patches: heap-full retries of the OptimizeChangeBank allocations in {base}"
-            ));
-        }
-        let (t, whole) = patch_whole_frames(&out);
-        out = t;
-        whole_sites += out.matches(WHOLE_MARK).count() as u32;
-        if whole > 0 {
-            log.push(format!(
-                "oot_patches: {whole} frame counter(s) with the step's whole frames in {base}"
-            ));
-        }
-        let (t, sound) = patch_sound_job(&out);
-        out = t;
-        sound_jobs += sound;
-        if sound > 0 {
-            log.push(format!(
-                "oot_patches: the sound job at 60 Hz above 60 fps in {base}"
-            ));
-        }
-        let (t, solver) = patch_solver_steps(&out);
-        out = t;
-        solver_sites += solver;
-        if solver > 0 {
-            log.push(format!(
-                "oot_patches: the solver steps rounded up above 60 fps in {base}"
-            ));
-        }
-        if out != s {
-            write_whole(&path, &out)?;
+        whole_sites += file.whole_sites;
+        sound_jobs += file.sound_jobs;
+        solver_sites += file.solver_sites;
+        heap_sites[0] += file.heap_sites[0];
+        heap_sites[1] += file.heap_sites[1];
+        output_log.extend(file.output_log);
+        for (index, n) in file.output_found.iter().enumerate() {
+            output_found[index] += n;
         }
     }
 
@@ -922,7 +1053,8 @@ pub fn apply_folder(
             SOLVER_HEADS.len()
         ));
     }
-    apply_output_size(folder, required, &mut log)?;
+    log.extend(output_log);
+    check_output_size(output_found, required, &mut log)?;
     if let Some(dump) = std::env::var_os("HOOKSHOT_PATCHES_DUMP_OUT") {
         let dump = std::path::PathBuf::from(dump);
         std::fs::create_dir_all(&dump).map_err(|e| format!("{}: {e}", dump.display()))?;
@@ -935,34 +1067,37 @@ pub fn apply_folder(
     Ok(log)
 }
 
-fn apply_output_size(folder: &Path, required: bool, log: &mut Vec<String>) -> Result<(), String> {
+/// The output-size edits for one chunk's text. Kept apart from the driver so
+/// the same file is read, patched and written once.
+fn output_size_patch(out: &mut String, base: &str) -> (Vec<String>, [usize; OUT_EDITS.len()]) {
+    let mut log = Vec::new();
     let mut found = [0usize; OUT_EDITS.len()];
-    for path in code_files(folder)? {
-        let s = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut out = s.clone();
-        let mut hit = false;
-        for (index, (old, new)) in OUT_EDITS.iter().enumerate() {
-            let made = out.matches(new).count();
-            let raw = if made > 0 {
-                out.replace(new, "\0").matches(old).count()
-            } else {
-                out.matches(old).count()
-            };
-            found[index] += made + raw;
-            if raw > 0 && made == 0 {
-                out = out.replace(old, new);
-                hit = true;
-            }
-        }
-        if hit {
-            out = add_decl(&out, OUT_DECL);
-            write_whole(&path, &out)?;
-            log.push(format!(
-                "oot_patches: output size in {}",
-                path.file_name().unwrap_or_default().to_string_lossy()
-            ));
+    let mut hit = false;
+    for (index, (old, new)) in OUT_EDITS.iter().enumerate() {
+        let made = out.matches(new).count();
+        let raw = if made > 0 {
+            out.replace(new, "\0").matches(old).count()
+        } else {
+            out.matches(old).count()
+        };
+        found[index] += made + raw;
+        if raw > 0 && made == 0 {
+            *out = out.replace(old, new);
+            hit = true;
         }
     }
+    if hit {
+        *out = add_decl(out, OUT_DECL);
+        log.push(format!("oot_patches: output size in {base}"));
+    }
+    (log, found)
+}
+
+fn check_output_size(
+    found: [usize; OUT_EDITS.len()],
+    required: bool,
+    log: &mut Vec<String>,
+) -> Result<(), String> {
     if found != [1usize; OUT_EDITS.len()] {
         let wrong: Vec<usize> = found
             .iter()
@@ -980,6 +1115,32 @@ fn apply_output_size(folder: &Path, required: bool, log: &mut Vec<String>) -> Re
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn apply_output_size(folder: &Path, required: bool, log: &mut Vec<String>) -> Result<(), String> {
+    let hit = map_files(folder, |path| {
+        let s = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let base = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let mut out = s.clone();
+        let (lines, found) = output_size_patch(&mut out, &base);
+        if out != s {
+            write_whole(path, &out)?;
+        }
+        Ok((lines, found))
+    })?;
+    let mut found = [0usize; OUT_EDITS.len()];
+    for (lines, one) in hit {
+        log.extend(lines);
+        for (index, n) in one.iter().enumerate() {
+            found[index] += n;
+        }
+    }
+    check_output_size(found, required, log)
 }
 
 /// Apply the patches to the chunks in `folder`.
