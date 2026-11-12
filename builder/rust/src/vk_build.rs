@@ -263,6 +263,7 @@ impl Headers {
 /// build.py's sentence when a header package is missing, unchanged but for
 /// the library's name.
 #[cfg(test)]
+#[allow(dead_code)] // (the headers path reports the same sentences through its error)
 pub fn missing_guidance(missing: &[&str]) -> String {
     missing_guidance_for(Platform::current(), missing)
 }

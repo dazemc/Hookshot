@@ -909,4 +909,30 @@ mod tests {
         assert!(!base.join("out/ngx/_nvngx.dll").exists());
         let _ = fs::remove_dir_all(base);
     }
+
+    #[test]
+    fn a_staged_tree_links_files_and_keeps_what_is_already_there() {
+        let base = temp("link-tree");
+        let src = base.join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("one.bin"), b"one").unwrap();
+        fs::write(src.join("sub/two.bin"), b"two").unwrap();
+        let dst = base.join("dst");
+        let mut linked = 0;
+        link_tree(&src, &dst, &mut linked).unwrap();
+        assert_eq!(linked, 2);
+        assert_eq!(fs::read(dst.join("one.bin")).unwrap(), b"one");
+        assert_eq!(fs::read(dst.join("sub/two.bin")).unwrap(), b"two");
+        // (a second pass has nothing to do: the files there are kept)
+        let mut again = 0;
+        link_tree(&src, &dst, &mut again).unwrap();
+        assert_eq!(again, 0);
+        // (and a file a player or an earlier build left is not replaced)
+        fs::write(dst.join("one.bin"), b"kept").unwrap();
+        let mut kept = 0;
+        link_tree(&src, &dst, &mut kept).unwrap();
+        assert_eq!(kept, 0);
+        assert_eq!(fs::read(dst.join("one.bin")).unwrap(), b"kept");
+        let _ = fs::remove_dir_all(base);
+    }
 }
