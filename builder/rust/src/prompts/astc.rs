@@ -82,6 +82,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_reused_context_encodes_the_same_bytes() {
+        let rgba: Vec<u8> = (0..16 * 16 * 4)
+            .map(|i| ((i * 29 + i / 3) & 0xff) as u8)
+            .collect();
+        let first = encode(&rgba, 16, 16, false).unwrap();
+        let second = encode(&rgba, 16, 16, false).unwrap();
+        assert_eq!(first, second);
+        // (the sRGB and LDR contexts are separate)
+        let srgb = encode(&rgba, 16, 16, true).unwrap();
+        assert_eq!(srgb, encode(&rgba, 16, 16, true).unwrap());
+    }
+
+    #[test]
     fn a_solid_block_compresses_to_sixteen_nonzero_bytes() {
         let red = [255u8, 0, 0, 255].repeat(16);
         let out = encode(&red, 4, 4, false).unwrap();

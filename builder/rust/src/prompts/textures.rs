@@ -134,7 +134,37 @@ fn runs(texture: &Texture, mask: &Mask) -> Vec<(u32, Vec<u8>)> {
     runs_blocks(texture, &encode_bc4(mask))
 }
 
-fn draw_button(rgba: &mut [u8], width: u32, height: u32, cx: u32, cy: u32, r: u32, mark: &Mask) {
+fn draw_button(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: u32,
+    cy: u32,
+    r: u32,
+    mark: &Mask,
+) -> Option<(u32, u32, u32, u32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let mut changed: Option<(u32, u32, u32, u32)> = None;
+    let mut include = |x0: u32, y0: u32, x1: u32, y1: u32| {
+        let x0 = x0.min(width);
+        let y0 = y0.min(height);
+        let x1 = x1.min(width);
+        let y1 = y1.min(height);
+        if x1 > x0 && y1 > y0 {
+            changed = Some(match changed {
+                None => (x0, y0, x1, y1),
+                Some((ax0, ay0, ax1, ay1)) => (ax0.min(x0), ay0.min(y0), ax1.max(x1), ay1.max(y1)),
+            });
+        }
+    };
+    include(
+        cx.saturating_sub(r),
+        cy.saturating_sub(r),
+        cx.saturating_add(r).saturating_add(1),
+        cy.saturating_add(r).saturating_add(1),
+    );
     let sample_x = (cx + r).saturating_sub(6).min(width - 1);
     let sample_y = cy.min(height - 1);
     let at = ((sample_y * width + sample_x) * 4) as usize;
@@ -151,6 +181,12 @@ fn draw_button(rgba: &mut [u8], width: u32, height: u32, cx: u32, cy: u32, r: u3
     }
     let x0 = cx.saturating_sub(mark.width / 2);
     let y0 = cy.saturating_sub(mark.height / 2);
+    include(
+        x0,
+        y0,
+        x0.saturating_add(mark.width),
+        y0.saturating_add(mark.height),
+    );
     for y in 0..mark.height {
         for x in 0..mark.width {
             if mark.at(x, y) > 127 {
@@ -163,6 +199,55 @@ fn draw_button(rgba: &mut [u8], width: u32, height: u32, cx: u32, cy: u32, r: u3
             }
         }
     }
+    changed
+}
+
+/// The source blocks with only the changed pixels re-encoded. ASTC blocks are
+/// independent, so the rest of the game's picture keeps its exact blocks;
+/// re-encoding the whole 1160x680 texture for four small button marks was most
+/// of the prompt build's texture time.
+fn encode_changed(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    srgb: bool,
+    mut blocks: Vec<u8>,
+    changed: Option<(u32, u32, u32, u32)>,
+) -> Result<Vec<u8>, String> {
+    let Some((x0, y0, x1, y1)) = changed else {
+        return Ok(blocks);
+    };
+    let bw = width.div_ceil(4);
+    let bh = height.div_ceil(4);
+    let bx0 = x0 / 4;
+    let by0 = y0 / 4;
+    let bx1 = x1.div_ceil(4).min(bw);
+    let by1 = y1.div_ceil(4).min(bh);
+    if bx0 >= bx1 || by0 >= by1 {
+        return Ok(blocks);
+    }
+    let px0 = bx0 * 4;
+    let py0 = by0 * 4;
+    let px1 = (bx1 * 4).min(width);
+    let py1 = (by1 * 4).min(height);
+    let cw = px1 - px0;
+    let ch = py1 - py0;
+    let mut crop = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in py0..py1 {
+        let at = ((y * width + px0) * 4) as usize;
+        crop.extend_from_slice(&rgba[at..at + (cw * 4) as usize]);
+    }
+    let part = astc::encode(&crop, cw, ch, srgb)?;
+    let cbw = cw.div_ceil(4);
+    let cbh = ch.div_ceil(4);
+    for cy in 0..cbh {
+        for cx in 0..cbw {
+            let from = ((cy * cbw + cx) as usize) * 16;
+            let to = (((by0 + cy) * bw + bx0 + cx) as usize) * 16;
+            blocks[to..to + 16].copy_from_slice(&part[from..from + 16]);
+        }
+    }
+    Ok(blocks)
 }
 
 fn controller_layers(
@@ -188,6 +273,7 @@ fn controller_layers(
         ) else {
             continue;
         };
+        let mut changed: Option<(u32, u32, u32, u32)> = None;
         for (pad, cx, cy, r) in PICTURE_BUTTONS {
             let Some(gid) = icon_glyph(font, spec, pad) else {
                 continue;
@@ -198,13 +284,27 @@ fn controller_layers(
             };
             let holes = icon.holes();
             let mark = if holes.any() { holes } else { icon };
-            draw_button(&mut rgba, texture.width, texture.height, cx, cy, r, &mark);
+            if let Some(rect) =
+                draw_button(&mut rgba, texture.width, texture.height, cx, cy, r, &mark)
+            {
+                changed = Some(match changed {
+                    None => rect,
+                    Some((ax0, ay0, ax1, ay1)) => (
+                        ax0.min(rect.0),
+                        ay0.min(rect.1),
+                        ax1.max(rect.2),
+                        ay1.max(rect.3),
+                    ),
+                });
+            }
         }
-        let Ok(blocks) = astc::encode(
+        let Ok(blocks) = encode_changed(
             &rgba,
             texture.width,
             texture.height,
             (texture.format & 0xff) == 6,
+            blocks,
+            changed,
         ) else {
             continue;
         };
@@ -357,6 +457,31 @@ mod tests {
             encode_bc4_block(&values),
             [15, 0, 201, 111, 183, 228, 38, 1]
         );
+    }
+
+    #[test]
+    fn only_the_changed_blocks_are_encoded_again() {
+        let (width, height) = (38u32, 22u32);
+        let mut rgba: Vec<u8> = (0..width * height * 4)
+            .map(|i| ((i * 37 + i / 7) & 0xff) as u8)
+            .collect();
+        let source = astc::encode(&rgba, width, height, false).unwrap();
+        assert_eq!(
+            encode_changed(&rgba, width, height, false, source.clone(), None).unwrap(),
+            source
+        );
+        for y in 8..20 {
+            for x in 8..32 {
+                let at = ((y * width + x) * 4) as usize;
+                rgba[at..at + 4].copy_from_slice(&[255, 0, 128, 255]);
+            }
+        }
+        let full = astc::encode(&rgba, width, height, false).unwrap();
+        let spliced =
+            encode_changed(&rgba, width, height, false, source, Some((8, 8, 32, 20))).unwrap();
+        // (ASTC blocks are independent: re-encoding the changed region over
+        // the source's blocks is the whole image's encoding)
+        assert_eq!(spliced, full);
     }
 
     #[test]

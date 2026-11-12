@@ -229,20 +229,22 @@ pub fn unchanged(out: &Path, inputs: &BTreeMap<String, String>) -> Option<String
     None
 }
 
-/// The successful outputs, with what chose them, for the next build.
-pub fn write(
+/// The successful outputs, with what chose them, for the next build. The
+/// caller passes the digests it just read: hashing the 244 MB `Common.bntx` a
+/// second time only for the stamp costs as much as drawing several textures.
+pub fn write_outputs(
     out: &Path,
     inputs: &BTreeMap<String, String>,
     written: &super::Written,
+    outputs: &BTreeMap<String, Option<(u64, String)>>,
 ) -> Result<(), String> {
-    let outputs = outputs(out)?;
     if !outputs.contains_key("External.bfotf") {
         return Err("prompts: incomplete generated output".to_owned());
     }
     let note = json!({
         "scheme": SCHEME,
         "inputs": inputs,
-        "outputs": outputs_json(&outputs),
+        "outputs": outputs_json(outputs),
         "written": {
             "font_bytes": written.font_bytes,
             "size_table": written.size_table,
@@ -360,7 +362,8 @@ mod tests {
         let mut inputs = BTreeMap::new();
         inputs.insert("font".to_owned(), "a".to_owned());
         assert!(unchanged(&out, &inputs).is_some(), "no stamp yet");
-        write(&out, &inputs, &summary()).unwrap();
+        let outputs = outputs(&out).unwrap();
+        write_outputs(&out, &inputs, &summary(), &outputs).unwrap();
         assert_eq!(unchanged(&out, &inputs), None);
         let kept = written(&out).unwrap();
         assert!(kept.kept);
