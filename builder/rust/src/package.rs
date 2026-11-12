@@ -1,8 +1,11 @@
 //! Stage a game folder: the host executable, its libraries, the relocated
 //! image, the ROM filesystem and the caches a first start can reuse.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use serde_json::{Value, json};
 
@@ -62,43 +65,154 @@ fn copy(src: &Path, dst: &Path) -> Result<u64, String> {
 /// The link comes first: a tree staged into a new folder has no file there
 /// yet, and asking the filesystem whether one is (`to.exists()`) costs a stat
 /// per file, 186,000 of them for the romfs. An existing file is kept as it is.
+///
+/// Folders are shared out over a few threads: the romfs' 186,000 links are
+/// mostly time spent waiting for the filesystem, and its top folders differ
+/// tenfold in size, so each thread takes the next folder rather than a fixed
+/// share.
 pub(crate) fn link_tree(src: &Path, dst: &Path, counter: &mut u64) -> Result<(), String> {
     if !src.is_dir() {
         return Ok(());
     }
     fs::create_dir_all(dst).map_err(|e| format!("{}: {e}", dst.display()))?;
-    for entry in fs::read_dir(src).map_err(|e| format!("{}: {e}", src.display()))? {
+    // (I/O bound, and one thread per file system is enough: 8 on a 32-core
+    // PC, fewer on a small one)
+    let threads = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .clamp(1, 8);
+    if threads == 1 {
+        let mut linked = 0;
+        link_folder(src, dst, &mut linked)?;
+        *counter += linked;
+        return Ok(());
+    }
+    let shared = Linker {
+        queue: Mutex::new(VecDeque::from([(src.to_path_buf(), dst.to_path_buf())])),
+        changed: Condvar::new(),
+        busy: AtomicUsize::new(0),
+        linked: AtomicU64::new(0),
+        error: Mutex::new(None),
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| link_worker(&shared));
+        }
+    });
+    if let Some(error) = shared.error.lock().map_err(|e| e.to_string())?.take() {
+        return Err(error);
+    }
+    *counter += shared.linked.load(Ordering::Relaxed);
+    Ok(())
+}
+
+/// The folders to stage: a worker takes one, links its files and puts its
+/// subfolders back. When none is left and no worker is in a folder, the tree
+/// is done.
+struct Linker {
+    queue: Mutex<VecDeque<(PathBuf, PathBuf)>>,
+    changed: Condvar,
+    busy: AtomicUsize,
+    linked: AtomicU64,
+    error: Mutex<Option<String>>,
+}
+
+fn link_worker(shared: &Linker) {
+    loop {
+        if shared.error.lock().is_ok_and(|error| error.is_some()) {
+            return;
+        }
+        let next = {
+            let mut queue = match shared.queue.lock() {
+                Ok(queue) => queue,
+                Err(_) => return,
+            };
+            loop {
+                if let Some(folder) = queue.pop_front() {
+                    break Some(folder);
+                }
+                if shared.busy.load(Ordering::Acquire) == 0 {
+                    break None;
+                }
+                queue = match shared.changed.wait(queue) {
+                    Ok(queue) => queue,
+                    Err(_) => return,
+                };
+            }
+        };
+        let Some((from, to)) = next else {
+            return;
+        };
+        shared.busy.fetch_add(1, Ordering::AcqRel);
+        if let Err(error) = link_folder_shared(&from, &to, shared) {
+            if let Ok(mut slot) = shared.error.lock()
+                && slot.is_none()
+            {
+                *slot = Some(error);
+            }
+            if let Ok(mut queue) = shared.queue.lock() {
+                queue.clear();
+            }
+        }
+        shared.busy.fetch_sub(1, Ordering::AcqRel);
+        shared.changed.notify_all();
+    }
+}
+
+fn link_folder_shared(from: &Path, to: &Path, shared: &Linker) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    let mut folders = Vec::new();
+    for entry in fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
         let entry = entry.map_err(|e| e.to_string())?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
+        let source = entry.path();
+        let target = to.join(entry.file_name());
         let kind = entry.file_type().map_err(|e| e.to_string())?;
         if kind.is_dir() {
-            link_tree(&from, &to, counter)?;
-        } else if kind.is_file() {
-            link_file(&from, &to, counter)?;
+            folders.push((source, target));
+        } else if kind.is_file() && link_file(&source, &target)? {
+            shared.linked.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    if !folders.is_empty() {
+        if let Ok(mut queue) = shared.queue.lock() {
+            queue.extend(folders);
+        }
+        shared.changed.notify_all();
+    }
+    Ok(())
+}
+
+/// One folder at a time, for a single-threaded host and the started tree.
+fn link_folder(from: &Path, to: &Path, counter: &mut u64) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for entry in fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let from_file = entry.path();
+        let to_file = to.join(entry.file_name());
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if kind.is_dir() {
+            link_folder(&from_file, &to_file, counter)?;
+        } else if kind.is_file() && link_file(&from_file, &to_file)? {
+            *counter += 1;
         }
     }
     Ok(())
 }
 
 /// One file of a tree: a hard link, a copy across volumes, and never over a
-/// file already staged.
-fn link_file(from: &Path, to: &Path, counter: &mut u64) -> Result<(), String> {
+/// file already staged. True when this call staged it.
+fn link_file(from: &Path, to: &Path) -> Result<bool, String> {
     match fs::hard_link(from, to) {
-        Ok(()) => {
-            *counter += 1;
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(_) => {
             // (no link: another volume, or a filesystem without them. A copy
             // would replace what is there, which the old check kept)
             if to.exists() {
-                return Ok(());
+                return Ok(false);
             }
             fs::copy(from, to).map_err(|e| format!("{}: {e}", to.display()))?;
-            *counter += 1;
-            Ok(())
+            Ok(true)
         }
     }
 }
