@@ -1833,6 +1833,20 @@ mod tests {
     }
 
     #[test]
+    fn radv_and_the_xtxh_navi_21_ids_are_out_of_the_amd_workarounds() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let draw = fs::read_to_string(root.join("gpu/vk/vk_draw.cpp")).unwrap();
+        let main = fs::read_to_string(root.join("gpu/vk/vk_main.cpp")).unwrap();
+        assert!(
+            draw.contains(
+                "dev.props.vendorID == 0x1002 && dev.driver_id != VK_DRIVER_ID_MESA_RADV"
+            )
+        );
+        assert!(main.contains("dev.props.deviceID == 0x73af"));
+        assert!(main.contains("dev.props.deviceID == 0x73a5"));
+    }
+
+    #[test]
     fn gcn_gets_no_mirrors_batching_or_f16() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let memory = fs::read_to_string(root.join("gpu/vk/vk_memory.cpp")).unwrap();
