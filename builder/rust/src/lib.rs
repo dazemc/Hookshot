@@ -162,6 +162,7 @@ pub fn dispatch(text: &str) -> String {
         }
         "build.plan" => compile::plan_json(&request, &kit::root()),
         "lift.translate" => emitter::translate_json(&request),
+        "lift.tables" => lift::tables_json(&string(&request, "exefs").unwrap_or_default()),
         "lift.runtime" => {
             emitter::runtime_text(request.get("which").and_then(Value::as_i64).unwrap_or(0) as i32)
                 .map(|text| json!({"text": text}))

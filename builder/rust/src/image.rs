@@ -246,9 +246,17 @@ impl Image {
             .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
-    #[allow(dead_code)]
     pub fn word(&self, address: u64) -> Option<u32> {
         self.read_u32(address)
+    }
+
+    pub fn eh_starts(&self) -> &[u64] {
+        &self.eh_starts
+    }
+
+    pub fn read(&self, address: u64, size: usize) -> Option<&[u8]> {
+        let at = address.checked_sub(self.base)? as usize;
+        self.mem.get(at..at + size)
     }
 
     #[allow(dead_code)]
