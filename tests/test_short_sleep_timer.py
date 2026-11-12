@@ -6,10 +6,12 @@ processor busy for each sleeping thread. With SHORT_SLEEP_TIMER_THREADS logical 
 time the frame's threads need, so there the game's own sleeps (SleepThread) wait on the timer; the host's own short
 sleeps (the frame limiter, the audio renderer) still yield and come back at their time. HOS_SHORT_SLEEP_TIMER, when it is
 set, is read by env_on's rule (gpu/vk/compat/hookshot_env.h): on is the timer for every short sleep, off (0, false, off,
-no, empty) is yielding for every one; not set, the processors decide.
+no, empty) is yielding for every one; not set, the processors decide on Windows, while on Linux the game's own sleeps always
+wait on the timer (the host's still yield) whatever the processors: the same switch 0 or 1 overrides it.
 
 The fixture runs the real code cut from the source (the choice, hos_sleep_ns, sleep_ns and the game's entry
 hos_sleep_logged) over stubs that count the yields and the timer waits, one process a case (the choice is made once).
+It is built twice: once for the Windows build's code and once with _WIN32 undefined for the Linux build's.
 
 python -I -B tests/test_short_sleep_timer.py [--cc gcc]
 """
@@ -49,8 +51,12 @@ FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include <stdlib.h>
 #include <string.h>
 #include "hookshot_env.h"   /* (env_value_off: the switches' one rule) */
+#ifdef SLEEP_FIXTURE_POSIX
+#undef _WIN32   /* (the Linux build's code: the new default is in its caller) */
+#else
 #ifndef _WIN32
 #define _WIN32 1   /* (the choice by processors is the Windows build's: the cut code is that build on every runner) */
+#endif
 #endif
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 typedef void *HANDLE;
@@ -155,7 +161,11 @@ int main(int argc, char **argv) {
     hos_sleep_logged(0, 0x8009a478);
     CHECK(core_yields == 1 && yields == y + 1 && timer_waits == waits && aways == a);
     CHECK(aways == 9 && backs == aways);   /* (every sleep gave its virtual core up and took one back) */
+#ifdef SLEEP_FIXTURE_POSIX
+    CHECK(affinity_calls == 0);   /* (the Linux build never counts the processors) */
+#else
     CHECK(affinity_calls == (groups == 1));   /* (chosen once; with several groups the mask is not asked for) */
+#endif
     CHECK(logged == (how ? 1 : 0));   /* (the log says so once where the timer is chosen) */
     return 0;
 }
@@ -166,6 +176,11 @@ CASES = [(1, None, 1), (2, None, 1), (4, None, 1), (6, None, 1),
          (7, None, 0), (8, None, 0), (12, None, 0), (16, None, 0), (64, None, 0), (-1, None, 0), (0, None, 0),
          (16, "1", 2), (4, "1", 2), (-1, "1", 2), (4, "0", 0), (16, "0", 0), (4, "", 0), (16, "", 0),
          (16, "on", 2), (16, "yes", 2), (16, "true", 2), (4, "off", 0), (4, "no", 0), (4, "false", 0), (4, " 0 ", 0), (16, "2", 2)]
+
+# the Linux build: not set, the game's own sleeps wait on the timer whatever the processors; the switch still overrides
+POSIX_CASES = [(1, None, 1), (4, None, 1), (7, None, 1), (8, None, 1), (16, None, 1), (64, None, 1), (-1, None, 1),
+               (0, None, 1), (1, "1", 2), (16, "1", 2), (-1, "1", 2), (4, "0", 0), (16, "0", 0), (4, "", 0),
+               (16, "", 0), (16, "on", 2), (4, "off", 0), (4, "false", 0), (16, "2", 2)]
 
 
 def main():
@@ -184,14 +199,14 @@ def main():
           "the kernel's SleepThread no longer sleeps through hos_sleep_logged")
     env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
 
-    def build(tmp, name, **changed):
+    def build(tmp, name, posix=False, **changed):
         text = FIXTURE
         for key, part in parts.items():
             text = text.replace(key, changed.get(key.strip("@").lower(), part))
         c, exe = Path(tmp) / (name + ".c"), Path(tmp) / (name + ".exe")
         c.write_text(text, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk" / "compat"),
-                        str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-I", str(ROOT / "gpu" / "vk" / "compat")]
+                       + (["-DSLEEP_FIXTURE_POSIX"] if posix else []) + [str(c), "-o", str(exe)], check=True)
         return exe
 
     def run(exe, threads, asked, how, groups=1):
@@ -199,9 +214,9 @@ def main():
         return subprocess.run([str(exe), str(threads), str(how)] + ([str(groups)] if groups != 1 else []), env=e,
                               capture_output=True, text=True)
 
-    def broken(tmp, name, part, old, new, case, what):
+    def broken(tmp, name, part, old, new, case, what, posix=False):
         check(old in parts[part], "%s no longer has the line the broken variant '%s' changes" % (part, name))
-        exe = build(tmp, name, **{part.strip("@").lower(): parts[part].replace(old, new)})
+        exe = build(tmp, name, posix=posix, **{part.strip("@").lower(): parts[part].replace(old, new)})
         r = run(exe, *case)
         check(r.returncode != 0 and "FAIL:" in r.stderr, what)
 
@@ -222,6 +237,22 @@ def main():
                   % (asked, how, r.stderr))
         r = run(exe, 4, None, 1, groups=2)
         check(r.returncode != 0 and "FAIL:" in r.stderr, "one group's mask of 4 counts as the process's processors")
+        # the Linux build: not set, the game's own short sleeps wait on the timer whatever the processors; the switch overrides
+        linux = build(tmp, "fixture-linux", posix=True)
+        for threads, asked, how in POSIX_CASES:
+            r = run(linux, threads, asked, how)
+            check(r.returncode == 0, "Linux, %d threads, HOS_SHORT_SLEEP_TIMER %r: short sleeps do not wait as in %d\n%s"
+                  % (threads, asked, how, r.stderr))
+            for other in {0, 1, 2} - {how}:
+                r = run(linux, threads, asked, other)
+                check(r.returncode != 0 and "FAIL:" in r.stderr,
+                      "Linux, %d threads, %r passes as %d too: the checks prove nothing" % (threads, asked, other))
+        for asked, how in ((None, 1), ("1", 2), ("0", 0)):   # (processor groups do not move the Linux default)
+            r = run(linux, 4, asked, how, groups=2)
+            check(r.returncode == 0, "Linux, two processor groups, HOS_SHORT_SLEEP_TIMER %r: not as in %d\n%s"
+                  % (asked, how, r.stderr))
+        r = run(linux, 4, None, 0, groups=2)
+        check(r.returncode != 0 and "FAIL:" in r.stderr, "Linux's default yields the game's short sleeps")
         # broken variants: each must fail the case it breaks
         broken(tmp, "never", "@CHOICE@", "threads > 0 && threads <= SHORT_SLEEP_TIMER_THREADS ? 1 : 0", "threads < 0 ? 1 : 0",
                (4, None, 1), "all yielding on 4 threads passes: the processors are not looked at")
@@ -235,6 +266,11 @@ def main():
                (4, None, 1), "the host's own short sleeps on the timer pass on 4 threads")
         broken(tmp, "one-group", "@SLEEP@", "GetActiveProcessorGroupCount() == 1 && ", "",
                (4, None, 0, 2), "one group's mask taken for the process's processors passes")
+        broken(tmp, "linux-yield", "@SLEEP@", "if (!getenv(\"HOS_SHORT_SLEEP_TIMER\")) how = 1;", "(void)0;",
+               (16, None, 1), "the Linux build's default yields the game's short sleeps", posix=True)
+        broken(tmp, "linux-all", "@SLEEP@", "if (!getenv(\"HOS_SHORT_SLEEP_TIMER\")) how = 1;",
+               "if (!getenv(\"HOS_SHORT_SLEEP_TIMER\")) how = 2;",
+               (16, None, 1), "the Linux build's default puts the host's short sleeps on the timer too", posix=True)
         edge = "enum { SHORT_SLEEP_TIMER_THREADS = 6 };"   # (the number the measurements gave: a change of it is a change here too)
         check(edge in parts["@CHOICE@"], "SHORT_SLEEP_TIMER_THREADS is no longer 6: the cases above name 6 and 7 threads")
 

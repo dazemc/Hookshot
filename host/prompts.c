@@ -79,7 +79,8 @@ static int face_of_name(const char *name) {
     if (!name[0]) return HOS_PROMPT_SWITCH;
     if (contains(name, "dualsense") || contains(name, "ps5")) return HOS_PROMPT_PS5;
     if (contains(name, "dualshock") || contains(name, "ps4") || contains(name, "playstation")) return HOS_PROMPT_PS4;
-    if (contains(name, "steam deck")) return HOS_PROMPT_STEAMDECK;
+    /* (a Steam Controller names its buttons as the Deck does: L1/R1, View, Menu, Steam. SDL3 calls it "Steam Controller") */
+    if (contains(name, "steam deck") || contains(name, "steam controller")) return HOS_PROMPT_STEAMDECK;
     if (contains(name, "nintendo") || contains(name, "switch") || contains(name, "joy-con")) return HOS_PROMPT_SWITCH;
     return HOS_PROMPT_XBOX;   /* (Xbox pads, and the many that copy their layout) */
 }
@@ -948,12 +949,19 @@ void hos_prompts_glyph(uint64_t slot) {
         last = face;   /* (another font: not looked at again while its glyphs follow each other) */
         return;
     }
-    const uint64_t at = base[0] + (base[1] == font.n ? 8 : 0);   /* (kept with its 8-byte header, or without) */
-    const uint8_t *q = (const uint8_t *)hos_guest_range(at, font.n - 8);
-    if (!q) return;
-    if (memcmp(q, font.head, sizeof font.head)) {
-        last = face;   /* (another font of that size) */
-        return;
+    /* (a stream of the file's size may hold the font behind its 8-byte header, or from its start, as on native Windows: the
+       font's own head says which) */
+    uint64_t at = 0;
+    int unread = 0;
+    for (uint64_t a = base[0] + (base[1] == font.n ? 8 : 0);; a = base[0]) {
+        const uint8_t *q = (const uint8_t *)hos_guest_range(a, font.n - 8);
+        if (!q) unread = 1;
+        else if (!memcmp(q, font.head, sizeof font.head)) { at = a; break; }
+        if (a == base[0]) break;
+    }
+    if (!at) {
+        if (!unread) last = face;   /* (another font of that size) */
+        return;   /* (else not readable yet: looked at again) */
     }
     font.at = at;
     hos_log("prompts: the font at %#llx: the icons in texts follow at once", (unsigned long long)font.at);

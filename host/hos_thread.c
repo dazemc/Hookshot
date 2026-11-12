@@ -837,7 +837,8 @@ static void sleep_ns(int64_t ns, int guest);
    which wakes about 0.5 ms late, and the host's (the frame limiter, the audio renderer) yield; 2, all wait on the timer.
    asked: the value of HOS_SHORT_SLEEP_TIMER, NULL when it is not set; set, it is read by env_on's rule (on: the timer for
    all, 2; off: yielding for all, 0). threads: the logical processors this process may run on, 0 when not known. Not set:
-   1 with SHORT_SLEEP_TIMER_THREADS of them or fewer, which is no more than the game's six cores, else 0.
+   1 with SHORT_SLEEP_TIMER_THREADS of them or fewer, which is no more than the game's six cores, else 0. On Linux the
+   caller makes the game's own sleeps use the timer when the switch is not set, whatever the processors.
    OoT's idle job workers sleep 20 us and look again, about 7,600 times a second, and a yielding loop keeps a processor
    busy for each: with so few processors that is time the frame's threads need. Measured with the game held to part of a
    5700X3D: on 4 threads Hyrule Field went from 47 to 51 fps and lost its long frames (over 250 ms in 2 of 4 runs
@@ -900,13 +901,23 @@ static void sleep_ns(int64_t ns, int guest) {
         if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys))
             threads = __builtin_popcountll((uint64_t)proc);
 #endif
-        const int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
+        int how = hos_short_sleep_timer(getenv("HOS_SHORT_SLEEP_TIMER"), threads);
+#if !defined(_WIN32)
+        /* (hookshot) Linux: the game's own sleeps wait on the timer whatever the processors, the host's still yield (1).
+           OoT's five idle job workers and sead::MainThread yielded 3.3-3.6 ms a frame each in Hyrule Field (RTX 3090,
+           7900X, 24 threads), ~9 ms of CPU a frame in all, while one of them waited on a GPU readback. With the timer
+           for all sleeps the frame's CPU fell 44.8 -> 35.4 ms at the same median frame (11.30 / 11.32 ms). The job
+           workers are not on the frame's critical path there (HOS_CHAIN), so their ~0.5 ms later wake costs nothing
+           measured; on 4-8 thread CPUs (the Steam Deck: 8) those yields took processors the frame needs.
+           HOS_SHORT_SLEEP_TIMER=0: all yield, as before; =1: all on the timer */
+        if (!getenv("HOS_SHORT_SLEEP_TIMER")) how = 1;
+#endif
         /* (the line says what was chosen, before any thread has made its timer: where the high-resolution timer cannot
            be made, Windows before 10 1803, a short sleep falls through to the yield loop at the end and nothing changes) */
         static volatile LONG told;
         if (how && !InterlockedExchange(&told, 1))
-            hos_log("sleep: %s sleeps under a millisecond wait on the timer where Windows has the high-resolution one "
-                    "(%d logical processors; HOS_SHORT_SLEEP_TIMER=0: all yield)",
+            hos_log("sleep: %s sleeps under a millisecond wait on the timer where the high-resolution one can be made "
+                    "(%d logical processors, 0: not counted; HOS_SHORT_SLEEP_TIMER=0: all yield)",
                     how == 2 ? "all" : "the game's", threads);
         short_timer = how;
     }
