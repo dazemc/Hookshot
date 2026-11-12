@@ -52,8 +52,11 @@
 #include "skip_code.h"
 #include "fallback_depth_hold.h"   // (a mesh fallback's depth-only draws held while its colour draw builds)
 #include "pcache_read.h"          // (a pipeline cache's header checked before the rest of the file is read)
+#include "pipeline_cache_file.h"  // (a cache read or written without a cache-sized heap buffer)
+#include "pcache_stamp.h"         // (the cache's files dropped when another translator made them)
 #include "driver_faults.h"
 #include "fallback_size_policy.h"
+#include "translate_wait.h"
 
 #include "shaders/clear_f_frag_spv.h"
 #include "shaders/clear_i_frag_spv.h"
@@ -723,12 +726,14 @@ std::atomic<int64_t> pcache_built_since_save{0};
 // most precompiled pipelines as not found in the app's cache (~460 of ~12,900 here), which it then serves from its own.
 std::atomic<size_t> pcache_saved_size{0};
 /// A pipeline cache file's data, or nothing when it cannot be read or was made by another device or driver
-std::vector<uint8_t> pcache_file_read(const std::string& path) {
+PipelineCacheFile pcache_file_read(const std::string& path) {
     pcache_read::Device at{dev.props.vendorID, dev.props.deviceID};
     std::memcpy(at.uuid, dev.props.pipelineCacheUUID, VK_UUID_SIZE);
     // (data of another device or driver is dropped before Vulkan sees it: by its 32-byte header, before the rest, hundreds of MB,
     // is read. After a driver update every start would otherwise read the whole file only to drop it: pcache_read.h)
-    return pcache_read::read(path, at);
+    return PipelineCacheFile::read(path, [at](const uint8_t* head, uint64_t size) {
+        return pcache_read::header_ok(head, size, at);
+    });
 }
 std::string pcache_dir;
 
@@ -757,14 +762,9 @@ std::string play_path(uint32_t n) {
 size_t play_file_write(VkPipelineCache cache, const std::string& path) {
     size_t n = 0;
     if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
-    std::vector<uint8_t> data(n);
-    if (vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
-    const std::string tmp = path + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb");
-    if (!f) return 0;
-    bool ok = fwrite(data.data(), 1, n, f) == n;
-    ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
-    return ok && MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) ? n : 0;
+    auto data = PipelineCacheFile::writable(path, n);
+    if (data.empty() || vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    return data.publish(n) ? n : 0;
 }
 /// (pcache_init, before any other thread has pcache) the play files the last starts wrote, merged into pcache; at kPlayFilesKept
 /// of them pcache is written into its file and they are removed. A file of another driver is of no use: removed. The number merged
@@ -782,12 +782,16 @@ size_t play_files_merge() {
         if (num.size() > 9 || num.find_first_not_of("0123456789") != std::string::npos) continue;
         play_seq = std::max(play_seq, (uint32_t)std::stoul(num));
         const std::string path = e.path().string();
-        const std::vector<uint8_t> part = pcache_file_read(path);
+        auto part = pcache_file_read(path);
         VkPipelineCache tmp = VK_NULL_HANDLE;
         VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
         ci.initialDataSize = part.size(), ci.pInitialData = part.data();
-        if (part.empty() || vkCreatePipelineCache(dev.device, &ci, nullptr, &tmp) != VK_SUCCESS) {
-            remove(path.c_str());
+        if (part.empty()) {
+            if (part.rejected()) remove(path.c_str());   // Only a proven incompatible header can discard a generation.
+            continue;
+        }
+        if (vkCreatePipelineCache(dev.device, &ci, nullptr, &tmp) != VK_SUCCESS) {
+            if (part.reset()) remove(path.c_str());   // Release a mapped Windows view before removing rejected bytes.
             continue;
         }
         if (vkMergePipelineCaches(dev.device, pcache, 1, &tmp) == VK_SUCCESS) merged.push_back(path), merged_kb += part.size() >> 10;
@@ -914,18 +918,46 @@ bool play_cache_in_use() { return play_cache.load() != nullptr; }
 // ---- (end of the play caches) ----
 
 bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
+// (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
+// starts empty and is not saved; the driver's own shader cache is all there is)
+bool pcache_load_off() {
+    static const bool off = [] { const char* e = getenv("RX_VK_PCACHE_LOAD"); return e && env_value_off(e); }();   // (hookshot_env.h: 0/off/false/no)
+    return off;
+}
+/// (hookshot) The pipeline cache's files go when they were made for another translator than this one (program_cache_stamp,
+/// which the program cache and the prepare record start over by): their pipelines can no longer be hit, and the file only grew,
+/// read whole at every start and held by the driver (pcache_stamp.h). Once a run, before the first of pcache_init and
+/// prepare_run: whether files went, so that prepare_run makes the stage libraries the warm pass kept in them again
+/// (prepared_for.warmed), whatever its record says. RX_VK_PCACHE_STAMP=0: kept whatever made them, as before
+bool pcache_drop_stale() {
+    static const bool dropped = [] {
+        static const bool by_stamp = [] { const char* e = getenv("RX_VK_PCACHE_STAMP"); return !e || !env_value_off(e); }();
+        if (pcache_load_off() || !by_stamp) return false;
+        char exe[MAX_PATH];
+        const DWORD n = game_module_path(exe, MAX_PATH);
+        std::string dir(exe, n);
+        dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+        const pcache_stamp::Dropped gone = pcache_stamp::check(dir, program_cache_stamp());
+        if (gone.files)
+            logf("vk: pipeline cache: %zu files made for another translator dropped (%llu MB); it starts empty", gone.files,
+                 (unsigned long long)(gone.bytes >> 20));
+        return gone.files > 0;
+    }();
+    return dropped;
+}
 void pcache_init() {
     if (pcache) return;
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     pcache_dir = dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+    if (const size_t removed = PipelineCacheFile::cleanup_temporaries(dir))
+        logf("vk: pipeline cache: %zu old temporary files removed", removed);
     pcache_path = dir + "mkw_vk_pipelines.bin";
-    // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
-    // starts empty and is not saved; the driver's own shader cache is all there is)
-    static const bool off = getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0;
+    const bool off = pcache_load_off();
     pcache_no_save = off;
-    std::vector<uint8_t> data = off ? std::vector<uint8_t>{} : pcache_file_read(pcache_path);
+    pcache_drop_stale();   // (before the files are read)
+    auto data = off ? PipelineCacheFile{} : pcache_file_read(pcache_path);
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     ci.initialDataSize = data.size();
     ci.pInitialData = data.empty() ? nullptr : data.data();
@@ -6478,9 +6510,50 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         st_waits++;
         st_wait_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     };
+    // (hookshot) RX_VK_TRANSLATE_WAIT_MS=<ms> (off unless set): a translation not ready, for a draw whose targets hold an
+    // earlier frame's picture, is waited for at most this long a frame in all, on each recording thread, without taking the
+    // job onto this thread, and the draw is then left out of the frame. Waiting it out (#1573, the default) can bring back
+    // the 0.2-3 s pauses at an area's first new programs on a cold program bank; leaving it out at once (RX_VK_PIPE_SKIP=2)
+    // lost the writes of translations that finish in a moment. With the bound, a translation slower than it can still lose a
+    // memory write (its writes are not known before it is translated): so it is opt-in until it has been tested on more
+    // machines. A target made this frame still waits it out. A value that is not a number is ignored with a warning.
+    static const double translate_wait_ms = [] {
+        double ms = translate_wait::kOff;
+        const char* e = getenv("RX_VK_TRANSLATE_WAIT_MS");
+        if (e && !translate_wait::parse(e, ms)) {
+            ms = translate_wait::kOff;
+            logf("vk: RX_VK_TRANSLATE_WAIT_MS=%s is not a number of milliseconds: ignored", e);
+        }
+        if (e && ms >= 0)
+            logf("vk: a shader still translating is waited for at most %.1f ms a frame on each recording thread, then its draws "
+                 "on earlier frames' targets are left out (RX_VK_TRANSLATE_WAIT_MS)", ms);
+        else if (e)
+            logf("vk: shaders still translating are waited out (RX_VK_TRANSLATE_WAIT_MS off)");
+        return ms;
+    }();
     if (!cp->ready.load(std::memory_order_acquire)) {
         if (legacy_translation_skip && targets_persistent(at)) return void(st_pending_skips++);
-        wait_for(cp->ready);
+        if (!always_wait && translate_wait_ms >= 0 && targets_persistent(at)) {
+            static thread_local uint64_t budget_frame = ~0ull;
+            static thread_local double budget_left = 0;
+            const uint64_t frame = texture_frame_no();
+            if (frame != budget_frame) budget_frame = frame, budget_left = translate_wait_ms;
+            bool ready;
+            if (budget_left > 0) {   // (counted as a wait only when it can wait: the stat #1573 was judged on stays honest)
+                PROF_EXACT();
+                const auto t0 = std::chrono::steady_clock::now();
+                ready = jobs_wait_for(cp->ready, budget_left);
+                const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                budget_left -= took;
+                st_waits++;
+                st_wait_ms += took;
+            } else {
+                ready = cp->ready.load(std::memory_order_acquire);
+            }
+            if (!ready) return void(st_pending_skips++);
+        } else {
+            wait_for(cp->ready);
+        }
     }
     if (exposure_log_on() && cp) exposure_note(s, *cp);
     if (cp->failed) SKIP_HERE();
@@ -7810,6 +7883,11 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     PreparedFor prepared_for;
     double hash_ms = 0;
     const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
+    // (hookshot) the pipeline cache's files dropped at this start (pcache_drop_stale: another translator's, or a folder from
+    // before the stamp file) took the stage libraries the warm pass had kept in them: made again, whatever the record says,
+    // once a run, by the start's own preparation (the background one in play leaves the driver's part to first use)
+    static std::atomic<bool> rewarm_once{true};
+    if (!background && pcache_drop_stale() && rewarm_once.exchange(false)) prepared_for.warmed = 0;   // (read as not made)
     const bool libraries = gpl_wanted() && !env_on("RX_VK_NO_WARM");
     const uint64_t warmed = warmed_stamp(libraries);
     const std::string warming = path + ".warming";
@@ -9056,18 +9134,11 @@ void pipeline_cache_save(bool force) {
                          (n - std::min<size_t>(n, pcache_saved_size)) >> 10, play_grown >> 20);
             }
             if (write) {
-                std::vector<uint8_t> data(n);
-                if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
-                    const std::string tmp = pcache_path + ".tmp";
-                    if (FILE* f = fopen(tmp.c_str(), "wb")) {
-                        bool ok = fwrite(data.data(), 1, n, f) == n;
-                        ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
-                        // (only a file in place counts as saved: a failed write is tried again at the next save)
-                        if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-                            pcache_saved_size = n;
-                            logf("vk: pipeline cache saved (%zu KB)", n >> 10);
-                        }
-                    }
+                auto data = PipelineCacheFile::writable(pcache_path, n);
+                // (only a file in place counts as saved: a failed write is tried again at the next save)
+                if (!data.empty() && vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS && data.publish(n)) {
+                    pcache_saved_size = n;
+                    logf("vk: pipeline cache saved (%zu KB)", n >> 10);
                 }
             }
         } catch (const std::exception& e) {
