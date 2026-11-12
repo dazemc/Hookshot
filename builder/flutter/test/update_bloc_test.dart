@@ -51,4 +51,38 @@ void main() {
       }
     });
   });
+
+  group('UpdateBloc target checks', () {
+    test('a handoff whose downloaded tools are another version is refused', () async {
+      final bloc = UpdateBloc(fetcher: (url, {StopFlag? stop}) async => throw StateError('no network'));
+      addTearDown(bloc.close);
+      final failed = expectLater(
+          bloc.stream,
+          emitsThrough(isA<UpdateFailed>()
+              .having((s) => s.error, 'error', contains('This Builder is v9.9.0, not the requested v9.9.9'))));
+      bloc.add(const BeginUpdate(folder: '/games/Hookshot', toolsTag: 'v9.9.0', latest: 'v9.9.9', fetched: true));
+      await failed;
+    });
+
+    test('a download list that names another version than the target is refused', () async {
+      final tmp = await Directory.systemTemp.createTemp('hookshot-bloc-target-');
+      try {
+        final list = 'tag v9.9.8\npart ${'a' * 64} 1 . https://example.com/tree.zip\ntree\n';
+        final bloc = UpdateBloc(
+          fetcher: (url, {StopFlag? stop}) async => utf8.encode(list),
+          runningRoot: () => tmp.path,
+          installRoot: '${tmp.path}/builder',
+        );
+        addTearDown(bloc.close);
+        final failed = expectLater(
+            bloc.stream,
+            emitsThrough(
+                isA<UpdateFailed>().having((s) => s.error, 'error', contains('GitHub offered v9.9.8, not v9.9.9'))));
+        bloc.add(const BeginUpdate(folder: '', toolsTag: 'v9.9.0', latest: 'v9.9.9'));
+        await failed;
+      } finally {
+        await tmp.delete(recursive: true);
+      }
+    });
+  });
 }
