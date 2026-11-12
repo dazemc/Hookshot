@@ -136,6 +136,42 @@ void main() {
       });
     });
 
+    test('a read NUP continues in build.all when no Python stage is needed', () {
+      expect(
+        rustNupBuildApplies(prepare: false, dlss: false, cli: '/engine'),
+        isTrue,
+      );
+      expect(
+        rustNupBuildApplies(prepare: true, dlss: false, cli: '/engine'),
+        isFalse,
+      );
+      expect(
+        rustNupBuildApplies(prepare: false, dlss: true, cli: '/engine'),
+        isFalse,
+      );
+      expect(
+        rustNupBuildApplies(prepare: false, dlss: false, cli: null),
+        isFalse,
+      );
+      final request = jsonDecode(
+        rustNupBuildRequest(
+          out: '/games/Hookshot',
+          work: '/cache/hookshot-builder',
+          language: 'fr',
+        ),
+      );
+      expect(request, {
+        'command': 'build.all',
+        'exefs': '/cache/hookshot-builder/exefs',
+        'romfs': '/games/Hookshot/romfs',
+        'out': '/games/Hookshot',
+        'work': '/cache/hookshot-builder',
+        'assets': '',
+        'vk': '',
+        'language': 'fr',
+      });
+    });
+
     test('the Python stage after the read skips reading the .nup again', () {
       expect(
         rustNupPythonArgs(

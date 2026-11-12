@@ -602,8 +602,9 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
     cfg.saveConfig(_cfg);
     if (rustNupApplies(kind: s.kind)) {
       final work = rustBuildWork();
+      late final String rust;
       try {
-        final rust = requireRustEngineCli();
+        rust = requireRustEngineCli();
         final exitCode = await _runPrepare(
           emit,
           [rust, '--stream'],
@@ -622,6 +623,22 @@ class BuilderBloc extends Bloc<BuilderEvent, BuilderState> {
       if (_cancelling) {
         _cancelling = false;
         emit(const BuildFailed('Build cancelled. Your game folder was not replaced.', cancelled: true));
+        return;
+      }
+      // The engine already has the exefs and romfs it read: hand them straight
+      // to build.all so the lift, compile, link and package stay in Rust.
+      if (rustNupBuildApplies(prepare: s.prepare, dlss: s.dlss, cli: rust)) {
+        _startProcess(
+          emit,
+          [rust, '--stream'],
+          stdinText: rustNupBuildRequest(
+            out: out,
+            work: work,
+            language: code,
+            vk: Platform.environment['HOOKSHOT_VK_PREBUILT'] ?? '',
+          ),
+          title: 'Building your game',
+        );
         return;
       }
       // Shader preparation, the button prompts and NVIDIA's DLSS SDK are still

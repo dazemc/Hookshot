@@ -1,5 +1,5 @@
-// The Rust engine's build paths: build.all for an unpacked folder, the read
-// stage before make_game.py for a .nup, and the JSON requests --stream reads.
+// The Rust engine's build paths: build.all for an unpacked folder or for a
+// .nup's read result, and the JSON requests --stream reads.
 import 'dart:convert';
 import 'dart:io';
 
@@ -64,6 +64,33 @@ bool rustBuildApplies({
   required String? cli,
 }) =>
     kind != 'nup' && !prepare && !dlss && cli != null;
+
+/// A NUP the engine has just read can continue in build.all under the same
+/// conditions; otherwise make_game.py still prepares shaders or fetches DLSS.
+bool rustNupBuildApplies({
+  required bool prepare,
+  required bool dlss,
+  required String? cli,
+}) =>
+    !prepare && !dlss && cli != null;
+
+/// The build.all request for what build.prepare left: work/exefs and out/romfs.
+String rustNupBuildRequest({
+  required String out,
+  required String work,
+  required String language,
+  String assets = '',
+  String vk = '',
+}) =>
+    rustBuildRequest(
+      exefs: p.join(work, 'exefs'),
+      romfs: p.join(out, 'romfs'),
+      out: out,
+      work: work,
+      assets: assets,
+      vk: vk,
+      language: language,
+    );
 
 /// The request `hookshot_engine --stream` takes to read a .nup into work/exefs
 /// and out/romfs for make_game.py's remaining stages.
