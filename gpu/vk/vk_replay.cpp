@@ -49,6 +49,7 @@
 #include "vk_xfer.h"
 #include "vk_present_rect.h"
 #include "vk_present_trace.h"
+#include "rec_value.h"
 
 #include "vk_internal.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
@@ -373,8 +374,10 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
         signals[nsig].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         nsig++;
         std::lock_guard mk(rec_map_mu);
-        for (uint64_t v : rec_open_values) value_rec.emplace(v, seq);
-        if (r.value) value_rec.emplace(r.value, seq);
+        // (each part's recording with the submission's value: the value's recording is its last part's, the latest seq
+        // (rec_value.h: emplace kept the first part's, and a fence wait came back before the later parts were done))
+        for (uint64_t v : rec_open_values) rec_value::finished_in(value_rec, v, seq);
+        if (r.value) rec_value::finished_in(value_rec, r.value, seq);
         rec_open_values.clear();
         while (value_rec.size() > 8192) value_rec.erase(value_rec.begin());
     }
