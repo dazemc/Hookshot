@@ -1,0 +1,218 @@
+# Every game-free check that does not need a GPU, the game or a dump, on every pull request to main and every push to
+# it: cargo test --workspace in builder/rust on Linux and Windows, flutter test and flutter analyze in builder/flutter,
+# the focused SPIR-V fixtures (global narrow load/store, direct surface atomics, F2I immediate) and actionlint over the
+# workflows. No Python test step is involved and no game data is read. The paths below start a run only for a change
+# one of these checks reads; actionlint's own job runs when a workflow changes.
+name: Game-free source regressions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'builder/rust/**'
+      - 'builder/flutter/**'
+      - 'gpu/vk/eden/**'
+      - 'gpu/vk/sirit/**'
+      - 'gpu/vk/compat/**'
+      - 'gpu/compat/**'
+      - 'gpu/third_party/suyu/**'
+      - 'tests/global_load_16/**'
+      - 'tests/global_load_16_ir.cpp'
+      - 'tests/native_suatom/**'
+      - 'tests/native_suatom.cpp'
+      - 'tests/f2i_immediate/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'builder/rust/**'
+      - 'builder/flutter/**'
+      - 'gpu/vk/eden/**'
+      - 'gpu/vk/sirit/**'
+      - 'gpu/vk/compat/**'
+      - 'gpu/compat/**'
+      - 'gpu/third_party/suyu/**'
+      - 'tests/global_load_16/**'
+      - 'tests/global_load_16_ir.cpp'
+      - 'tests/native_suatom/**'
+      - 'tests/native_suatom.cpp'
+      - 'tests/f2i_immediate/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    name: Rust tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: builder/rust
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # (the stable branch of the action, pinned by commit like every other action here; it installs the current
+      # stable Rust with rustup. The tests skip a64emit when it is absent, so it is not built here)
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  flutter:
+    name: Flutter tests and analyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: builder/flutter
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: '3.47.9'
+          cache: true
+      - name: Packages
+        run: flutter pub get
+      - name: Tests
+        run: flutter test
+      - name: Analyzer
+        run: flutter analyze
+
+  # (the focused shader recompiler fixtures, in one job: they build the same recompiler sources, through ccache with the
+  # cache main's runs leave; the direct surface atomic fixture takes the objects the global load/store one made. The F2I
+  # fixture's steps run whether or not the others passed, as when it was a job of its own)
+  spirv-fixtures:
+    name: SPIR-V fixtures (global narrow load/store, direct surface atomics, F2I immediate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out pinned SPIR-V headers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: KhronosGroup/SPIRV-Headers
+          ref: 496543121ce6419f23d6fa5d7194ba66c36212d2
+          path: _deps/spirv-headers
+          persist-credentials: false
+      - name: Install Clang C++20, SPIR-V validator and ccache
+        run: sudo apt-get update && sudo apt-get install -y clang spirv-tools ccache
+      - name: Compiler cache
+        id: ccache
+        env:
+          RECOMPILER: ${{ hashFiles('gpu/vk/eden/**', 'gpu/vk/sirit/**', 'gpu/vk/compat/**', 'gpu/compat/**') }}
+        run: |
+          {
+            echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
+            echo "CCACHE_MAXSIZE=400M"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          } >> "$GITHUB_ENV"
+          prefix="ccache-spirv-fixtures-$(clang++ --version | sha256sum | cut -c1-16)-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix$RECOMPILER" >> "$GITHUB_OUTPUT"
+      - id: ccache-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ steps.ccache.outputs.key }}
+          restore-keys: ${{ steps.ccache.outputs.prefix }}
+      - name: Configure the focused real-IR fixture
+        run: >-
+          CC=clang CXX=clang++ cmake -S tests/global_load_16 -B ${{ runner.temp }}/global-load-16
+          -DREPO_ROOT=${{ github.workspace }}
+          -DSPIRV_HEADERS_ROOT=${{ github.workspace }}/_deps/spirv-headers
+      - name: Build the focused fixture
+        run: cmake --build ${{ runner.temp }}/global-load-16 --parallel "$(nproc)"
+      - name: Emit and inspect real IR modules
+        run: ${{ runner.temp }}/global-load-16/global_load_16_ir ${{ runner.temp }}/global-load-16/modules
+      - name: Check real-IR compare-exchange loop contracts
+        env:
+          RX_VK_FOLLOW_STORES: '1'
+        run: ${{ runner.temp }}/global-load-16/global_load_16_ir --cas-loops ${{ runner.temp }}/global-load-16/modules
+      - name: Validate every emitted module
+        shell: bash
+        # (--uniform-buffer-standard-layout: the back end's device has uniformBufferStandardLayout, gpu/vk/vk_main.cpp
+        # creates it with every feature the GPU reports, so constant buffers are u32 arrays of stride 4)
+        run: |
+          for module in "${{ runner.temp }}"/global-load-16/modules/*.spv; do
+            spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
+          done
+      - name: Configure the authored direct surface atomic fixture
+        run: >-
+          CC=clang CXX=clang++ cmake -S tests/native_suatom -B ${{ runner.temp }}/native-suatom
+          -DREPO_ROOT=${{ github.workspace }}
+          -DSPIRV_HEADERS_ROOT=${{ github.workspace }}/_deps/spirv-headers
+      - name: Build the direct surface atomic fixture
+        run: cmake --build ${{ runner.temp }}/native-suatom --parallel "$(nproc)"
+      - name: Translate authored direct surface atomic programs
+        run: ${{ runner.temp }}/native-suatom/native_suatom ${{ runner.temp }}/native-suatom/modules
+      - name: Validate every direct surface atomic module
+        shell: bash
+        run: |
+          for module in "${{ runner.temp }}"/native-suatom/modules/*.spv; do
+            spirv-val --target-env vulkan1.3 "$module"
+          done
+      - name: Build the F2I immediate fixture
+        id: f2i
+        if: ${{ !cancelled() }}
+        run: |
+          CC=clang CXX=clang++ cmake -S tests/f2i_immediate -B "${{ runner.temp }}/f2i" -DREPO_ROOT="${{ github.workspace }}" -DSPIRV_HEADERS_ROOT="${{ github.workspace }}/_deps/spirv-headers"
+          cmake --build "${{ runner.temp }}/f2i" --parallel "$(nproc)"
+      - name: Emit and validate the F2I immediate modules
+        if: ${{ !cancelled() && steps.f2i.outcome == 'success' }}
+        run: |
+          "${{ runner.temp }}/f2i/f2i_immediate" "${{ runner.temp }}/f2i/modules"
+          for module in "${{ runner.temp }}"/f2i/modules/*.spv; do
+            spirv-val --target-env vulkan1.3 --uniform-buffer-standard-layout "$module"
+          done
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+      - if: ${{ !cancelled() && github.event_name == 'push' && steps.ccache-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ${{ steps.ccache.outputs.key }}
+
+  actionlint:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # (the release's own binary, checked against its published SHA-256; shellcheck from the runner image checks the
+      # run: scripts)
+      - name: actionlint 1.7.12
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+      - name: Lint the workflows
+        run: '"$RUNNER_TEMP/actionlint" -color'
