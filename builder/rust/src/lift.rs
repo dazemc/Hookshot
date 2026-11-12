@@ -807,7 +807,7 @@ impl<'a, C: Code> Lifter<'a, C> {
             match kind {
                 Kind::Op => {
                     let text = texts.get(index).map(String::as_str).unwrap_or("");
-                    if text.is_empty() {
+                    if text.is_empty() || text.contains("recomp_unhandled") {
                         out.push(format!(
                             "\x01A{index}\x01a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"
                         ));
@@ -853,15 +853,16 @@ impl<'a, C: Code> Lifter<'a, C> {
                         format!("((c->x[{reg}] >> {bit}) & 1)")
                     };
                     out.push(format!(
-                        "if {}{value} {{ {} }}",
+                        "if ({}{value}) {{ {} }}",
                         if nz != 0 { "" } else { "!" },
                         self.transfer(pc, target, body)
                     ));
                 }
                 Kind::Bl(target) => {
                     let next = pc + 4;
-                    if self.entries.contains(&target) {
-                        out.push(format!("\x01C{index}\x01c->x[30] = 0x{next:x}ULL; f_{target:08x}(c);\x01B{index}\x01"));
+                    let callee = self.callee(target);
+                    if self.entries.contains(&callee) {
+                        out.push(format!("\x01C{index}\x01c->x[30] = 0x{next:x}ULL; f_{callee:08x}(c);\x01B{index}\x01"));
                     } else {
                         out.push(format!(
                             "\x01A{index}\x01a64_trap(c, 0x{pc:x}ULL, 0x{word:08x}u); return;"
@@ -1094,7 +1095,7 @@ impl<'a, C: Code> Lifter<'a, C> {
         if body.contains_key(&target) && (!self.entries.contains(&target) || target == pc) {
             format!("goto L_{target:08x};")
         } else if self.entries.contains(&target) {
-            format!("TAILCALL(f_{target:08x});")
+            format!("TAILCALL(f_{:08x});", self.callee(target))
         } else {
             format!("a64_trap(c, 0x{target:x}ULL, 0); return;")
         }
