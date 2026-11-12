@@ -12,13 +12,11 @@ analyzer:
     implicit-casts: true
     implicit-dynamic: true
   exclude:
-  - '**/*.g.dart' # Ignore generated files
-  - '**/*.freezed.dart'
-  - build/**
-  - windows/**
-  - linux/**
-  plugins:
-  - dart_code_metrics
+    - '**/*.g.dart' # Ignore generated files
+    - '**/*.freezed.dart'
+    - build/**
+    - windows/**
+    - linux/**
 
 linter:
   rules:
@@ -42,17 +40,5 @@ linter:
   - prefer_const_literals_to_create_immutables
   - sort_child_properties_last
 
-dart_code_metrics:
-  metrics:
-    cyclomatic-complexity: 20
-    lines-of-code: 120
-    maximum-nesting: 5
-  metrics-exclude:
-    - test/**
-  rules:
-    - prefer-const-border-radius
-    - prefer-correct-identifier-length
-
 formatter:
-  line-length: 120
   page_width: 120
