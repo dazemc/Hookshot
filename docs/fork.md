@@ -92,7 +92,7 @@ were measured by alternating variants. Development branches are labelled as such
 | Package | — | 10.1 s cold, 0.43 s warm | 186,583 hard links |
 | `prepare-shaders` | — | 36.8 s first, 17.6 s cached `build.all` | 2,863 programs, 15,330 graphics + 71 compute pipelines |
 | Boot | — | 2,640 presents at 60 fps, 0 traps | Rust-built backend and prompts |
-| Compile 22 chunks | — | 412 s at 4 jobs | dominant first-build cost; compile-speed work in progress |
+| Compile 22 chunks | — | 412 s at 4 jobs; 6 MB units: 18–20 s for five in parallel | units merged; a full first compile is estimated at 5–8 min, not yet measured end to end |
 
 The [performance page](performance.md) has stage-by-stage profiles, syscall counts, rejected experiments and the
 shader-preparation breakdown.
@@ -108,9 +108,8 @@ Still Python or not ported:
 | Area | Status |
 |---|---|
 | Flutter build/update fallback | **Removed.** Flutter does not invoke Python; a missing engine is a typed error. |
-| Release/AppImage/Windows packaging | Still Python/.NET scripts; new Rust/Flutter release pipeline in progress |
+| Release/AppImage/Windows packaging | Linux AppImage and Windows package pipelines now build Flutter + Rust; the first pre-release is in progress. The AppImage needs distribution clang and Vulkan/SPIR-V/VMA headers for a game build |
 | Prompt textures (`Common.bntx`, per-face `textures.bin`) | Not ported; the game uses its own button textures |
-| DLSS 5 | Not implemented; no public SDK |
 | Legacy Tk/WPF builders | Kept for upstream release scripts, not used by the Flutter app |
 | Python source-reading tests | Deleted; tests are Rust, Flutter and C/C++ |
 
@@ -141,9 +140,10 @@ Do not port game-derived pipeline lists or generated game data.
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
 CI was green on `6f407b6b`; newer commits are being watched after the recent merges.
 
-The fork was renamed to `dazemc/Hookshot-rs`. Release packaging is being converted to Flutter + Rust; until that lands,
-the release AppImage and Windows builder package still use the older Tk/.NET/Python scripts. The repository never
-contains game files or generated game data.
+The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
+app and Rust engine without Python; the first pre-release (`v2.2.0-rs.1`) is building. The Linux image is a
+development image: a game build needs distribution clang and Vulkan/SPIR-V/VMA headers (or a source build). The
+repository never contains game files or generated game data.
 
 ## Testing
 
