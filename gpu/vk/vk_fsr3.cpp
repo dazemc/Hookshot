@@ -896,7 +896,7 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     if (!in || !in_view || !out || !out_view) return false;
     // (another network of the upscale's shape, as temporal_upscale takes them: only the scene into the picture. The gameplay
     // networks sample the scene's B10G11R11 colour and write the B10G11R11 picture)
-    if (!known && (in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+    if (!known && (!temporal_scene_format(in->format) || !temporal_scene_format(out->format) ||
                    (out->width >> out_level) <= in->width || !fsr3_inputs::is_scene(in)))
         return false;
     fsr3_inputs::Frame f;
@@ -905,7 +905,7 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     Out& o = out_state();
     std::lock_guard lk(o.mu);
     const uint32_t ow = std::max(1u, out->width >> out_level), oh = std::max(1u, out->height >> out_level);
-    if (out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || ow < f.width || oh < f.height) return fail("unexpected output");
+    if (!temporal_scene_format(out->format) || ow < f.width || oh < f.height) return fail("unexpected output");
     if (!make_out_pipeline()) return fail("its output pass was not made");
     struct Disturbed {   // (from here commands are recorded: the program's descriptor pushes are pushed again after)
         ~Disturbed() { descriptors_disturbed(); }

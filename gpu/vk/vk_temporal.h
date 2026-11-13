@@ -142,4 +142,11 @@ struct TemporalEngine {
 /// Runs f a few frames on, to free what work in flight may still use. Called by the engines with the chain's lock held
 void temporal_later(std::function<void()> f);
 
+/// Whether `format` is a scene colour the temporal upscalers can take: the game's usual
+/// B10G11R11 float, or the RGBA16F buffer used when the scene tone mapper (PsychoV35) is on
+/// (Native HDR). Engines that cannot run on a format must fall back to the game's own upscale.
+inline bool temporal_scene_format(VkFormat format) {
+    return format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || format == VK_FORMAT_R16G16B16A16_SFLOAT;
+}
+
 } // namespace mkwvk

@@ -663,7 +663,7 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
     // below: the format, the camera's own size and perspective, the largest in the frame, and the upscale's input)
     if (!color0 || !depth || !camera || camera_size < 0x230 || !temporal_scene_size(width, height)) return;
     // (with the Upscaler Off too: its stretch takes the fixed shares' networks only with the frame's scene as their input)
-    if (color0->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || (!temporal_wanted() && !temporal_off())) return;
+    if (!temporal_scene_format(color0->format) || (!temporal_wanted() && !temporal_off())) return;
     State& s = st();
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
@@ -815,12 +815,12 @@ bool stretch(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImage
              uint32_t out_level) {
     State& s = st();
     std::lock_guard lk(s.mu);
-    if (!in || !in_view || !out || !out_view || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    if (!in || !in_view || !out || !out_view || !temporal_scene_format(out->format)) return false;
     const uint32_t ow = std::max(1u, out->width >> out_level), oh = std::max(1u, out->height >> out_level);
     if (ow < in->width || oh < in->height) return false;   // (never a network that makes its picture smaller)
     if (!known) {
         // (the gameplay networks' formats, a picture larger than the input, and the input this frame's scene: as above)
-        if (in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || ow <= in->width) return false;
+        if (!temporal_scene_format(in->format) || ow <= in->width) return false;
         note_output(out, out_level);
         const Camera& c = s.cam;
         if (!c.valid || texture_frame_no() - c.frame > 1 || in->width != c.width || in->height != c.height) return false;
@@ -872,7 +872,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         const Camera& c = s.cam;
         // (the gameplay networks' own formats: they sample the scene's B10G11R11 colour and write the B10G11R11 picture.
         // Other cooperative-matrix networks of the same shape (one RGBA8 into A2B10G10R10, RGB9E5 into B10G11R11) are not it)
-        if (!in || !out || in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+        if (!in || !out || !temporal_scene_format(in->format) || !temporal_scene_format(out->format) ||
             (out->width >> out_level) <= in->width)
             return false;
         note_output(out, out_level);
@@ -885,7 +885,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
                                             out->height >> out_level);
     }
     free_dead(false);
-    if (known && out && out->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) note_output(out, out_level);
+    if (known && out && temporal_scene_format(out->format)) note_output(out, out_level);
     const Camera cam = s.cam;
     s.cam.valid = false;   // (each frame's own camera)
     struct SkinsDone {     // (the skinned draws, each frame's own too: actor_motion takes them, or they go here)
@@ -905,7 +905,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     if (cam.depth->width != rw || cam.depth->height != rh || !(cam.depth->usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||
         cam.depth->samples != VK_SAMPLE_COUNT_1_BIT || !(cam.depth->aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
         return fail("unexpected scene depth");
-    if (out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || !dlss_checks::scene_size_fits(rw, rh, ow, oh))
+    if (!temporal_scene_format(out->format) || !dlss_checks::scene_size_fits(rw, rh, ow, oh))
         return fail("unexpected output");
     if (!engine.started) engine.started = true, engine.ok = engine.e->start();
     if (!engine.ok) {

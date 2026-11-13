@@ -7,6 +7,7 @@
 // projection (nx2/oot_jitter.py: P[0][2] and P[1][2]) is read back from it, given to FSR in render pixels and taken off the
 // motion, with dlss_math.h's functions: the same jitter, read the same way, as DLSS's.
 #include "vk_fsr3_inputs.h"
+#include "vk_temporal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -212,7 +213,7 @@ bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0; }
 void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                      uint64_t camera_size) {
     if (!color0 || !depth || !camera || camera_size < 0x230 || width < 640 || height < 360) return;
-    if (color0->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || !wanted()) return;
+    if (!temporal_scene_format(color0->format) || !wanted()) return;
     State& s = st();
     std::lock_guard lk(s.mu);
     const uint64_t now = texture_frame_no();
