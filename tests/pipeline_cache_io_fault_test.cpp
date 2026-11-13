@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <cerrno>
 #ifdef _WIN32
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -22,20 +24,31 @@ static bool injected=false;
 static bool refuse(Fault kind){if(fault==kind&&!injected){injected=true;return true;}return false;}
 #ifdef _WIN32
 static HANDLE io_create(LPCWSTR p,DWORD access,DWORD share,LPSECURITY_ATTRIBUTES sa,DWORD disposition,DWORD flags,HANDLE t){
-    if(refuse(CREATE))return INVALID_HANDLE_VALUE;return CreateFileW(p,access,share,sa,disposition,flags,t);
+    if(refuse(CREATE)) return INVALID_HANDLE_VALUE;
+    return CreateFileW(p,access,share,sa,disposition,flags,t);
 }
-static BOOL io_resize(HANDLE f){if(refuse(RESIZE)||refuse(TRUNCATE))return FALSE;return SetEndOfFile(f);}
+static BOOL io_resize(HANDLE f){if(refuse(RESIZE) || refuse(TRUNCATE)) return FALSE;
+    return SetEndOfFile(f);}
 static HANDLE io_mapping(HANDLE f,LPSECURITY_ATTRIBUTES sa,DWORD protection,DWORD high,DWORD low,LPCWSTR name){
-    if(refuse(MAP))return nullptr;return CreateFileMappingW(f,sa,protection,high,low,name);
+    if(refuse(MAP)) return nullptr;
+    return CreateFileMappingW(f,sa,protection,high,low,name);
 }
-static LPVOID io_view(HANDLE m,DWORD access,DWORD high,DWORD low,SIZE_T n){if(refuse(VIEW))return nullptr;return MapViewOfFile(m,access,high,low,n);}
-static BOOL io_flush(LPCVOID p,SIZE_T n){if(refuse(FLUSH))return FALSE;return FlushViewOfFile(p,n);}
-static BOOL io_unmap(LPCVOID p){if(refuse(UNMAP))return FALSE;return UnmapViewOfFile(p);}
-static BOOL io_sync(HANDLE f){if(refuse(SYNC))return FALSE;return FlushFileBuffers(f);}
-static BOOL io_time(HANDLE f,const FILETIME* a,const FILETIME* b,const FILETIME* c){if(refuse(TOUCH))return FALSE;return SetFileTime(f,a,b,c);}
-static BOOL io_close_file(HANDLE f){if(GetFileType(f)==FILE_TYPE_DISK&&refuse(CLOSE))return FALSE;return CloseHandle(f);}
-static BOOL io_replace(LPCWSTR a,LPCWSTR b,DWORD flags){if(refuse(REPLACE))return FALSE;return MoveFileExW(a,b,flags);}
-static BOOL io_remove(LPCWSTR p){if(refuse(CLEANUP)){SetLastError(ERROR_ACCESS_DENIED);return FALSE;}return DeleteFileW(p);}
+static LPVOID io_view(HANDLE m,DWORD access,DWORD high,DWORD low,SIZE_T n){if(refuse(VIEW)) return nullptr;
+    return MapViewOfFile(m,access,high,low,n);}
+static BOOL io_flush(LPCVOID p,SIZE_T n){if(refuse(FLUSH)) return FALSE;
+    return FlushViewOfFile(p,n);}
+static BOOL io_unmap(LPCVOID p){if(refuse(UNMAP)) return FALSE;
+    return UnmapViewOfFile(p);}
+static BOOL io_sync(HANDLE f){if(refuse(SYNC)) return FALSE;
+    return FlushFileBuffers(f);}
+static BOOL io_time(HANDLE f,const FILETIME* a,const FILETIME* b,const FILETIME* c){if(refuse(TOUCH)) return FALSE;
+    return SetFileTime(f,a,b,c);}
+static BOOL io_close_file(HANDLE f){if(GetFileType(f)==FILE_TYPE_DISK && refuse(CLOSE)) return FALSE;
+    return CloseHandle(f);}
+static BOOL io_replace(LPCWSTR a,LPCWSTR b,DWORD flags){if(refuse(REPLACE)) return FALSE;
+    return MoveFileExW(a,b,flags);}
+static BOOL io_remove(LPCWSTR p){if(refuse(CLEANUP)) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    return DeleteFileW(p);}
 #define CreateFileW io_create
 #define SetEndOfFile io_resize
 #define CreateFileMappingW io_mapping

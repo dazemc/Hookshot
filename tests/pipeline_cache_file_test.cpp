@@ -53,7 +53,11 @@ static void cleanup_cases(const std::filesystem::path& parent, int& checks) {
     const auto bytes=published.u8string();const std::string destination(reinterpret_cast<const char*>(bytes.data()),bytes.size());
     auto writer=mkwvk::PipelineCacheFile::writable(destination,128);CHECK(!writer.empty());
     fs::path live;for(const auto& entry:fs::directory_iterator(root))if(!before.count(entry.path()))live=entry.path();
+#ifndef _WIN32
     CHECK(!live.empty());fs::last_write_time(live,old);
+#else
+    CHECK(!live.empty());
+#endif
     CHECK(mkwvk::PipelineCacheFile::cleanup_temporaries(folder)==0&&fs::exists(live));
     memset(writer.data(),42,128);CHECK(writer.publish(64));
     CHECK(!fs::exists(live)&&fs::file_size(published)==64);
