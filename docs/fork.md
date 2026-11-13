@@ -127,6 +127,15 @@ fallback.
 Upstream moves independently; `main..upstream/main` currently reports ~209 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
+- **Back-to-back passes and dispatches ordered by the game's barriers (#2559, upstream `04151844`)**: a draw pass right
+  after another waits in its fragment stages only, and a direct compute dispatch right after another gets no full
+  barrier of its own; the game's own `nvnCommandBufferBarrier`s order them, as on the console. On by default on NVIDIA
+  (the game's barriers were placed for an NVIDIA GPU), off elsewhere: `RX_VK_GAME_ORDER=1` tries it there, `=0` turns it
+  off. A switch between draws and compute, the replay's copies, clears, fills and uniform updates, indirect dispatches,
+  a parallel replay and every game barrier keep the full barrier. `gpu/vk/barrier_order.h` is the rule;
+  `tests/barrier_order_test.cpp` replays authored pass/dispatch sequences and the conservative fallback, and
+  `builder/rust/tests/pass_order.rs` checks the wiring, the switches and the frame log. The 2.3 ms of a 9.7 ms GPU
+  frame figure is upstream's measurement; this fork has not run it in the game yet.
 - **Mods' resource size table with prompts (#2592, upstream `bd9b07e6`)**: RomFS mods load in the emulator layout
   (`mods/<name>/romfs`, deeper `contents/<title id>/<name>/romfs`, `-`/`_` folders off, last-sorted mod wins). When a
   mod ships its own `ResourceSizeTable.*.rsizetable.zs`, the button prompts' entries are merged into it. The prompts

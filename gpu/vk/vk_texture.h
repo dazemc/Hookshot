@@ -208,6 +208,9 @@ uint64_t texture_bytes();
 /// A full memory barrier (all commands, all accesses): what separates dependent work for now
 /// (why: its label in RX_VK_PASS_TIMING's barrier lines)
 void full_barrier(VkCommandBuffer cmd, const char* why = "barrier (other)");
+/// (hookshot) RX_VK_GAME_ORDER: the game's own barriers order back-to-back passes and dispatches (NVIDIA by default;
+/// vk_texture.cpp, barrier_order.h)
+bool game_order();
 /// Full barriers recorded and left out (RX_VK_BARRIER_DEDUPE_OFF=1: none), since the start
 void barrier_stats(int64_t* made, int64_t* left_out);
 /// (hookshot) Set around a draw's sampled-texture lookups (vk_draw.cpp): a new ASTC texture there may wait for a later frame
@@ -215,10 +218,11 @@ void barrier_stats(int64_t* made, int64_t* left_out);
 extern thread_local bool upload_defer_ok;
 /// A draw pass just ended on cmd (end_pass): pass_start_barrier knows nothing else ran after it
 void note_pass_end(VkCommandBuffer cmd);
-/// The barrier a draw pass starts with. Full, unless RX_VK_PASS_BARRIER=game and the last thing on cmd was a draw pass with no
-/// barrier of the game's after it: then the new pass waits for the earlier work in its fragment stages only, so its vertex work
-/// may overlap the previous pass's fragments (NVN asks for a barrier before rendering results are read; only vertex-stage
-/// reads of the previous pass's output with no barrier from the game can change order)
+/// The barrier a draw pass starts with. Full, unless RX_VK_GAME_ORDER (NVIDIA by default) or RX_VK_PASS_BARRIER=game is on and
+/// the last thing on cmd was a draw pass with no barrier of the game's after it: then the new pass waits for the earlier work
+/// in its fragment stages only, so its vertex work may overlap the previous pass's fragments (NVN asks for a barrier before
+/// rendering results are read; only vertex-stage reads of the previous pass's output with no barrier from the game can change
+/// order). RX_VK_PASS_BARRIER=full still forces the full barrier.
 void pass_start_barrier(VkCommandBuffer cmd);
 /// Pass starts with the fragment-stage barrier, since the start
 int64_t pass_barriers_relaxed();
