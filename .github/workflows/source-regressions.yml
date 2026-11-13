@@ -255,6 +255,11 @@ jobs:
       # stable Rust with rustup. The tests skip a64emit when it is absent, so it is not built here)
       - name: Set up stable Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@82a3bb48d651e00e9cd888d6975843268dfbf538 # v2.7.8
+        with:
+          shared-key: source-regressions
+          cache-on-failure: true
       # (the AV1 wrapper's fixture compiles host/dav1d_av1.c against the system dav1d; Windows has no package for it,
       # so the test skips there, as it does on a Linux machine without the headers)
       - name: dav1d headers
