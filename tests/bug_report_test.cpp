@@ -170,7 +170,11 @@ int main(int argc, char** argv) {
         const std::string rel = write(in);
         if (painter.joinable()) painter.join();
         CHECK_SAYS(!rel.empty(), shown().c_str());
+#ifdef _WIN32
+        CHECK(rel == "bug-reports\\" + stamp_of(in.now));
+#else
         CHECK(rel == "bug-reports/" + stamp_of(in.now));
+#endif
         const fs::path folder = game / rel;
         CHECK(fs::is_directory(folder));
         CHECK(names_of(folder) == std::vector<std::string>({"hookshot_log.1.txt", "hookshot_log.txt", "picture.png", "report.txt"}));
