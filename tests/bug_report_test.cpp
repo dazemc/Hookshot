@@ -221,8 +221,13 @@ int main(int argc, char** argv) {
         CHECK(link.size() <= 2000);
 
         const std::string copy = read_text(folder / "hookshot_log.txt");
+#ifdef _WIN32
+        CHECK(has(copy, "%USERPROFILE%/Games/Hookshot/romfs") && has(copy, "%USERPROFILE%/Games/Hookshot/user\\save") &&
+              has(copy, "/run/media/<user>/SD/Hookshot") && has(copy, "Malice and alice123 stay, as /x/alice123/ does"));
+#else
         CHECK(has(copy, "~/Games/Hookshot/romfs") && has(copy, "~/Games/Hookshot/user\\save") &&
               has(copy, "/run/media/<user>/SD/Hookshot") && has(copy, "Malice and alice123 stay, as /x/alice123/ does"));
+#endif
         const std::string original = read_text(now_log);
         CHECK(std::count(copy.begin(), copy.end(), '\n') == std::count(original.begin(), original.end(), '\n'));
     }
@@ -288,7 +293,13 @@ int main(int argc, char** argv) {
         const std::string copy = read_bytes(game / rel / "hookshot_log.txt");
         std::string expected = text;
         const size_t at = expected.find(home_s);
-        if (at != std::string::npos) expected.replace(at, home_s.size(), "~");
+        if (at != std::string::npos) expected.replace(at, home_s.size(),
+#ifdef _WIN32
+            "%USERPROFILE%"
+#else
+            "~"
+#endif
+        );
         CHECK(copy == expected);
         CHECK(has(section(read_text(game / rel / "report.txt"), "Where in the game"), "LostWoods_Child (child)"));
     }
