@@ -399,6 +399,7 @@ int main(void) {{
     assert!(String::from_utf8_lossy(&run.stdout).starts_with("PASS"));
 }
 
+#[cfg(unix)]
 #[test]
 fn the_linux_saves_move_follows_links_in_any_directory_order() {
     if !cfg!(target_os = "linux") {
