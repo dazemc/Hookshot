@@ -119,7 +119,6 @@ bool set_output(int want) {   // (menu_setting_set: a size of another shape move
 
 int main() {
     int failed = 0;
-    setenv("HOS_DISPLAY_MODES", "1920x1080,2560x1080,3440x1440", 1);
     // (the output sizes: every size from every size, with and without a size of the player's own)
     for (int custom = 0; custom < 2; custom++) {
         custom_output = Out{0, 0};
@@ -258,7 +257,7 @@ fn option_set_walks_the_list_rows_in_the_arrows_order() {
         .status()
         .expect("run the C++ compiler");
     assert!(build.success(), "{cxx} failed on {}", source.display());
-    let run = Command::new(&exe).output().expect("run the menu walk");
+    let run = Command::new(&exe).env("HOS_DISPLAY_MODES", "1920x1080,2560x1080,3440x1440").output().expect("run the menu walk");
     assert!(
         run.status.success(),
         "{}",
