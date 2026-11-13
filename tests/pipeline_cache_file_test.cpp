@@ -24,6 +24,7 @@ void operator delete[](void* p) noexcept { ::operator delete(p); }
 void operator delete[](void* p, std::size_t) noexcept { ::operator delete(p); }
 
 #define CHECK(x) do{++checks;if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);exit(1);}}while(0)
+#ifndef _WIN32
 static void cleanup_cases(const std::filesystem::path& parent, int& checks) {
     namespace fs=std::filesystem;
     const auto root=parent/fs::path(u8"cleanup-\xC3\xA9");CHECK(fs::create_directory(root));
@@ -64,6 +65,7 @@ static void cleanup_cases(const std::filesystem::path& parent, int& checks) {
     CHECK(fs::last_write_time(published)>old+std::chrono::hours(24));
     CHECK(mkwvk::PipelineCacheFile::cleanup_temporaries(folder)==0);
 }
+#endif
 int main(int argc,char** argv){
     int checks=0;CHECK(argc==2);
     std::string path=std::string(argv[1])+"/owned-\xC3\xA9-cache.bin";
