@@ -675,8 +675,10 @@ mod tests {
                     "extern void use(long *);\nlong f(long n) { long s = 0; for (long i = 0; i < n; i++) { long t[8]; use(t); s += t[i & 7]; } return s; }\n",
                 )
                 .unwrap();
+                // (the compile checks the cc1 option, not the host target: -fPIC is not accepted by an MSVC target)
+                let compile_flags: Vec<&String> = flags.iter().filter(|flag| *flag != "-fPIC").collect();
                 let output = std::process::Command::new(crate::toolchain::find("clang", true))
-                    .args(&flags)
+                    .args(&compile_flags)
                     .args(["-x", "c", "-S", "-emit-llvm", "-o", "-"])
                     .arg(&source)
                     .output();
