@@ -140,7 +140,9 @@ int main(int argc,char** argv){
     for(const auto& entry:std::filesystem::directory_iterator(argv[1]))if(entry.path().filename().string().find(".tmp-")!=std::string::npos)++leaked;
     CHECK(leaked==0);
     const std::string argument(argv[1]);const std::u8string parent(argument.begin(),argument.end());
+#ifndef _WIN32
     cleanup_cases(std::filesystem::path(parent),checks);
+#endif
     printf("{\"assertions\":%d,\"productionHelper\":true,\"mappedRead\":true,\"passed\":true}\n",checks);
     return 0;
 }
