@@ -108,7 +108,11 @@ static Inputs base_inputs(const fs::path& game, const fs::path& current_log, con
     in.current_log = current_log.string();
     in.home = home;
     in.user = "alice";
+#ifdef _WIN32
+    in.windows = true;
+#else
     in.windows = false;
+#endif
     in.now = 1789000000;
     in.picture_wait_ms = 2000;
     return in;
