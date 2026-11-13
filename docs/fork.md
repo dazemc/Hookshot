@@ -124,7 +124,7 @@ fallback.
 
 ## Upstream parity
 
-Upstream moves independently; `main..upstream/main` currently reports ~145 commits because semantic ports are separate
+Upstream moves independently; `main..upstream/main` currently reports ~209 commits because semantic ports are separate
 commits, not upstream ancestors. Ported recently:
 
 - **Mods' resource size table with prompts (#2592, upstream `bd9b07e6`)**: RomFS mods load in the emulator layout
@@ -292,22 +292,23 @@ commits, not upstream ancestors. Ported recently:
   terrain/writeback/heap fixes, NUP/Python builder fixes.
 
 Remaining large areas are Native HDR's upscalers (DLSS/FSR/TAAU still take only the B10G11R11 scene, so PsychoV35
-runs the game's own upscale), hand-made prompt-image overrides (`nx2/prompt_faces/<face>/`), 10-bit/4:4:4 AV1
-conversion (OoT's movies are 8-bit 4:2:0), aspect-ratio and translated-menu features, hardware-specific Vulkan fixes,
-Flutter equivalents of the Tk/WPF UI commits, docs and game-derived pipeline assets.
+runs the game's own upscale; in progress), 10-bit/4:4:4 AV1 conversion (OoT's movies are 8-bit 4:2:0),
+hardware-specific Vulkan fixes, the Flutter equivalents of the Tk/WPF UI commits, docs and game-derived pipeline
+assets. The second parity wave is working the remaining second-order items: packed SPIR-V, barrier-ordered passes,
+the opt-in pipeline binary cache, development packs, HLE call counters and the RT audit.
 Do not port game-derived pipeline lists or generated game data.
 
 ## CI and release
 
 `source-regressions.yml` runs Rust tests on Linux and Windows, Flutter tests/analyze, three SPIR-V fixture builds and
 actionlint. `linux-appimage.yml`, `windows-builder.yml`, `vulkan-dlss.yml` and `release.yml` build release artifacts.
-All five workflows are green on `acf9b000`. The pre-release `v2.2.0-rs.9` was built from that commit and adds the
-controller-picture labels to the vendored ASTC notes, RADV/Navi, GCN, BC4 prompt-texture, #1830 shader, #2114 video,
-DLSS/V-Sync, compile-wave scheduler, worker/mirror/image-pool and retired-import work. `v2.2.0-rs.8` (from
-`8fbdb957`) has everything but the controller labels; `v2.2.0-rs.7` (from `b961fc43`) has neither of the last two.
+Six workflows run on `main` (the six files under `.github/workflows/`): the four above plus the docs checks and the
+Rust/Flutter source regressions. The latest pre-release is `v2.2.0-rs.10`; the next tag will be cut from a green main
+after the current parity wave. The workspace, Flutter tests and Windows Vulkan build are verified locally before a
+push, and the CI failure hook posts any new red run into the maintainer session.
 
 The fork was renamed to `dazemc/Hookshot-rs`. The Linux AppImage and Windows package workflows now build the Flutter
-app and Rust engine without Python; the pre-release (`v2.2.0-rs.9`) is published with the AppImage and the
+app and Rust engine without Python; the pre-release (`v2.2.0-rs.10`) is published with the AppImage and the
 Windows setup. The Linux image is a development image: a game build needs distribution clang and Vulkan/SPIR-V/VMA
 headers (or a source build). The repository never contains game files or generated game data.
 
