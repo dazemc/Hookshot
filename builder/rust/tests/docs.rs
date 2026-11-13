@@ -131,6 +131,104 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// GitHub-style heading slug. Lower-cases, turns whitespace into single hyphens and drops
+/// punctuation, matching the anchors GitHub generates for a Markdown heading.
+fn slugify(heading: &str) -> String {
+    // strip common inline formatting
+    let mut text = heading.to_string();
+    // remove link/image targets, keep link text
+    // naive: replace [text](url) -> text
+    // handle bold/italic/code by dropping the markers
+    // simple pass: drop backticks and asterisks/underscores used as emphasis
+    text = text.replace('`', "");
+    // keep it simple: remove markdown link/image syntax -> text
+    // Use a tiny state machine is overkill; do regex-ish replacements manually.
+    // Replace [..](..) -> inner text
+    let mut out = String::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            // find matching ](
+            if let Some(close) = text[i..].find("](") {
+                let close = i + close;
+                // link text is text[i+1..close]
+                out.push_str(&text[i + 1..close]);
+                // skip to matching ')'
+                if let Some(end) = text[close + 2..].find(')') {
+                    i = close + 2 + end + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    text = out;
+
+    // lowercase
+    let mut slug = String::new();
+    let mut prev_hyphen = true;
+    for ch in text.to_lowercase().chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            slug.push(ch);
+            prev_hyphen = false;
+        } else if ch.is_whitespace() || ch == '-' {
+            if !prev_hyphen {
+                slug.push('-');
+                prev_hyphen = true;
+            }
+        }
+        // drop other punctuation
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
+/// Collect the set of anchors GitHub would generate for the headings of a Markdown file.
+fn heading_anchors(text: &str) -> std::collections::HashSet<String> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut anchors = std::collections::HashSet::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+        // count leading #
+        let level = trimmed.chars().take_while(|c| *c == '#').count();
+        if level == 0 || level > 6 {
+            continue;
+        }
+        let rest = trimmed[level..].trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+        // strip trailing # (atx closing)
+        let heading = rest.trim_end_matches('#').trim();
+        if heading.is_empty() {
+            continue;
+        }
+        let base = slugify(heading);
+        if base.is_empty() {
+            continue;
+        }
+        let n = counts.entry(base.clone()).or_insert(0);
+        let anchor = if *n == 0 {
+            base.clone()
+        } else {
+            format!("{}-{}", base, n)
+        };
+        *n += 1;
+        anchors.insert(anchor);
+    }
+    anchors
+}
+
+// Allowlist: anchors that are generated at runtime or otherwise not present as static headings.
+const ANCHOR_ALLOWLIST: &[&str] = &[];
+
 #[test]
 fn relative_markdown_links_resolve() {
     let files = markdown_files();
@@ -186,6 +284,80 @@ fn relative_markdown_links_resolve() {
     assert!(
         broken.is_empty(),
         "relative Markdown links with no target:\n{}",
+        broken.join("\n")
+    );
+}
+
+#[test]
+fn relative_markdown_anchors_resolve() {
+    let files = markdown_files();
+    let mut broken = Vec::new();
+    for file in &files {
+        let text = fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        let mut fence: Option<&str> = None;
+        for (number, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if let Some(marker) = fence {
+                if trimmed.starts_with(marker) {
+                    fence = None;
+                }
+                continue;
+            }
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                fence = Some(if trimmed.starts_with("```") { "```" } else { "~~~" });
+                continue;
+            }
+            for target in link_targets(line) {
+                let target = target_path(&target);
+                if is_external(target) {
+                    // external links with fragments to other sites are not our concern;
+                    // but same-page anchors (#foo) are handled by is_external returning true for '#'-prefixed,
+                    // so skip them here.
+                    continue;
+                }
+                let (path, fragment) = match target.split_once('#') {
+                    Some((p, f)) => (p, f),
+                    None => continue,
+                };
+                if fragment.is_empty() {
+                    continue;
+                }
+                let path = percent_decode(path);
+                let fragment = percent_decode(fragment);
+                let fragment = fragment.trim_start_matches('#').to_string();
+                if ANCHOR_ALLOWLIST.contains(&fragment.as_str()) {
+                    continue;
+                }
+                // resolve destination
+                let destination = if path.is_empty() {
+                    file.clone()
+                } else {
+                    file.parent().unwrap_or(Path::new(".")).join(&path)
+                };
+                if !destination.exists() {
+                    continue; // file-level check covers this
+                }
+                let dest_text = fs::read_to_string(&destination).unwrap_or_default();
+                let anchors = heading_anchors(&dest_text);
+                let frag_slug = slugify(&fragment);
+                // GitHub compares the raw fragment too; accept either raw or slugified
+                if !anchors.contains(&fragment) && !anchors.contains(&frag_slug) {
+                    let relative = file.strip_prefix(root()).unwrap_or(file);
+                    broken.push(format!(
+                        "{}:{}: {}#{} -> anchor not found (slug: {})",
+                        relative.display(),
+                        number + 1,
+                        path,
+                        fragment,
+                        frag_slug
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        broken.is_empty(),
+        "relative Markdown links with broken anchors:\n{}",
         broken.join("\n")
     );
 }
