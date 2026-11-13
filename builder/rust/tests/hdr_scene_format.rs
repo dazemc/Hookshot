@@ -44,4 +44,11 @@ fn temporal_scene_format_accepts_hdr_and_ldr() {
     // The reactive mask accepts the HDR scene too.
     let reactive = read("gpu/vk/vk_reactive.cpp");
     assert!(reactive.contains("temporal_scene_format(color->format)"));
+
+    // The prep passes are format-agnostic: they sample the scene through a sampler2D, so the RGBA16F (HDR) scene needs no
+    // shader variant; clamping to 0..1 is correct for the perceptual (square-root) encoding in both formats.
+    let fsr3_prep = read("gpu/vk/shaders/fsr3_prep.comp");
+    let dlss_prep = read("gpu/vk/shaders/dlss_prep.comp");
+    assert!(fsr3_prep.contains("layout(binding = 0) uniform sampler2D scene;"));
+    assert!(dlss_prep.contains("layout(binding = 0) uniform sampler2D scene;"));
 }
