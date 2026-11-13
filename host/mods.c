@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdint.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
